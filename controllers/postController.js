@@ -1,0 +1,98 @@
+import Post from "../models/Post.js";
+import User from "../models/User.js";
+
+// CREATE POST
+export const createPost = async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    const post = await Post.create({
+      user: req.user._id,
+      text,
+    });
+
+    const populatedPost = await post.populate("user", "name profilePic");
+
+    res.status(201).json(populatedPost);
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+// GET PERSONALIZED FEED POSTS
+export const getFeedPosts = async (req, res) => {
+  try {
+    // Current logged in user
+    const currentUser = await User.findById(req.user._id);
+
+    // Users allowed in feed
+    const feedUsers = [...currentUser.following, currentUser._id];
+
+    // Fetch posts
+    const posts = await Post.find({
+      user: { $in: feedUsers },
+    })
+      .populate("user", "name profilePic")
+      .sort({ createdAt: -1 });
+
+    // Add isLiked field
+    const formattedPosts = posts.map((post) => {
+      const isLiked = post.likes.some(
+        (id) => id.toString() === req.user._id.toString(),
+      );
+
+      return {
+        ...post._doc,
+        isLiked,
+      };
+    });
+
+    res.status(200).json(formattedPosts);
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+//like functionality
+export const likePost = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found",
+      });
+    }
+
+    const userId = req.user._id;
+
+    const alreadyLiked = post.likes.some(
+      (id) => id.toString() === userId.toString(),
+    );
+
+    if (alreadyLiked) {
+      // Unlike
+      post.likes = post.likes.filter(
+        (id) => id.toString() !== userId.toString(),
+      );
+    } else {
+      // Like
+      post.likes.push(userId);
+    }
+
+    await post.save();
+
+    res.status(200).json({
+      likes: post.likes.length,
+      liked: !alreadyLiked,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
