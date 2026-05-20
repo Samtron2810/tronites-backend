@@ -1,25 +1,36 @@
 import Post from "../models/Post.js";
 import User from "../models/User.js";
+import cloudinary from "../utils/cloudinary.js"; // ADD THIS
 
 // CREATE POST
 export const createPost = async (req, res) => {
   try {
     const { text } = req.body;
+    let imageUrl = "";
+
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(
+        `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
+        { folder: "tronites_posts" },
+      );
+      imageUrl = result.secure_url;
+    }
 
     const post = await Post.create({
       user: req.user._id,
       text,
+      image: imageUrl,
     });
 
     const populatedPost = await post.populate("user", "name profilePic");
 
     res.status(201).json(populatedPost);
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
+    res.status(500).json({ message: error.message });
   }
 };
+
+// keep getFeedPosts and likePost exactly as they are...
 
 // GET PERSONALIZED FEED POSTS
 export const getFeedPosts = async (req, res) => {

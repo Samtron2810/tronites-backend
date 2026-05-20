@@ -22,7 +22,10 @@ app.use(cookieParser());
 
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: [
+      "http://localhost:5173",
+      "https://tronites.vercel.app", // 👈 replace with your actual Vercel URL
+    ],
     credentials: true,
   }),
 );
