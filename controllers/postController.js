@@ -8,11 +8,16 @@ export const createPost = async (req, res) => {
     const { text } = req.body;
     let imageUrl = "";
 
+    console.log("REQ.FILE:", req.file);
+    console.log("REQ.BODY:", req.body);
+
     if (req.file) {
-      const result = await cloudinary.uploader.upload(
-        `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
-        { folder: "tronites_posts" },
-      );
+      const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+      console.log("Uploading to Cloudinary...");
+      const result = await cloudinary.uploader.upload(b64, {
+        folder: "tronites_posts",
+      });
+      console.log("Cloudinary result:", result.secure_url);
       imageUrl = result.secure_url;
     }
 
@@ -21,16 +26,43 @@ export const createPost = async (req, res) => {
       text,
       image: imageUrl,
     });
-
     const populatedPost = await post.populate("user", "name profilePic");
-
     res.status(201).json(populatedPost);
   } catch (error) {
+    console.error("CREATE POST ERROR NAME:", error.name);
+    console.error("CREATE POST ERROR MSG:", error.message);
+    console.error("CREATE POST ERROR FULL:", error);
     res.status(500).json({ message: error.message });
   }
 };
+//ANOTHER VERSION OF CREATE POST WITHOUT CLOUDINARY
+// export const createPost = async (req, res) => {
+//   try {
+//     const { text } = req.body;
+//     let imageUrl = "";
 
-// keep getFeedPosts and likePost exactly as they are...
+//     if (req.file) {
+//       const result = await cloudinary.uploader.upload(
+//         `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
+//         { folder: "tronites_posts" },
+//       );
+//       imageUrl = result.secure_url;
+//     }
+
+//     const post = await Post.create({
+//       user: req.user._id,
+//       text,
+//       image: imageUrl,
+//     });
+
+//     const populatedPost = await post.populate("user", "name profilePic");
+
+//     res.status(201).json(populatedPost);
+//   } catch (error) {
+//     console.error("CREATE POST ERROR:", error);
+//     res.status(500).json({ message: error.message || "Server error" });
+//   }
+// };
 
 // GET PERSONALIZED FEED POSTS
 export const getFeedPosts = async (req, res) => {

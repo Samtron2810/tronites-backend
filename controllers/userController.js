@@ -140,8 +140,7 @@ export const updateProfilePicture = async (req, res) => {
       profilePic: user.profilePic,
     });
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
+    console.error("PROFILE PIC ERROR:", error);
+    res.status(500).json({ message: error.message || "Server error" });
   }
 };
