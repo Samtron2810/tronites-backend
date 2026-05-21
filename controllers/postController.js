@@ -1,5 +1,6 @@
 import Post from "../models/Post.js";
 import User from "../models/User.js";
+import Comment from "../models/Comment.js";
 import cloudinary from "../utils/cloudinary.js"; // ADD THIS
 
 // CREATE POST
@@ -116,5 +117,39 @@ export const likePost = async (req, res) => {
     res.status(500).json({
       message: error.message,
     });
+  }
+};
+
+// DELETE POST
+export const deletePost = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    if (post.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    // Delete Cloudinary image safely
+    if (post.image) {
+      try {
+        const publicId = post.image.split("/").slice(-1)[0].split(".")[0];
+        await cloudinary.uploader.destroy(`tronites_posts/${publicId}`);
+      } catch (err) {
+        console.log("Cloudinary delete failed:", err.message);
+      }
+    }
+
+    // Delete related comments
+    await Comment.deleteMany({ post: post._id });
+
+    await post.deleteOne();
+
+    res.status(200).json({ message: "Post deleted" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
