@@ -10,9 +10,9 @@ import {
 const router = express.Router();
 
 router.post("/", protect, upload.single("image"), createPost);
-router.post("/like/:id", protect, likePost);
+
 router.put("/like/:id", protect, likePost);
-router.get("/", protect, getFeedPosts);
+
 router.get("/feed", protect, getFeedPosts);
 
 export default router;

@@ -114,7 +114,7 @@ export const searchUsers = async (req, res) => {
 
 //UPDATE PROFILE IMAGE API
 export const updateProfilePicture = async (req, res) => {
-  console.log(req.file);
+  // console.log(req.file);
 
   try {
     const user = await User.findById(req.user._id);

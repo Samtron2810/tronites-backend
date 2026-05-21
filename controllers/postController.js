@@ -6,18 +6,25 @@ import cloudinary from "../utils/cloudinary.js"; // ADD THIS
 export const createPost = async (req, res) => {
   try {
     const { text } = req.body;
+
+    if (!text?.trim() && !req.file) {
+      return res.status(400).json({
+        message: "Post must contain text or image",
+      });
+    }
+
     let imageUrl = "";
 
-    console.log("REQ.FILE:", req.file);
-    console.log("REQ.BODY:", req.body);
+    // console.log("REQ.FILE:", req.file);
+    // console.log("REQ.BODY:", req.body);
 
     if (req.file) {
       const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
-      console.log("Uploading to Cloudinary...");
+      // console.log("Uploading to Cloudinary...");
       const result = await cloudinary.uploader.upload(b64, {
         folder: "tronites_posts",
       });
-      console.log("Cloudinary result:", result.secure_url);
+      // console.log("Cloudinary result:", result.secure_url);
       imageUrl = result.secure_url;
     }
 
@@ -35,34 +42,6 @@ export const createPost = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-//ANOTHER VERSION OF CREATE POST WITHOUT CLOUDINARY
-// export const createPost = async (req, res) => {
-//   try {
-//     const { text } = req.body;
-//     let imageUrl = "";
-
-//     if (req.file) {
-//       const result = await cloudinary.uploader.upload(
-//         `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
-//         { folder: "tronites_posts" },
-//       );
-//       imageUrl = result.secure_url;
-//     }
-
-//     const post = await Post.create({
-//       user: req.user._id,
-//       text,
-//       image: imageUrl,
-//     });
-
-//     const populatedPost = await post.populate("user", "name profilePic");
-
-//     res.status(201).json(populatedPost);
-//   } catch (error) {
-//     console.error("CREATE POST ERROR:", error);
-//     res.status(500).json({ message: error.message || "Server error" });
-//   }
-// };
 
 // GET PERSONALIZED FEED POSTS
 export const getFeedPosts = async (req, res) => {
