@@ -9,6 +9,7 @@ import {
   getUserProfile,
   searchUsers,
   updateProfilePicture,
+  updateBio,
 } from "../controllers/userController.js";
 
 const router = express.Router();
@@ -22,5 +23,6 @@ router.put(
   upload.single("image"),
   updateProfilePicture,
 );
+router.put("/bio", protect, updateBio);
 
 export default router;

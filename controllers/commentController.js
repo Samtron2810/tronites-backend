@@ -1,5 +1,6 @@
 import Comment from "../models/Comment.js";
 import Post from "../models/Post.js";
+import Notification from "../models/Notification.js";
 
 // ADD COMMENT
 export const addComment = async (req, res) => {
@@ -22,6 +23,16 @@ export const addComment = async (req, res) => {
 
     post.commentsCount += 1;
     await post.save();
+
+    // Create comment notification (don't notify yourself)
+    if (post.user.toString() !== req.user._id.toString()) {
+      await Notification.create({
+        recipient: post.user,
+        sender: req.user._id,
+        type: "comment",
+        post: post._id,
+      });
+    }
 
     const populatedComment = await comment.populate("user", "name profilePic");
 

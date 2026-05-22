@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import Post from "../models/Post.js";
+import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
 
 export const followUser = async (req, res) => {
@@ -32,11 +33,38 @@ export const followUser = async (req, res) => {
       userToFollow.followers = userToFollow.followers.filter(
         (id) => id.toString() !== currentUser._id.toString(),
       );
+
+      // Remove follow notification
+      await Notification.deleteOne({
+        recipient: userToFollow._id,
+        sender: currentUser._id,
+        type: "follow",
+      });
     } else {
       // FOLLOW
       currentUser.following.push(userToFollow._id);
-
       userToFollow.followers.push(currentUser._id);
+
+      const existingNotification = await Notification.findOne({
+        recipient: userToFollow._id,
+        sender: currentUser._id,
+        type: "follow",
+      });
+
+      if (!existingNotification) {
+        await Notification.create({
+          recipient: userToFollow._id,
+          sender: currentUser._id,
+          type: "follow",
+        });
+      }
+
+      // Create follow notification
+      await Notification.create({
+        recipient: userToFollow._id,
+        sender: currentUser._id,
+        type: "follow",
+      });
     }
 
     await currentUser.save();
@@ -142,5 +170,22 @@ export const updateProfilePicture = async (req, res) => {
   } catch (error) {
     console.error("PROFILE PIC ERROR:", error);
     res.status(500).json({ message: error.message || "Server error" });
+  }
+};
+
+//UPDATE BIO API
+export const updateBio = async (req, res) => {
+  try {
+    const bio = req.body.bio?.trim() || "";
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { bio },
+      { new: true },
+    ).select("-password");
+
+    res.status(200).json({ bio: user.bio });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };

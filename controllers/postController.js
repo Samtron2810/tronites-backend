@@ -1,6 +1,7 @@
 import Post from "../models/Post.js";
 import User from "../models/User.js";
 import Comment from "../models/Comment.js";
+import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js"; // ADD THIS
 
 // CREATE POST
@@ -102,9 +103,37 @@ export const likePost = async (req, res) => {
       post.likes = post.likes.filter(
         (id) => id.toString() !== userId.toString(),
       );
+
+      // Remove like notification
+      await Notification.deleteOne({
+        recipient: post.user,
+        sender: userId,
+        type: "like",
+        post: post._id,
+      });
     } else {
       // Like
       post.likes.push(userId);
+
+      // Create like notification (don't notify yourself)
+      if (post.user.toString() !== userId.toString()) {
+        // Prevent duplicate like notifications
+        const existingNotification = await Notification.findOne({
+          recipient: post.user,
+          sender: userId,
+          type: "like",
+          post: post._id,
+        });
+
+        if (!existingNotification) {
+          await Notification.create({
+            recipient: post.user,
+            sender: userId,
+            type: "like",
+            post: post._id,
+          });
+        }
+      }
     }
 
     await post.save();
