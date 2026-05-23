@@ -25,6 +25,12 @@ export const getReceiverSocketIds = (receiverId) => {
   return socketIds ? Array.from(socketIds) : [];
 };
 
+const getOnlineUsers = () => Array.from(userSocketMap.keys());
+
+const broadcastOnlineUsers = () => {
+  io.emit("getOnlineUsers", getOnlineUsers());
+};
+
 io.on("connection", (socket) => {
   const userId = socket.handshake.query.userId;
 
@@ -33,6 +39,7 @@ io.on("connection", (socket) => {
       userSocketMap.set(userId, new Set());
     }
     userSocketMap.get(userId).add(socket.id);
+    broadcastOnlineUsers();
   }
 
   // Join a post room for real-time like/comment updates
@@ -56,6 +63,7 @@ io.on("connection", (socket) => {
         socketIds.delete(socket.id);
         if (socketIds.size === 0) {
           userSocketMap.delete(userId);
+          broadcastOnlineUsers();
         }
       }
     }
