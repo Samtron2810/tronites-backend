@@ -1,6 +1,7 @@
 import Comment from "../models/Comment.js";
 import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
+import { io, getReceiverSocketIds } from "../socket/socket.js";
 
 // ADD COMMENT
 export const addComment = async (req, res) => {
@@ -24,17 +25,39 @@ export const addComment = async (req, res) => {
     post.commentsCount += 1;
     await post.save();
 
+    const populatedComment = await comment.populate("user", "name profilePic");
+
     // Create comment notification (don't notify yourself)
     if (post.user.toString() !== req.user._id.toString()) {
-      await Notification.create({
-        recipient: post.user,
-        sender: req.user._id,
-        type: "comment",
-        post: post._id,
-      });
+      try {
+        const newNotif = await Notification.create({
+          recipient: post.user,
+          sender: req.user._id,
+          type: "comment",
+          post: post._id,
+        });
+
+        // Emit "newNotification" to post owner's connected socket IDs
+        const populatedNotif = await newNotif.populate("sender", "name profilePic");
+        const recipientSockets = getReceiverSocketIds(post.user);
+        recipientSockets.forEach((socketId) => {
+          io.to(socketId).emit("newNotification", populatedNotif);
+        });
+      } catch (socketError) {
+        console.error("Comment notification real-time error:", socketError);
+      }
     }
 
-    const populatedComment = await comment.populate("user", "name profilePic");
+    // Emit "newComment" to the post's specific room
+    try {
+      io.to(`post_${post._id}`).emit("newComment", {
+        postId: post._id,
+        comment: populatedComment,
+        commentCount: post.commentsCount,
+      });
+    } catch (socketError) {
+      console.error("Comment live count emission error:", socketError);
+    }
 
     res.status(201).json(populatedComment);
   } catch (error) {

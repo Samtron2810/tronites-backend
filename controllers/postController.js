@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import Comment from "../models/Comment.js";
 import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js"; // ADD THIS
+import { io, getReceiverSocketIds } from "../socket/socket.js";
 
 // CREATE POST
 export const createPost = async (req, res) => {
@@ -36,6 +37,22 @@ export const createPost = async (req, res) => {
       image: imageUrl,
     });
     const populatedPost = await post.populate("user", "name profilePic");
+
+    // Real-time post feed update for followers
+    try {
+      const author = await User.findById(req.user._id).select("followers");
+      if (author && author.followers) {
+        author.followers.forEach((followerId) => {
+          const followerSockets = getReceiverSocketIds(followerId);
+          followerSockets.forEach((socketId) => {
+            io.to(socketId).emit("newPost", populatedPost);
+          });
+        });
+      }
+    } catch (socketError) {
+      console.error("Real-time feed emission error:", socketError);
+    }
+
     res.status(201).json(populatedPost);
   } catch (error) {
     console.error("CREATE POST ERROR NAME:", error.name);
@@ -126,17 +143,39 @@ export const likePost = async (req, res) => {
         });
 
         if (!existingNotification) {
-          await Notification.create({
+          const newNotif = await Notification.create({
             recipient: post.user,
             sender: userId,
             type: "like",
             post: post._id,
           });
+
+          // Emit "newNotification" to post owner's connected socket IDs
+          try {
+            const populatedNotif = await newNotif.populate("sender", "name profilePic");
+            const recipientSockets = getReceiverSocketIds(post.user);
+            recipientSockets.forEach((socketId) => {
+              io.to(socketId).emit("newNotification", populatedNotif);
+            });
+          } catch (socketError) {
+            console.error("Like notification real-time error:", socketError);
+          }
         }
       }
     }
 
     await post.save();
+
+    // Emit "likeUpdate" to the post's specific room
+    try {
+      io.to(`post_${post._id}`).emit("likeUpdate", {
+        postId: post._id,
+        likesCount: post.likes.length,
+        likes: post.likes,
+      });
+    } catch (socketError) {
+      console.error("Like count emission error:", socketError);
+    }
 
     res.status(200).json({
       likes: post.likes.length,

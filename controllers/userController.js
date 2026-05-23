@@ -2,6 +2,7 @@ import User from "../models/User.js";
 import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
+import { io, getReceiverSocketIds } from "../socket/socket.js";
 
 export const followUser = async (req, res) => {
   try {
@@ -52,19 +53,23 @@ export const followUser = async (req, res) => {
       });
 
       if (!existingNotification) {
-        await Notification.create({
+        const newNotif = await Notification.create({
           recipient: userToFollow._id,
           sender: currentUser._id,
           type: "follow",
         });
-      }
 
-      // Create follow notification
-      await Notification.create({
-        recipient: userToFollow._id,
-        sender: currentUser._id,
-        type: "follow",
-      });
+        // Emit "newNotification" to followed user's connected socket IDs
+        try {
+          const populatedNotif = await newNotif.populate("sender", "name profilePic");
+          const recipientSockets = getReceiverSocketIds(userToFollow._id);
+          recipientSockets.forEach((socketId) => {
+            io.to(socketId).emit("newNotification", populatedNotif);
+          });
+        } catch (socketError) {
+          console.error("Follow notification real-time error:", socketError);
+        }
+      }
     }
 
     await currentUser.save();
