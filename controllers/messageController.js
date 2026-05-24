@@ -136,3 +136,33 @@ export const getMessages = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+export const deleteMessage = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const messageId = req.params.messageId;
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: "Message not found." });
+    }
+
+    if (message.sender.toString() !== currentUserId.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to delete this message." });
+    }
+
+    await Message.findByIdAndDelete(messageId);
+
+    const recipientSockets = getReceiverSocketIds(message.receiver);
+    recipientSockets.forEach((socketId) => {
+      io.to(socketId).emit("messageDeleted", { messageId });
+    });
+
+    res.status(200).json({ message: "Message deleted." });
+  } catch (error) {
+    console.error("DELETE MESSAGE ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};

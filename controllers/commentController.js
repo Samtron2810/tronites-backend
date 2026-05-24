@@ -38,7 +38,10 @@ export const addComment = async (req, res) => {
         });
 
         // Emit "newNotification" to post owner's connected socket IDs
-        const populatedNotif = await newNotif.populate("sender", "name profilePic");
+        const populatedNotif = await newNotif.populate(
+          "sender",
+          "name profilePic",
+        );
         const recipientSockets = getReceiverSocketIds(post.user);
         recipientSockets.forEach((socketId) => {
           io.to(socketId).emit("newNotification", populatedNotif);
@@ -68,6 +71,47 @@ export const addComment = async (req, res) => {
 };
 
 // GET COMMENTS
+export const deleteComment = async (req, res) => {
+  try {
+    const comment = await Comment.findById(req.params.id);
+
+    if (!comment) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+
+    if (comment.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    const post = await Post.findById(comment.post);
+    await comment.deleteOne();
+
+    if (post) {
+      post.commentsCount = Math.max(0, post.commentsCount - 1);
+      await post.save();
+    }
+
+    try {
+      io.to(`post_${post._id}`).emit("commentDeleted", {
+        postId: post._id,
+        commentId: comment._id,
+        commentCount: post.commentsCount,
+      });
+    } catch (socketError) {
+      console.error("Comment deletion real-time error:", socketError);
+    }
+
+    res.status(200).json({
+      commentId: comment._id,
+      commentCount: post?.commentsCount || 0,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
 export const getComments = async (req, res) => {
   try {
     const comments = await Comment.find({

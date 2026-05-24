@@ -32,7 +32,7 @@ const messageSchema = new mongoose.Schema(
   },
 );
 
-messageSchema.pre("validate", async function () {
+messageSchema.pre("validate", async function (next) {
   if (this.sender && this.receiver) {
     const participantIds = [
       this.sender.toString(),
@@ -40,6 +40,7 @@ messageSchema.pre("validate", async function () {
     ].sort();
     this.conversationId = `${participantIds[0]}_${participantIds[1]}`;
   }
+  next();
 });
 
 const Message = mongoose.model("Message", messageSchema);
