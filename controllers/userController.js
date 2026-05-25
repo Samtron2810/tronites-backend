@@ -61,7 +61,10 @@ export const followUser = async (req, res) => {
 
         // Emit "newNotification" to followed user's connected socket IDs
         try {
-          const populatedNotif = await newNotif.populate("sender", "name profilePic");
+          const populatedNotif = await newNotif.populate(
+            "sender",
+            "name profilePic",
+          );
           const recipientSockets = getReceiverSocketIds(userToFollow._id);
           recipientSockets.forEach((socketId) => {
             io.to(socketId).emit("newNotification", populatedNotif);
@@ -125,7 +128,21 @@ export const getUserProfile = async (req, res) => {
 //SEARCH USERS
 export const searchUsers = async (req, res) => {
   try {
-    const query = req.query.q || "";
+    const query = String(req.query.q || "").trim();
+
+    if (query.length === 0) {
+      const users = await User.find({
+        _id: { $ne: req.user._id },
+      })
+        .select("name bio profilePic followers")
+        .limit(5);
+
+      return res.status(200).json(users);
+    }
+
+    if (query.length < 2) {
+      return res.status(200).json([]);
+    }
 
     const users = await User.find({
       name: {
@@ -135,7 +152,9 @@ export const searchUsers = async (req, res) => {
 
       // exclude current user
       _id: { $ne: req.user._id },
-    }).select("name bio profilePic followers");
+    })
+      .select("name bio profilePic followers")
+      .limit(10);
 
     res.status(200).json(users);
   } catch (error) {

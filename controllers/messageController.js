@@ -149,7 +149,10 @@ export const getMessages = async (req, res) => {
 
     if (unreadMessages.modifiedCount > 0) {
       const senderSockets = getReceiverSocketIds(otherUserId);
-      senderSockets.forEach((socketId) => {
+      const currentUserSockets = getReceiverSocketIds(currentUserId);
+      const allSocketIds = new Set([...senderSockets, ...currentUserSockets]);
+
+      allSocketIds.forEach((socketId) => {
         io.to(socketId).emit("messagesRead", { conversationId });
       });
     }
