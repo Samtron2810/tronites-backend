@@ -1,5 +1,6 @@
 import Message from "../models/Message.js";
 import User from "../models/User.js";
+import cloudinary from "../utils/cloudinary.js";
 import { io, getReceiverSocketIds } from "../socket/socket.js";
 
 const getConversationId = (userA, userB) => {
@@ -13,7 +14,7 @@ export const sendMessage = async (req, res) => {
     const receiverId = req.params.userId;
     const { text } = req.body;
 
-    if (!text || !text.trim()) {
+    if ((!text || !text.trim()) && !req.file) {
       return res.status(400).json({ message: "Message cannot be empty." });
     }
 
@@ -28,14 +29,30 @@ export const sendMessage = async (req, res) => {
       return res.status(404).json({ message: "Recipient not found." });
     }
 
+    let imageUrl = null;
+
+    // Upload image to Cloudinary if provided
+    if (req.file) {
+      try {
+        const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+        const result = await cloudinary.uploader.upload(b64, {
+          folder: "tronites_messages",
+        });
+        imageUrl = result.secure_url;
+      } catch (uploadError) {
+        console.error("Image upload to Cloudinary failed:", uploadError);
+        return res.status(500).json({ message: "Image upload failed." });
+      }
+    }
+
     const message = await Message.create({
       sender: senderId,
       receiver: receiverId,
-      text: text.trim(),
+      text: text?.trim() || null,
+      image: imageUrl,
       conversationId: getConversationId(senderId, receiverId),
     });
 
-    // AFTER
     const populatedMessage = await message.populate([
       { path: "sender", select: "_id name profilePic" },
       { path: "receiver", select: "_id name profilePic" },
@@ -121,7 +138,7 @@ export const getMessages = async (req, res) => {
       .populate("sender", "_id name profilePic")
       .populate("receiver", "_id name profilePic");
 
-    await Message.updateMany(
+    const unreadMessages = await Message.updateMany(
       {
         conversationId,
         receiver: currentUserId,
@@ -129,6 +146,13 @@ export const getMessages = async (req, res) => {
       },
       { read: true },
     );
+
+    if (unreadMessages.modifiedCount > 0) {
+      const senderSockets = getReceiverSocketIds(otherUserId);
+      senderSockets.forEach((socketId) => {
+        io.to(socketId).emit("messagesRead", { conversationId });
+      });
+    }
 
     res.status(200).json(messages);
   } catch (error) {

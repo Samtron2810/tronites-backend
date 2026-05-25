@@ -65,6 +65,10 @@ export const createPost = async (req, res) => {
 // GET PERSONALIZED FEED POSTS
 export const getFeedPosts = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     // Current logged in user
     const currentUser = await User.findById(req.user._id);
 
@@ -76,7 +80,14 @@ export const getFeedPosts = async (req, res) => {
       user: { $in: feedUsers },
     })
       .populate("user", "name profilePic")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    // Total count for pagination
+    const totalPosts = await Post.countDocuments({
+      user: { $in: feedUsers },
+    });
 
     // Add isLiked field
     const formattedPosts = posts.map((post) => {
@@ -90,7 +101,12 @@ export const getFeedPosts = async (req, res) => {
       };
     });
 
-    res.status(200).json(formattedPosts);
+    res.status(200).json({
+      posts: formattedPosts,
+      totalPosts,
+      currentPage: page,
+      totalPages: Math.ceil(totalPosts / limit),
+    });
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -152,7 +168,10 @@ export const likePost = async (req, res) => {
 
           // Emit "newNotification" to post owner's connected socket IDs
           try {
-            const populatedNotif = await newNotif.populate("sender", "name profilePic");
+            const populatedNotif = await newNotif.populate(
+              "sender",
+              "name profilePic",
+            );
             const recipientSockets = getReceiverSocketIds(post.user);
             recipientSockets.forEach((socketId) => {
               io.to(socketId).emit("newNotification", populatedNotif);

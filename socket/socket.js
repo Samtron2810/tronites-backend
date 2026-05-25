@@ -56,6 +56,20 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Join conversation room for real-time read status
+  socket.on("joinConversation", (conversationId) => {
+    if (conversationId) {
+      socket.join(`conversation_${conversationId}`);
+    }
+  });
+
+  // Leave conversation room
+  socket.on("leaveConversation", (conversationId) => {
+    if (conversationId) {
+      socket.leave(`conversation_${conversationId}`);
+    }
+  });
+
   socket.on("disconnect", () => {
     if (userId && userId !== "undefined") {
       const socketIds = userSocketMap.get(userId);
