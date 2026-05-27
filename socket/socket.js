@@ -1,16 +1,14 @@
 import { Server } from "socket.io";
 import http from "http";
 import express from "express";
+import getAllowedOrigins from "../config/allowedOrigins.js";
 
 const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: [
-      "http://localhost:5173",
-      "https://tronites.vercel.app", // 👈 replace with your actual Vercel URL
-    ],
+    origin: getAllowedOrigins(),
     credentials: true,
     methods: ["GET", "POST"],
   },

@@ -4,6 +4,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 
 import connectDB from "./config/db.js";
+import getAllowedOrigins from "./config/allowedOrigins.js";
 //routes importing
 import authRoutes from "./routes/authRoutes.js";
 import postRoutes from "./routes/postRoutes.js";
@@ -23,10 +24,7 @@ app.use(cookieParser());
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://tronites.vercel.app", // 👈 replace with your actual Vercel URL
-    ],
+    origin: getAllowedOrigins(),
     credentials: true,
   }),
 );
