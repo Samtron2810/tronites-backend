@@ -131,8 +131,13 @@ export const searchUsers = async (req, res) => {
     const query = String(req.query.q || "").trim();
 
     if (query.length === 0) {
+      // Get the list of users the current user is already following
+      const currentUser = await User.findById(req.user._id).select("following");
+      const followingIds = currentUser.following.map((id) => id.toString());
+
+      // Exclude both the current user and users they already follow
       const users = await User.find({
-        _id: { $ne: req.user._id },
+        _id: { $nin: [req.user._id, ...followingIds] },
       })
         .select("name bio profilePic followers")
         .limit(5);
