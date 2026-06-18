@@ -23,11 +23,19 @@ export const createPost = async (req, res) => {
 
     if (req.file) {
       const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
-      // console.log("Uploading to Cloudinary...");
+      // Upload with automatic optimization: resize to max 1600px, auto format & quality
       const result = await cloudinary.uploader.upload(b64, {
         folder: "tronites_posts",
+        transformation: [
+          {
+            width: 1600,
+            height: 1600,
+            crop: "limit",
+            quality: "auto",
+            fetch_format: "auto",
+          },
+        ],
       });
-      // console.log("Cloudinary result:", result.secure_url);
       imageUrl = result.secure_url;
     }
 
@@ -38,7 +46,10 @@ export const createPost = async (req, res) => {
     });
     const populatedPost = await post.populate("user", "name profilePic");
 
-    // Real-time post feed update for followers
+    // Send response FIRST before real-time socket emissions
+    res.status(201).json(populatedPost);
+
+    // Real-time post feed update for followers (fire-and-forget — don't block response)
     try {
       const author = await User.findById(req.user._id).select("followers");
       if (author && author.followers) {
@@ -52,8 +63,6 @@ export const createPost = async (req, res) => {
     } catch (socketError) {
       console.error("Real-time feed emission error:", socketError);
     }
-
-    res.status(201).json(populatedPost);
   } catch (error) {
     console.error("CREATE POST ERROR NAME:", error.name);
     console.error("CREATE POST ERROR MSG:", error.message);
