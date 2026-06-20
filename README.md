@@ -52,6 +52,7 @@ CLOUDINARY_API_KEY=your_api_key
 CLOUDINARY_API_SECRET=your_api_secret
 PORT=5000
 NODE_ENV=production
+REDIS_URL=your_redis_connection_link
 FRONTEND_ORIGINS=https://app.example.com,https://www.example.com
 ```
 
