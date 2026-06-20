@@ -20,8 +20,12 @@ const commentSchema = new mongoose.Schema(
       maxlength: 280,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
+
+// Indexes
+commentSchema.index({ post: 1, createdAt: -1 });
+commentSchema.index({ user: 1 });
 
 const Comment = mongoose.model("Comment", commentSchema);
 

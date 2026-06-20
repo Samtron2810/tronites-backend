@@ -13,6 +13,7 @@ import userRoutes from "./routes/userRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
 import { app, server } from "./socket/socket.js";
+import { apiLimiter } from "./middleware/rateLimiter.js";
 
 dotenv.config();
 
@@ -28,6 +29,9 @@ app.use(
     credentials: true,
   }),
 );
+
+// Global rate limiter
+app.use("/api", apiLimiter);
 
 //routes usage
 app.use("/api/auth", authRoutes);

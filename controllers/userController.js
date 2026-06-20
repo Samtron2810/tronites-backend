@@ -3,6 +3,7 @@ import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
 import { io, getReceiverSocketIds } from "../socket/socket.js";
+import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 
 export const followUser = async (req, res) => {
   try {
@@ -79,6 +80,10 @@ export const followUser = async (req, res) => {
 
     await userToFollow.save();
 
+    // Invalidate profile caches for both users
+    invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`profile:${userToFollow._id}:*`);
+
     res.status(200).json({
       following: !alreadyFollowing,
     });
@@ -92,32 +97,46 @@ export const followUser = async (req, res) => {
 //PROFILE FUNCTION
 export const getUserProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id)
-      .select("-password")
-      .populate("followers", "_id")
-      .populate("following", "_id");
+    const cacheKey = `profile:${req.params.id}:${req.user._id}`;
 
-    if (!user) {
+    const result = await getOrSetCache(
+      cacheKey,
+      async () => {
+        const user = await User.findById(req.params.id)
+          .select("-password")
+          .populate("followers", "_id")
+          .populate("following", "_id");
+
+        if (!user) {
+          return null;
+        }
+
+        // User posts
+        const posts = await Post.find({
+          user: user._id,
+        }).sort({ createdAt: -1 });
+
+        // Check if current user follows profile
+        const isFollowing = user.followers.some(
+          (follower) => follower._id.toString() === req.user._id.toString(),
+        );
+
+        return {
+          user,
+          posts,
+          isFollowing,
+        };
+      },
+      30,
+    );
+
+    if (!result) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
-    // User posts
-    const posts = await Post.find({
-      user: user._id,
-    }).sort({ createdAt: -1 });
-
-    // Check if current user follows profile
-    const isFollowing = user.followers.some(
-      (follower) => follower._id.toString() === req.user._id.toString(),
-    );
-
-    res.status(200).json({
-      user,
-      posts,
-      isFollowing,
-    });
+    res.status(200).json(result);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -193,6 +212,9 @@ export const updateProfilePicture = async (req, res) => {
 
     await user.save();
 
+    // Invalidate profile cache
+    invalidateCache(`profile:${req.user._id}:*`);
+
     res.status(200).json({
       profilePic: user.profilePic,
     });
@@ -212,6 +234,9 @@ export const updateBio = async (req, res) => {
       { bio },
       { new: true },
     ).select("-password");
+
+    // Invalidate profile cache
+    invalidateCache(`profile:${req.user._id}:*`);
 
     res.status(200).json({ bio: user.bio });
   } catch (error) {

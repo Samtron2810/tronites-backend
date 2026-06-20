@@ -2,8 +2,9 @@ import Post from "../models/Post.js";
 import User from "../models/User.js";
 import Comment from "../models/Comment.js";
 import Notification from "../models/Notification.js";
-import cloudinary from "../utils/cloudinary.js"; // ADD THIS
+import cloudinary from "../utils/cloudinary.js";
 import { io, getReceiverSocketIds } from "../socket/socket.js";
+import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 
 // CREATE POST
 export const createPost = async (req, res) => {
@@ -46,6 +47,9 @@ export const createPost = async (req, res) => {
     });
     const populatedPost = await post.populate("user", "name profilePic");
 
+    // Invalidate feed cache for author's followers
+    invalidateCache(`feed:${req.user._id}:*`);
+
     // Send response FIRST before real-time socket emissions
     res.status(201).json(populatedPost);
 
@@ -78,44 +82,54 @@ export const getFeedPosts = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // Current logged in user
-    const currentUser = await User.findById(req.user._id);
+    const cacheKey = `feed:${req.user._id}:${page}:${limit}`;
 
-    // Users allowed in feed
-    const feedUsers = [...currentUser.following, currentUser._id];
+    const result = await getOrSetCache(
+      cacheKey,
+      async () => {
+        // Current logged in user
+        const currentUser = await User.findById(req.user._id);
 
-    // Fetch posts
-    const posts = await Post.find({
-      user: { $in: feedUsers },
-    })
-      .populate("user", "name profilePic")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+        // Users allowed in feed
+        const feedUsers = [...currentUser.following, currentUser._id];
 
-    // Total count for pagination
-    const totalPosts = await Post.countDocuments({
-      user: { $in: feedUsers },
-    });
+        // Fetch posts
+        const posts = await Post.find({
+          user: { $in: feedUsers },
+        })
+          .populate("user", "name profilePic")
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit);
 
-    // Add isLiked field
-    const formattedPosts = posts.map((post) => {
-      const isLiked = post.likes.some(
-        (id) => id.toString() === req.user._id.toString(),
-      );
+        // Total count for pagination
+        const totalPosts = await Post.countDocuments({
+          user: { $in: feedUsers },
+        });
 
-      return {
-        ...post._doc,
-        isLiked,
-      };
-    });
+        // Add isLiked field
+        const formattedPosts = posts.map((post) => {
+          const isLiked = post.likes.some(
+            (id) => id.toString() === req.user._id.toString(),
+          );
 
-    res.status(200).json({
-      posts: formattedPosts,
-      totalPosts,
-      currentPage: page,
-      totalPages: Math.ceil(totalPosts / limit),
-    });
+          return {
+            ...post._doc,
+            isLiked,
+          };
+        });
+
+        return {
+          posts: formattedPosts,
+          totalPosts,
+          currentPage: page,
+          totalPages: Math.ceil(totalPosts / limit),
+        };
+      },
+      30,
+    ); // Cache for 30 seconds
+
+    res.status(200).json(result);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -194,6 +208,10 @@ export const likePost = async (req, res) => {
 
     await post.save();
 
+    // Invalidate feed caches for both users
+    invalidateCache(`feed:${req.user._id}:*`);
+    invalidateCache(`feed:${post.user}:*`);
+
     // Emit "likeUpdate" to the post's specific room
     try {
       io.to(`post_${post._id}`).emit("likeUpdate", {
@@ -243,6 +261,9 @@ export const deletePost = async (req, res) => {
     await Comment.deleteMany({ post: post._id });
 
     await post.deleteOne();
+
+    // Invalidate feed cache
+    invalidateCache(`feed:${req.user._id}:*`);
 
     res.status(200).json({ message: "Post deleted" });
   } catch (error) {

@@ -1,8 +1,9 @@
 import express from "express";
 
 import protect from "../middleware/authMiddleware.js";
-
 import upload from "../middleware/uploadMiddleware.js";
+import { validate } from "../utils/validators.js";
+import { updateBioSchema } from "../utils/validators.js";
 
 import {
   followUser,
@@ -23,6 +24,6 @@ router.put(
   upload.single("image"),
   updateProfilePicture,
 );
-router.put("/bio", protect, updateBio);
+router.put("/bio", protect, validate(updateBioSchema), updateBio);
 
 export default router;

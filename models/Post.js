@@ -27,12 +27,16 @@ const postSchema = new mongoose.Schema(
     ],
 
     commentsCount: {
-        type: Number,
-        default: 0,
+      type: Number,
+      default: 0,
     },
   },
   { timestamps: true },
 );
+
+// Indexes
+postSchema.index({ user: 1, createdAt: -1 });
+postSchema.index({ likes: 1 });
 
 const Post = mongoose.model("Post", postSchema);
 

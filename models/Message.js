@@ -35,6 +35,11 @@ const messageSchema = new mongoose.Schema(
   },
 );
 
+// Indexes
+messageSchema.index({ sender: 1, receiver: 1 });
+messageSchema.index({ conversationId: 1, createdAt: 1 });
+messageSchema.index({ receiver: 1, read: 1 });
+
 messageSchema.pre("validate", async function () {
   if (this.sender && this.receiver) {
     const participantIds = [
