@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import Otp from "../models/Otp.js";
 import generateToken from "../utils/generateToken.js";
 import { sendEmail } from "../utils/brevoEmail.js";
+import { otpEmailTemplate } from "../utils/emailTemplate.js";
 
 // REGISTER
 // SEND OTP (used for registration)
@@ -29,7 +30,7 @@ export const sendOtp = async (req, res) => {
 
     // Send OTP email
     const subject = "Your Tronites OTP";
-    const htmlContent = `<p>Your OTP is <strong>${otp}</strong>. It expires in 5 minutes.</p>`;
+    const htmlContent = otpEmailTemplate(otp);
 
     try {
       await sendEmail({ to: email, subject, htmlContent });
@@ -102,8 +103,8 @@ export const resendOtp = async (req, res) => {
     existing.expiresAt = expiresAt;
     await existing.save();
 
-    const subject = "Your Tronites OTP";
-    const htmlContent = `<p>Your new OTP is <strong>${otp}</strong>. It expires in 5 minutes.</p>`;
+    const subject = "Your Tronites OTP (Resend)";
+    const htmlContent = otpEmailTemplate(otp);
 
     try {
       await sendEmail({ to: email, subject, htmlContent });
