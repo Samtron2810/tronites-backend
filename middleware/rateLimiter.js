@@ -1,6 +1,7 @@
 import rateLimit from "express-rate-limit";
 
-// General API limiter — 100 requests per 15 minutes
+// General API limiter — 100 requests per 15 minutes (only for write operations)
+// GET requests are skipped to allow unlimited navigation
 export const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
@@ -9,6 +10,7 @@ export const apiLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === "GET",
 });
 
 // Auth limiter (register/login) — 10 requests per 15 minutes
