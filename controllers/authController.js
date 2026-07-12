@@ -1,9 +1,12 @@
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
+import Otp from "../models/Otp.js";
 import generateToken from "../utils/generateToken.js";
+import { sendEmail } from "../utils/brevoEmail.js";
 
 // REGISTER
-export const registerUser = async (req, res) => {
+// SEND OTP (used for registration)
+export const sendOtp = async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
@@ -13,21 +16,103 @@ export const registerUser = async (req, res) => {
       return res.status(400).json({ message: "Email is already been used" });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const passwordHash = await bcrypt.hash(password, 10);
 
-    const user = await User.create({
-      name,
-      email,
-      password: hashedPassword,
-    });
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
+    await Otp.findOneAndUpdate(
+      { email },
+      { otp, payload: { name, passwordHash }, expiresAt },
+      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+    );
+
+    // Send OTP email
+    const subject = "Your Tronites OTP";
+    const htmlContent = `<p>Your OTP is <strong>${otp}</strong>. It expires in 5 minutes.</p>`;
+
+    try {
+      await sendEmail({ to: email, subject, htmlContent });
+    } catch (emailErr) {
+      console.error("Brevo send error:", emailErr.message);
+      return res.status(502).json({ message: emailErr.message });
+    }
+
+    return res.status(200).json({ message: "OTP sent to your email" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// VERIFY OTP and create user
+export const verifyOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const otpDoc = await Otp.findOne({ email });
+
+    if (!otpDoc) {
+      return res.status(400).json({ message: "OTP not found or expired" });
+    }
+
+    if (otpDoc.expiresAt < new Date()) {
+      return res.status(400).json({ message: "OTP expired" });
+    }
+
+    if (otpDoc.otp !== otp) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    // Create user from payload
+    const { name, passwordHash } = otpDoc.payload || {};
+
+    if (!name || !passwordHash) {
+      return res.status(400).json({ message: "Invalid OTP payload" });
+    }
+
+    const user = await User.create({ name, email, password: passwordHash });
+
+    // remove otp record
+    await Otp.deleteOne({ _id: otpDoc._id });
+
+    // Generate token cookie
     generateToken(res, user._id);
 
-    res.status(201).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-    });
+    res.status(201).json({ _id: user._id, name: user.name, email: user.email });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// RESEND OTP
+export const resendOtp = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const existing = await Otp.findOne({ email });
+
+    if (!existing) {
+      return res.status(400).json({ message: "No pending OTP for this email" });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    existing.otp = otp;
+    existing.expiresAt = expiresAt;
+    await existing.save();
+
+    const subject = "Your Tronites OTP";
+    const htmlContent = `<p>Your new OTP is <strong>${otp}</strong>. It expires in 5 minutes.</p>`;
+
+    try {
+      await sendEmail({ to: email, subject, htmlContent });
+    } catch (emailErr) {
+      console.error("Brevo resend error:", emailErr.message);
+      return res.status(502).json({ message: emailErr.message });
+    }
+
+    res.status(200).json({ message: "OTP resent" });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

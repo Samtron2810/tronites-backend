@@ -20,6 +20,11 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
+export const validateOtpSchema = z.object({
+  email: z.string().trim().email("Invalid email address"),
+  otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits"),
+});
+
 // ─── Post ───────────────────────────────────────────────────────────────────
 
 export const createPostSchema = z.object({
