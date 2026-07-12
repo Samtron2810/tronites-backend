@@ -11,6 +11,8 @@ import {
   searchUsers,
   updateProfilePicture,
   updateBio,
+  getFollowers,
+  getFollowing,
 } from "../controllers/userController.js";
 
 const router = express.Router();
@@ -25,5 +27,7 @@ router.put(
   updateProfilePicture,
 );
 router.put("/bio", protect, validate(updateBioSchema), updateBio);
+router.get("/followers/:id", protect, getFollowers);
+router.get("/following/:id", protect, getFollowing);
 
 export default router;

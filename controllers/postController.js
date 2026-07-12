@@ -126,8 +126,8 @@ export const getFeedPosts = async (req, res) => {
           totalPages: Math.ceil(totalPosts / limit),
         };
       },
-      30,
-    ); // Cache for 30 seconds
+      300,
+    ); // Cache for 5 minutes
 
     res.status(200).json(result);
   } catch (error) {

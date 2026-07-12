@@ -17,7 +17,7 @@ redisClient.on("connect", () => console.log("Redis connected"));
 })();
 
 // Helper: get or set cache
-export const getOrSetCache = async (key, fetchFn, ttl = 60) => {
+export const getOrSetCache = async (key, fetchFn, ttl = 180) => {
   try {
     const cached = await redisClient.get(key);
     if (cached) {

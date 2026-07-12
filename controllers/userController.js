@@ -84,6 +84,15 @@ export const followUser = async (req, res) => {
     invalidateCache(`profile:${req.user._id}:*`);
     invalidateCache(`profile:${userToFollow._id}:*`);
 
+    // Invalidate followers/following caches for both users
+    invalidateCache(`followers:${req.user._id}`);
+    invalidateCache(`followers:${userToFollow._id}`);
+    invalidateCache(`following:${req.user._id}`);
+    invalidateCache(`following:${userToFollow._id}`);
+
+    // Invalidate current user's search cache so results reflect new follow state
+    invalidateCache(`searchUsers:${req.user._id}:*`);
+
     res.status(200).json({
       following: !alreadyFollowing,
     });
@@ -127,7 +136,7 @@ export const getUserProfile = async (req, res) => {
           isFollowing,
         };
       },
-      30,
+      180,
     );
 
     if (!result) {
@@ -148,37 +157,44 @@ export const getUserProfile = async (req, res) => {
 export const searchUsers = async (req, res) => {
   try {
     const query = String(req.query.q || "").trim();
+    const cacheKey = `searchUsers:${req.user._id}:${query}`;
 
-    if (query.length === 0) {
-      // Get the list of users the current user is already following
-      const currentUser = await User.findById(req.user._id).select("following");
-      const followingIds = currentUser.following.map((id) => id.toString());
+    const users = await getOrSetCache(
+      cacheKey,
+      async () => {
+        if (query.length === 0) {
+          // Get the list of users the current user is already following
+          const currentUser = await User.findById(req.user._id).select(
+            "following",
+          );
+          const followingIds = currentUser.following.map((id) => id.toString());
 
-      // Exclude both the current user and users they already follow
-      const users = await User.find({
-        _id: { $nin: [req.user._id, ...followingIds] },
-      })
-        .select("name bio profilePic followers")
-        .limit(5);
+          // Exclude both the current user and users they already follow
+          return await User.find({
+            _id: { $nin: [req.user._id, ...followingIds] },
+          })
+            .select("name bio profilePic followers")
+            .limit(5);
+        }
 
-      return res.status(200).json(users);
-    }
+        if (query.length < 2) {
+          return [];
+        }
 
-    if (query.length < 2) {
-      return res.status(200).json([]);
-    }
+        return await User.find({
+          name: {
+            $regex: query,
+            $options: "i",
+          },
 
-    const users = await User.find({
-      name: {
-        $regex: query,
-        $options: "i",
+          // exclude current user
+          _id: { $ne: req.user._id },
+        })
+          .select("name bio profilePic followers")
+          .limit(10);
       },
-
-      // exclude current user
-      _id: { $ne: req.user._id },
-    })
-      .select("name bio profilePic followers")
-      .limit(10);
+      180,
+    );
 
     res.status(200).json(users);
   } catch (error) {
@@ -241,5 +257,77 @@ export const updateBio = async (req, res) => {
     res.status(200).json({ bio: user.bio });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+//GET FOLLOWERS API
+export const getFollowers = async (req, res) => {
+  try {
+    const cacheKey = `followers:${req.params.id}`;
+
+    const followers = await getOrSetCache(
+      cacheKey,
+      async () => {
+        const user = await User.findById(req.params.id).populate(
+          "followers",
+          "name profilePic bio",
+        );
+
+        if (!user) {
+          return null;
+        }
+
+        return user.followers;
+      },
+      180,
+    );
+
+    if (followers === null) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    res.status(200).json(followers);
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+//GET FOLLOWING API
+export const getFollowing = async (req, res) => {
+  try {
+    const cacheKey = `following:${req.params.id}`;
+
+    const following = await getOrSetCache(
+      cacheKey,
+      async () => {
+        const user = await User.findById(req.params.id).populate(
+          "following",
+          "name profilePic bio",
+        );
+
+        if (!user) {
+          return null;
+        }
+
+        return user.following;
+      },
+      180,
+    );
+
+    if (following === null) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    res.status(200).json(following);
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
   }
 };

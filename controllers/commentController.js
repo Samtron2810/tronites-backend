@@ -2,6 +2,7 @@ import Comment from "../models/Comment.js";
 import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
 import { io, getReceiverSocketIds } from "../socket/socket.js";
+import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 
 // ADD COMMENT
 export const addComment = async (req, res) => {
@@ -26,6 +27,9 @@ export const addComment = async (req, res) => {
     await post.save();
 
     const populatedComment = await comment.populate("user", "name profilePic");
+
+    // Invalidate cached comment list for this post
+    invalidateCache(`comments:${req.params.id}`);
 
     // Create comment notification (don't notify yourself)
     if (post.user.toString() !== req.user._id.toString()) {
@@ -91,6 +95,9 @@ export const deleteComment = async (req, res) => {
       await post.save();
     }
 
+    // Invalidate cached comment list for this post
+    invalidateCache(`comments:${comment.post}`);
+
     try {
       io.to(`post_${post._id}`).emit("commentDeleted", {
         postId: post._id,
@@ -114,11 +121,19 @@ export const deleteComment = async (req, res) => {
 
 export const getComments = async (req, res) => {
   try {
-    const comments = await Comment.find({
-      post: req.params.id,
-    })
-      .populate("user", "name profilePic")
-      .sort({ createdAt: -1 });
+    const cacheKey = `comments:${req.params.id}`;
+
+    const comments = await getOrSetCache(
+      cacheKey,
+      async () => {
+        return await Comment.find({
+          post: req.params.id,
+        })
+          .populate("user", "name profilePic")
+          .sort({ createdAt: -1 });
+      },
+      180,
+    );
 
     res.status(200).json(comments);
   } catch (error) {
