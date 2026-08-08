@@ -19,6 +19,11 @@ dotenv.config();
 
 connectDB();
 
+// Trust the first hop (hosting platform's reverse proxy) so req.ip and
+// X-Forwarded-For are read correctly — required for express-rate-limit
+// to key limits per real client instead of erroring or bucketing everyone together.
+app.set("trust proxy", 1);
+
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 app.use(cookieParser());

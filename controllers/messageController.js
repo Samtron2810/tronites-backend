@@ -73,45 +73,81 @@ export const sendMessage = async (req, res) => {
 export const getConversations = async (req, res) => {
   try {
     const currentUserId = req.user._id;
-    const messages = await Message.find({
-      $or: [{ sender: currentUserId }, { receiver: currentUserId }],
-    })
-      .sort({ createdAt: -1 })
-      .populate("sender", "_id name profilePic")
-      .populate("receiver", "_id name profilePic");
 
-    const conversationsMap = new Map();
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 20, 1),
+      50,
+    );
+    const skip = (page - 1) * limit;
 
-    messages.forEach((message) => {
-      if (!conversationsMap.has(message.conversationId)) {
-        const otherUser =
-          message.sender._id.toString() === currentUserId.toString()
-            ? message.receiver
-            : message.sender;
-
-        conversationsMap.set(message.conversationId, {
-          conversationId: message.conversationId,
-          otherUser,
-          lastMessage: message.text,
-          lastMessageAt: message.createdAt,
-          unreadCount:
-            message.receiver._id.toString() === currentUserId.toString() &&
-            !message.read
-              ? 1
-              : 0,
-        });
-      } else {
-        const conversation = conversationsMap.get(message.conversationId);
-        if (
-          message.receiver._id.toString() === currentUserId.toString() &&
-          !message.read
-        ) {
-          conversation.unreadCount += 1;
-        }
-      }
-    });
-
-    const conversations = Array.from(conversationsMap.values());
+    // Do the heavy lifting in Mongo instead of loading full message
+    // history into Node memory: group by conversation, keep only the
+    // latest message + unread count per conversation, then paginate.
+    const conversations = await Message.aggregate([
+      {
+        $match: {
+          $or: [{ sender: currentUserId }, { receiver: currentUserId }],
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$conversationId",
+          lastMessage: { $first: "$text" },
+          lastMessageAt: { $first: "$createdAt" },
+          otherUserId: {
+            $first: {
+              $cond: [
+                { $eq: ["$sender", currentUserId] },
+                "$receiver",
+                "$sender",
+              ],
+            },
+          },
+          unreadCount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$receiver", currentUserId] },
+                    { $eq: ["$read", false] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      { $sort: { lastMessageAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: "users",
+          localField: "otherUserId",
+          foreignField: "_id",
+          as: "otherUser",
+        },
+      },
+      { $unwind: "$otherUser" },
+      {
+        $project: {
+          _id: 0,
+          conversationId: "$_id",
+          lastMessage: 1,
+          lastMessageAt: 1,
+          unreadCount: 1,
+          otherUser: {
+            _id: "$otherUser._id",
+            name: "$otherUser.name",
+            profilePic: "$otherUser.profilePic",
+          },
+        },
+      },
+    ]);
 
     res.status(200).json(conversations);
   } catch (error) {
@@ -133,10 +169,26 @@ export const getMessages = async (req, res) => {
 
     const conversationId = getConversationId(currentUserId, otherUserId);
 
-    const messages = await Message.find({ conversationId })
-      .sort({ createdAt: 1 })
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 30, 1),
+      50,
+    );
+    const skip = (page - 1) * limit;
+
+    // Fetch newest-first so pagination (skip/limit) grabs the most recent
+    // page of the thread, then reverse to oldest-first for chat display.
+    // Avoids loading the entire message history for long-running chats.
+    const totalMessages = await Message.countDocuments({ conversationId });
+
+    const recentMessages = await Message.find({ conversationId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .populate("sender", "_id name profilePic")
       .populate("receiver", "_id name profilePic");
+
+    const messages = recentMessages.reverse();
 
     const unreadMessages = await Message.updateMany(
       {
@@ -157,7 +209,12 @@ export const getMessages = async (req, res) => {
       });
     }
 
-    res.status(200).json(messages);
+    res.status(200).json({
+      messages,
+      currentPage: page,
+      totalPages: Math.ceil(totalMessages / limit),
+      hasMore: skip + recentMessages.length < totalMessages,
+    });
   } catch (error) {
     console.error("GET MESSAGES ERROR:", error);
     res.status(500).json({ message: error.message });

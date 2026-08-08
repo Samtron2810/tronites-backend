@@ -1,15 +1,32 @@
 import Notification from "../models/Notification.js";
 
-// GET ALL NOTIFICATIONS FOR LOGGED IN USER
+// GET NOTIFICATIONS FOR LOGGED IN USER (paginated — was hard-capped at
+// 20 with no way to see older notifications)
 export const getNotifications = async (req, res) => {
   try {
-    const notifications = await Notification.find({ recipient: req.user._id })
-      .populate("sender", "name profilePic")
-      .populate("post", "text image")
-      .sort({ createdAt: -1 })
-      .limit(20);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 20, 1),
+      50,
+    );
+    const skip = (page - 1) * limit;
 
-    res.status(200).json(notifications);
+    const [notifications, totalNotifications] = await Promise.all([
+      Notification.find({ recipient: req.user._id })
+        .populate("sender", "name profilePic")
+        .populate("post", "text image")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Notification.countDocuments({ recipient: req.user._id }),
+    ]);
+
+    res.status(200).json({
+      notifications,
+      currentPage: page,
+      totalPages: Math.ceil(totalNotifications / limit),
+      hasMore: skip + notifications.length < totalNotifications,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

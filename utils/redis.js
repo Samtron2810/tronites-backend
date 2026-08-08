@@ -39,11 +39,27 @@ export const getOrSetCache = async (key, fetchFn, ttl = 180) => {
 };
 
 // Helper: delete cache keys matching a pattern
+// Uses SCAN (cursor-based, non-blocking) instead of KEYS, which blocks
+// the whole Redis event loop while it walks the entire keyspace — that
+// gets slower as the dataset grows and stalls every other client mid-scan.
 export const invalidateCache = async (pattern) => {
   try {
-    const keys = await redisClient.keys(pattern);
-    if (keys.length > 0) {
-      await redisClient.del(keys);
+    const keysToDelete = [];
+
+    for await (const key of redisClient.scanIterator({
+      MATCH: pattern,
+      COUNT: 100,
+    })) {
+      keysToDelete.push(key);
+      // Delete in small batches so we don't build one giant DEL command
+      // for patterns that match a huge number of keys.
+      if (keysToDelete.length >= 500) {
+        await redisClient.del(keysToDelete.splice(0, keysToDelete.length));
+      }
+    }
+
+    if (keysToDelete.length > 0) {
+      await redisClient.del(keysToDelete);
     }
   } catch {
     // Redis down — skip

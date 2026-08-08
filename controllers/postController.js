@@ -126,8 +126,14 @@ export const getFeedPosts = async (req, res) => {
           totalPages: Math.ceil(totalPosts / limit),
         };
       },
-      300,
-    ); // Cache for 5 minutes
+      // Short TTL by design: likes/comments update live via socket for
+      // anyone with a post open, but the feed list itself is cached, so
+      // like/comment counts shown here can lag by up to this TTL for
+      // users who are not actively viewing the post. A short window
+      // keeps that staleness low without invalidating every follower's
+      // cache on every like (which doesn't scale for popular posts).
+      30,
+    );
 
     res.status(200).json(result);
   } catch (error) {

@@ -1,7 +1,10 @@
 import { Server } from "socket.io";
 import http from "http";
 import express from "express";
+import jwt from "jsonwebtoken";
+import cookie from "cookie";
 import getAllowedOrigins from "../config/allowedOrigins.js";
+import User from "../models/User.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -29,16 +32,46 @@ const broadcastOnlineUsers = () => {
   io.emit("getOnlineUsers", getOnlineUsers());
 };
 
-io.on("connection", (socket) => {
-  const userId = socket.handshake.query.userId;
+// Authenticate every socket connection using the same JWT cookie
+// the REST API uses. Never trust a client-supplied userId.
+io.use(async (socket, next) => {
+  try {
+    const rawCookie = socket.handshake.headers.cookie;
 
-  if (userId && userId !== "undefined") {
-    if (!userSocketMap.has(userId)) {
-      userSocketMap.set(userId, new Set());
+    if (!rawCookie) {
+      return next(new Error("Not authorized, no token"));
     }
-    userSocketMap.get(userId).add(socket.id);
-    broadcastOnlineUsers();
+
+    const parsedCookies = cookie.parse(rawCookie);
+    const token = parsedCookies.token;
+
+    if (!token) {
+      return next(new Error("Not authorized, no token"));
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId).select("_id");
+
+    if (!user) {
+      return next(new Error("Not authorized, user no longer exists"));
+    }
+
+    // Trusted, server-derived identity — attached to the socket
+    socket.userId = user._id.toString();
+    next();
+  } catch (error) {
+    next(new Error("Not authorized, token failed"));
   }
+});
+
+io.on("connection", (socket) => {
+  const userId = socket.userId;
+
+  if (!userSocketMap.has(userId)) {
+    userSocketMap.set(userId, new Set());
+  }
+  userSocketMap.get(userId).add(socket.id);
+  broadcastOnlineUsers();
 
   // Join a post room for real-time like/comment updates
   socket.on("joinPost", (postId) => {
@@ -69,14 +102,12 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    if (userId && userId !== "undefined") {
-      const socketIds = userSocketMap.get(userId);
-      if (socketIds) {
-        socketIds.delete(socket.id);
-        if (socketIds.size === 0) {
-          userSocketMap.delete(userId);
-          broadcastOnlineUsers();
-        }
+    const socketIds = userSocketMap.get(userId);
+    if (socketIds) {
+      socketIds.delete(socket.id);
+      if (socketIds.size === 0) {
+        userSocketMap.delete(userId);
+        broadcastOnlineUsers();
       }
     }
   });
