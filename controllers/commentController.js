@@ -1,7 +1,7 @@
 import Comment from "../models/Comment.js";
 import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
-import { io, getReceiverSocketIds } from "../socket/socket.js";
+import { io, emitToUser } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 
 // ADD COMMENT
@@ -46,10 +46,7 @@ export const addComment = async (req, res) => {
           "sender",
           "name profilePic",
         );
-        const recipientSockets = getReceiverSocketIds(post.user);
-        recipientSockets.forEach((socketId) => {
-          io.to(socketId).emit("newNotification", populatedNotif);
-        });
+        emitToUser(post.user, "newNotification", populatedNotif);
       } catch (socketError) {
         console.error("Comment notification real-time error:", socketError);
       }

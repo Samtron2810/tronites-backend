@@ -3,8 +3,10 @@ import User from "../models/User.js";
 import Comment from "../models/Comment.js";
 import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
-import { io, getReceiverSocketIds } from "../socket/socket.js";
+import { io, emitToUser, emitToFollowersOf } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
+import { imageUploadQueue, imageUploadQueueEvents } from "../queues/imageUploadQueue.js";
+import { listFollowingIds } from "../services/followService.js";
 
 // CREATE POST
 export const createPost = async (req, res) => {
@@ -19,13 +21,17 @@ export const createPost = async (req, res) => {
 
     let imageUrl = "";
 
-    // console.log("REQ.FILE:", req.file);
-    // console.log("REQ.BODY:", req.body);
-
     if (req.file) {
       const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
-      // Upload with automatic optimization: resize to max 1600px, auto format & quality
-      const result = await cloudinary.uploader.upload(b64, {
+
+      // Enqueue the upload instead of calling cloudinary.uploader.upload()
+      // directly. Same end result (we still wait for the URL before
+      // responding — the client needs it), but the actual HTTP call to
+      // Cloudinary runs in the worker, not inline in this handler. Under
+      // a burst of simultaneous uploads, requests queue up for a worker
+      // slot instead of each one independently blocking on network I/O.
+      const job = await imageUploadQueue.add("post-image", {
+        base64Data: b64,
         folder: "tronites_posts",
         transformation: [
           {
@@ -37,7 +43,9 @@ export const createPost = async (req, res) => {
           },
         ],
       });
-      imageUrl = result.secure_url;
+
+      const result = await job.waitUntilFinished(imageUploadQueueEvents, 30000);
+      imageUrl = result.secureUrl;
     }
 
     const post = await Post.create({
@@ -53,17 +61,11 @@ export const createPost = async (req, res) => {
     // Send response FIRST before real-time socket emissions
     res.status(201).json(populatedPost);
 
-    // Real-time post feed update for followers (fire-and-forget — don't block response)
+    // Real-time post feed update for followers — single room emit instead
+    // of looping through every follower individually. Followers join this
+    // room automatically on socket connect (see socket/socket.js).
     try {
-      const author = await User.findById(req.user._id).select("followers");
-      if (author && author.followers) {
-        author.followers.forEach((followerId) => {
-          const followerSockets = getReceiverSocketIds(followerId);
-          followerSockets.forEach((socketId) => {
-            io.to(socketId).emit("newPost", populatedPost);
-          });
-        });
-      }
+      emitToFollowersOf(req.user._id, "newPost", populatedPost);
     } catch (socketError) {
       console.error("Real-time feed emission error:", socketError);
     }
@@ -88,10 +90,10 @@ export const getFeedPosts = async (req, res) => {
       cacheKey,
       async () => {
         // Current logged in user
-        const currentUser = await User.findById(req.user._id);
+        const followingIds = await listFollowingIds(req.user._id);
 
         // Users allowed in feed
-        const feedUsers = [...currentUser.following, currentUser._id];
+        const feedUsers = [...followingIds, req.user._id];
 
         // Fetch posts
         const posts = await Post.find({
@@ -201,10 +203,7 @@ export const likePost = async (req, res) => {
               "sender",
               "name profilePic",
             );
-            const recipientSockets = getReceiverSocketIds(post.user);
-            recipientSockets.forEach((socketId) => {
-              io.to(socketId).emit("newNotification", populatedNotif);
-            });
+            emitToUser(post.user, "newNotification", populatedNotif);
           } catch (socketError) {
             console.error("Like notification real-time error:", socketError);
           }

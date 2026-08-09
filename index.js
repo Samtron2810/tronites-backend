@@ -12,12 +12,15 @@ import commentRoutes from "./routes/commentRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
-import { app, server } from "./socket/socket.js";
+import { app, server, initSocketRedisAdapter } from "./socket/socket.js";
 import { apiLimiter } from "./middleware/rateLimiter.js";
+import { startImageUploadWorker } from "./queues/imageUploadWorker.js";
 
 dotenv.config();
 
 connectDB();
+initSocketRedisAdapter();
+startImageUploadWorker();
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit

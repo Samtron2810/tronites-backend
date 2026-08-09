@@ -1,7 +1,7 @@
 import Message from "../models/Message.js";
 import User from "../models/User.js";
 import cloudinary from "../utils/cloudinary.js";
-import { io, getReceiverSocketIds } from "../socket/socket.js";
+import { emitToUser } from "../socket/socket.js";
 
 const getConversationId = (userA, userB) => {
   const participants = [userA.toString(), userB.toString()].sort();
@@ -58,10 +58,7 @@ export const sendMessage = async (req, res) => {
       { path: "receiver", select: "_id name profilePic" },
     ]);
 
-    const recipientSockets = getReceiverSocketIds(receiverId);
-    recipientSockets.forEach((socketId) => {
-      io.to(socketId).emit("receiveMessage", populatedMessage);
-    });
+    emitToUser(receiverId, "receiveMessage", populatedMessage);
 
     res.status(201).json(populatedMessage);
   } catch (error) {
@@ -200,13 +197,8 @@ export const getMessages = async (req, res) => {
     );
 
     if (unreadMessages.modifiedCount > 0) {
-      const senderSockets = getReceiverSocketIds(otherUserId);
-      const currentUserSockets = getReceiverSocketIds(currentUserId);
-      const allSocketIds = new Set([...senderSockets, ...currentUserSockets]);
-
-      allSocketIds.forEach((socketId) => {
-        io.to(socketId).emit("messagesRead", { conversationId });
-      });
+      emitToUser(otherUserId, "messagesRead", { conversationId });
+      emitToUser(currentUserId, "messagesRead", { conversationId });
     }
 
     res.status(200).json({
@@ -239,10 +231,7 @@ export const deleteMessage = async (req, res) => {
 
     await Message.findByIdAndDelete(messageId);
 
-    const recipientSockets = getReceiverSocketIds(message.receiver);
-    recipientSockets.forEach((socketId) => {
-      io.to(socketId).emit("messageDeleted", { messageId });
-    });
+    emitToUser(message.receiver, "messageDeleted", { messageId });
 
     res.status(200).json({ message: "Message deleted." });
   } catch (error) {

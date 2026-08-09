@@ -1,15 +1,22 @@
 import User from "../models/User.js";
 import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
-import cloudinary from "../utils/cloudinary.js";
-import { io, getReceiverSocketIds } from "../socket/socket.js";
+import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
+import { imageUploadQueue, imageUploadQueueEvents } from "../queues/imageUploadQueue.js";
+import {
+  isFollowing,
+  listFollowers,
+  listFollowing,
+  listFollowingIds,
+  createFollowEdge,
+  removeFollowEdge,
+} from "../services/followService.js";
 
 export const followUser = async (req, res) => {
   try {
     const userToFollow = await User.findById(req.params.id);
-
-    const currentUser = await User.findById(req.user._id);
+    const currentUser = req.user;
 
     if (!userToFollow) {
       return res.status(404).json({
@@ -24,17 +31,15 @@ export const followUser = async (req, res) => {
       });
     }
 
-    const alreadyFollowing = currentUser.following.includes(userToFollow._id);
+    const alreadyFollowing = await isFollowing(currentUser._id, userToFollow._id);
 
     if (alreadyFollowing) {
       // UNFOLLOW
-      currentUser.following = currentUser.following.filter(
-        (id) => id.toString() !== userToFollow._id.toString(),
-      );
+      await removeFollowEdge(currentUser._id, userToFollow._id);
 
-      userToFollow.followers = userToFollow.followers.filter(
-        (id) => id.toString() !== currentUser._id.toString(),
-      );
+      // Leave the followers-of-X room immediately so this socket stops
+      // getting X's new-post events without needing a reconnect.
+      leaveFollowersRoom(currentUser._id.toString(), userToFollow._id);
 
       // Remove follow notification
       await Notification.deleteOne({
@@ -44,41 +49,39 @@ export const followUser = async (req, res) => {
       });
     } else {
       // FOLLOW
-      currentUser.following.push(userToFollow._id);
-      userToFollow.followers.push(currentUser._id);
+      const created = await createFollowEdge(currentUser._id, userToFollow._id);
 
-      const existingNotification = await Notification.findOne({
-        recipient: userToFollow._id,
-        sender: currentUser._id,
-        type: "follow",
-      });
+      if (created) {
+        // Join the followers-of-X room immediately so this socket starts
+        // getting X's new-post events without needing a reconnect.
+        joinFollowersRoom(currentUser._id.toString(), userToFollow._id);
 
-      if (!existingNotification) {
-        const newNotif = await Notification.create({
+        const existingNotification = await Notification.findOne({
           recipient: userToFollow._id,
           sender: currentUser._id,
           type: "follow",
         });
 
-        // Emit "newNotification" to followed user's connected socket IDs
-        try {
-          const populatedNotif = await newNotif.populate(
-            "sender",
-            "name profilePic",
-          );
-          const recipientSockets = getReceiverSocketIds(userToFollow._id);
-          recipientSockets.forEach((socketId) => {
-            io.to(socketId).emit("newNotification", populatedNotif);
+        if (!existingNotification) {
+          const newNotif = await Notification.create({
+            recipient: userToFollow._id,
+            sender: currentUser._id,
+            type: "follow",
           });
-        } catch (socketError) {
-          console.error("Follow notification real-time error:", socketError);
+
+          // Emit "newNotification" to followed user's connected socket IDs
+          try {
+            const populatedNotif = await newNotif.populate(
+              "sender",
+              "name profilePic",
+            );
+            emitToUser(userToFollow._id, "newNotification", populatedNotif);
+          } catch (socketError) {
+            console.error("Follow notification real-time error:", socketError);
+          }
         }
       }
     }
-
-    await currentUser.save();
-
-    await userToFollow.save();
 
     // Invalidate profile caches for both users
     invalidateCache(`profile:${req.user._id}:*`);
@@ -111,10 +114,7 @@ export const getUserProfile = async (req, res) => {
     const result = await getOrSetCache(
       cacheKey,
       async () => {
-        const user = await User.findById(req.params.id)
-          .select("-password")
-          .populate("followers", "_id")
-          .populate("following", "_id");
+        const user = await User.findById(req.params.id).select("-password");
 
         if (!user) {
           return null;
@@ -125,15 +125,23 @@ export const getUserProfile = async (req, res) => {
           user: user._id,
         }).sort({ createdAt: -1 });
 
-        // Check if current user follows profile
-        const isFollowing = user.followers.some(
-          (follower) => follower._id.toString() === req.user._id.toString(),
-        );
+        // Followers/following now come from the Follow collection instead
+        // of embedded arrays — fetched in parallel since they're
+        // independent queries.
+        const [followers, following, following_current] = await Promise.all([
+          listFollowers(user._id, "_id"),
+          listFollowing(user._id, "_id"),
+          isFollowing(req.user._id, user._id),
+        ]);
 
         return {
-          user,
+          user: {
+            ...user.toObject(),
+            followers,
+            following,
+          },
           posts,
-          isFollowing,
+          isFollowing: following_current,
         };
       },
       180,
@@ -162,36 +170,48 @@ export const searchUsers = async (req, res) => {
     const users = await getOrSetCache(
       cacheKey,
       async () => {
+        let matchedUsers;
+
         if (query.length === 0) {
           // Get the list of users the current user is already following
-          const currentUser = await User.findById(req.user._id).select(
-            "following",
-          );
-          const followingIds = currentUser.following.map((id) => id.toString());
+          const followingIds = await listFollowingIds(req.user._id);
 
           // Exclude both the current user and users they already follow
-          return await User.find({
+          matchedUsers = await User.find({
             _id: { $nin: [req.user._id, ...followingIds] },
           })
-            .select("name bio profilePic followers")
-            .limit(5);
-        }
-
-        if (query.length < 2) {
+            .select("name bio profilePic")
+            .limit(5)
+            .lean();
+        } else if (query.length < 2) {
           return [];
+        } else {
+          matchedUsers = await User.find({
+            name: {
+              $regex: query,
+              $options: "i",
+            },
+
+            // exclude current user
+            _id: { $ne: req.user._id },
+          })
+            .select("name bio profilePic")
+            .limit(10)
+            .lean();
         }
 
-        return await User.find({
-          name: {
-            $regex: query,
-            $options: "i",
-          },
-
-          // exclude current user
-          _id: { $ne: req.user._id },
-        })
-          .select("name bio profilePic followers")
-          .limit(10);
+        // Attach each result's follower id list — the frontend uses
+        // `user.followers.includes(currentUser._id)` to render follow
+        // state on the Explore grid.
+        return await Promise.all(
+          matchedUsers.map(async (u) => {
+            const followers = await listFollowers(u._id, "_id");
+            return {
+              ...u,
+              followers: followers.map((f) => f._id.toString()),
+            };
+          }),
+        );
       },
       180,
     );
@@ -217,14 +237,19 @@ export const updateProfilePicture = async (req, res) => {
       });
     }
 
-    const result = await cloudinary.uploader.upload(
-      `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
-      {
-        folder: "tronites_profiles",
-      },
-    );
+    const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
 
-    user.profilePic = result.secure_url;
+    // Same reasoning as post images: enqueue instead of calling
+    // Cloudinary directly, so this request doesn't block the event loop
+    // for the full upload duration.
+    const job = await imageUploadQueue.add("profile-image", {
+      base64Data: b64,
+      folder: "tronites_profiles",
+    });
+
+    const result = await job.waitUntilFinished(imageUploadQueueEvents, 30000);
+
+    user.profilePic = result.secureUrl;
 
     await user.save();
 
@@ -268,16 +293,12 @@ export const getFollowers = async (req, res) => {
     const followers = await getOrSetCache(
       cacheKey,
       async () => {
-        const user = await User.findById(req.params.id).populate(
-          "followers",
-          "name profilePic bio",
-        );
-
-        if (!user) {
+        const userExists = await User.exists({ _id: req.params.id });
+        if (!userExists) {
           return null;
         }
 
-        return user.followers;
+        return await listFollowers(req.params.id, "name profilePic bio");
       },
       180,
     );
@@ -304,16 +325,12 @@ export const getFollowing = async (req, res) => {
     const following = await getOrSetCache(
       cacheKey,
       async () => {
-        const user = await User.findById(req.params.id).populate(
-          "following",
-          "name profilePic bio",
-        );
-
-        if (!user) {
+        const userExists = await User.exists({ _id: req.params.id });
+        if (!userExists) {
           return null;
         }
 
-        return user.following;
+        return await listFollowing(req.params.id, "name profilePic bio");
       },
       180,
     );

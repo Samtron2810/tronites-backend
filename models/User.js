@@ -28,28 +28,12 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
-
-    followers: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-      },
-    ],
-
-    following: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-      },
-    ],
   },
   { timestamps: true },
 );
 
 // Indexes (email is already indexed via `unique: true` in the schema)
 userSchema.index({ name: 1 });
-userSchema.index({ followers: 1 });
-userSchema.index({ following: 1 });
 
 const User = mongoose.model("User", userSchema);
 
