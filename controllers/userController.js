@@ -3,7 +3,7 @@ import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
 import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
-import { imageUploadQueue, imageUploadQueueEvents } from "../queues/imageUploadQueue.js";
+import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import {
   isFollowing,
   listFollowers,
@@ -242,12 +242,18 @@ export const updateProfilePicture = async (req, res) => {
     // Same reasoning as post images: enqueue instead of calling
     // Cloudinary directly, so this request doesn't block the event loop
     // for the full upload duration.
-    const job = await imageUploadQueue.add("profile-image", {
-      base64Data: b64,
-      folder: "tronites_profiles",
-    });
-
-    const result = await job.waitUntilFinished(imageUploadQueueEvents, 30000);
+    let result;
+    try {
+      result = await uploadImageAndWait("profile-image", {
+        base64Data: b64,
+        folder: "tronites_profiles",
+      });
+    } catch (uploadError) {
+      return res.status(uploadError.httpStatus || 502).json({
+        message: uploadError.message,
+        code: uploadError.code || "UPLOAD_FAILED",
+      });
+    }
 
     user.profilePic = result.secureUrl;
 

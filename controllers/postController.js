@@ -5,7 +5,7 @@ import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
 import { io, emitToUser, emitToFollowersOf } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
-import { imageUploadQueue, imageUploadQueueEvents } from "../queues/imageUploadQueue.js";
+import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { listFollowingIds } from "../services/followService.js";
 
 // CREATE POST
@@ -30,22 +30,27 @@ export const createPost = async (req, res) => {
       // Cloudinary runs in the worker, not inline in this handler. Under
       // a burst of simultaneous uploads, requests queue up for a worker
       // slot instead of each one independently blocking on network I/O.
-      const job = await imageUploadQueue.add("post-image", {
-        base64Data: b64,
-        folder: "tronites_posts",
-        transformation: [
-          {
-            width: 1600,
-            height: 1600,
-            crop: "limit",
-            quality: "auto",
-            fetch_format: "auto",
-          },
-        ],
-      });
-
-      const result = await job.waitUntilFinished(imageUploadQueueEvents, 30000);
-      imageUrl = result.secureUrl;
+      try {
+        const result = await uploadImageAndWait("post-image", {
+          base64Data: b64,
+          folder: "tronites_posts",
+          transformation: [
+            {
+              width: 1600,
+              height: 1600,
+              crop: "limit",
+              quality: "auto",
+              fetch_format: "auto",
+            },
+          ],
+        });
+        imageUrl = result.secureUrl;
+      } catch (uploadError) {
+        return res.status(uploadError.httpStatus || 502).json({
+          message: uploadError.message,
+          code: uploadError.code || "UPLOAD_FAILED",
+        });
+      }
     }
 
     const post = await Post.create({

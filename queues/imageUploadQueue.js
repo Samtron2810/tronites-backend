@@ -50,3 +50,41 @@ imageUploadQueue.on("error", (err) => {
 imageUploadQueueEvents.on("error", (err) => {
   console.error("Image upload queue events error:", err.message);
 });
+
+// Shared upload-and-wait helper, used by both createPost and
+// updateProfilePicture. Enqueues the job, waits for it to finish, and
+// throws a clearly-tagged error the controller can turn into a specific
+// HTTP response instead of a generic 500.
+//
+// Two distinct failure shapes:
+//   - UPLOAD_LOST: the job disappeared before finishing — most likely
+//     Redis evicted it under memory pressure (see the eviction-policy
+//     warning logged on startup). Nothing to retry; the data is gone.
+//   - UPLOAD_FAILED: the job ran and failed for a real reason (bad
+//     image, Cloudinary error, etc) after BullMQ's 3 built-in retries.
+export const uploadImageAndWait = async (jobName, jobData, timeoutMs = 30000) => {
+  const job = await imageUploadQueue.add(jobName, jobData);
+
+  try {
+    const result = await job.waitUntilFinished(imageUploadQueueEvents, timeoutMs);
+    return result;
+  } catch (err) {
+    const stillExists = await imageUploadQueue.getJob(job.id);
+
+    if (!stillExists && !err.message?.includes("failed")) {
+      console.error(
+        `Image upload job ${job.id} vanished before completing — likely evicted from Redis under memory pressure.`,
+      );
+      const lostError = new Error("Image upload failed — please try again.");
+      lostError.code = "UPLOAD_LOST";
+      lostError.httpStatus = 503;
+      throw lostError;
+    }
+
+    console.error(`Image upload job ${job.id} failed:`, err.message);
+    const failedError = new Error("Image upload failed — please try again.");
+    failedError.code = "UPLOAD_FAILED";
+    failedError.httpStatus = 502;
+    throw failedError;
+  }
+};
