@@ -1,4 +1,6 @@
 import { Queue, QueueEvents } from "bullmq";
+import cloudinary from "../utils/cloudinary.js";
+import { isRedisReady } from "../utils/redis.js";
 
 // Dedicated Redis connection for BullMQ. Cannot reuse the app's normal
 // redisClient (from utils/redis.js) or the socket adapter's pub/sub
@@ -51,25 +53,80 @@ imageUploadQueueEvents.on("error", (err) => {
   console.error("Image upload queue events error:", err.message);
 });
 
+// Direct-to-Cloudinary path, used when Redis (and therefore BullMQ) is
+// unreachable. Same input/output shape as the queued path so callers
+// don't need to know which one ran. Slower under load (blocks the
+// request on the upload) but correct — the app should degrade, not break.
+const uploadImageDirect = async (jobData) => {
+  const { base64Data, folder, transformation } = jobData;
+  const result = await cloudinary.uploader.upload(base64Data, {
+    folder,
+    ...(transformation ? { transformation } : {}),
+  });
+  return { secureUrl: result.secure_url, publicId: result.public_id };
+};
+
 // Shared upload-and-wait helper, used by both createPost and
 // updateProfilePicture. Enqueues the job, waits for it to finish, and
 // throws a clearly-tagged error the controller can turn into a specific
 // HTTP response instead of a generic 500.
 //
-// Two distinct failure shapes:
+// Two distinct failure shapes from the queued path:
 //   - UPLOAD_LOST: the job disappeared before finishing — most likely
 //     Redis evicted it under memory pressure (see the eviction-policy
 //     warning logged on startup). Nothing to retry; the data is gone.
 //   - UPLOAD_FAILED: the job ran and failed for a real reason (bad
-//     image, Cloudinary error, etc) after BullMQ's 3 built-in retries.
-export const uploadImageAndWait = async (jobName, jobData, timeoutMs = 30000) => {
-  const job = await imageUploadQueue.add(jobName, jobData);
+//     image, Cloudinary error, etc) after BullMQ's 3 built-in retries,
+//     or Redis was unavailable so we fell back to a direct upload that
+//     also failed.
+export const uploadImageAndWait = async (
+  jobName,
+  jobData,
+  timeoutMs = 30000,
+) => {
+  // Redis down — BullMQ can't enqueue/track the job, so skip the queue
+  // entirely and upload directly instead of hanging or throwing.
+  if (!isRedisReady()) {
+    return uploadImageDirect(jobData).catch((err) => {
+      console.error("Direct image upload failed (no-Redis mode):", err.message);
+      const failedError = new Error("Image upload failed — please try again.");
+      failedError.code = "UPLOAD_FAILED";
+      failedError.httpStatus = 502;
+      throw failedError;
+    });
+  }
+
+  let job;
+  try {
+    job = await imageUploadQueue.add(jobName, jobData);
+  } catch (err) {
+    // Redis looked ready but the enqueue call itself failed (e.g. it
+    // dropped between the check above and this call) — fall back to a
+    // direct upload instead of failing the request.
+    console.warn(
+      "Queue enqueue failed, falling back to direct upload:",
+      err.message,
+    );
+    return uploadImageDirect(jobData).catch((directErr) => {
+      console.error(
+        "Direct image upload fallback also failed:",
+        directErr.message,
+      );
+      const failedError = new Error("Image upload failed — please try again.");
+      failedError.code = "UPLOAD_FAILED";
+      failedError.httpStatus = 502;
+      throw failedError;
+    });
+  }
 
   try {
-    const result = await job.waitUntilFinished(imageUploadQueueEvents, timeoutMs);
+    const result = await job.waitUntilFinished(
+      imageUploadQueueEvents,
+      timeoutMs,
+    );
     return result;
   } catch (err) {
-    const stillExists = await imageUploadQueue.getJob(job.id);
+    const stillExists = await imageUploadQueue.getJob(job.id).catch(() => null);
 
     if (!stillExists && !err.message?.includes("failed")) {
       console.error(

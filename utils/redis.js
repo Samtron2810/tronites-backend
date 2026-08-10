@@ -4,17 +4,47 @@ const redisClient = createClient({
   url: process.env.REDIS_URL || "redis://localhost:6379",
 });
 
-redisClient.on("error", (err) => console.error("Redis Client Error", err));
-redisClient.on("connect", () => console.log("Redis connected"));
+let redisReady = false;
 
-// Connect on init (non-blocking)
-(async () => {
+redisClient.on("connect", () => {
+  console.log("Redis connecting...");
+});
+
+redisClient.on("ready", () => {
+  redisReady = true;
+  console.log("Redis ready");
+});
+
+redisClient.on("error", (err) => {
+  redisReady = false;
+  console.error("Redis Client Error:", err.message);
+});
+
+redisClient.on("end", () => {
+  redisReady = false;
+  console.warn("Redis connection closed");
+});
+
+export const isRedisReady = () => {
+  return redisReady && redisClient.isReady;
+};
+
+export const connectRedis = async () => {
+  if (redisClient.isOpen) {
+    return;
+  }
+
   try {
     await redisClient.connect();
   } catch (err) {
-    console.warn("Redis connection failed — caching disabled:", err.message);
+    redisReady = false;
+
+    console.warn(
+      "Redis connection failed — continuing without Redis:",
+      err.message,
+    );
   }
-})();
+};
 
 // Helper: get or set cache
 export const getOrSetCache = async (key, fetchFn, ttl = 180) => {

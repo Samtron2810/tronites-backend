@@ -1,6 +1,6 @@
-import rateLimit from "express-rate-limit";
+import rateLimit, { MemoryStore } from "express-rate-limit";
 import { RedisStore } from "rate-limit-redis";
-import redisClient from "../utils/redis.js";
+import redisClient, { isRedisReady } from "../utils/redis.js";
 
 // express-rate-limit defaults to an in-memory store — each counts requests
 // only for the process it's running in. With one instance that's fine, but
@@ -9,19 +9,90 @@ import redisClient from "../utils/redis.js";
 // under the limit. A shared Redis store makes the count correct no matter
 // how many instances are running.
 //
-// Falls back to the default in-memory store if Redis is unavailable, so
-// rate limiting still works (per-instance) rather than crashing requests.
-const makeStore = (prefix) => {
-  try {
-    return new RedisStore({
+// FallbackStore routes every call to RedisStore when Redis is up, and to
+// a local MemoryStore when it's down. This is NOT the same as disabling
+// rate limiting during an outage — limiting keeps working, it just stops
+// being shared across instances until Redis comes back. (An earlier
+// version of this file used `passOnStoreError: true` to let requests
+// through on Redis errors, which meant a Redis outage removed rate
+// limiting entirely — that's the bug this class fixes.)
+class FallbackStore {
+  constructor(prefix) {
+    this.redisStore = new RedisStore({
       sendCommand: (...args) => redisClient.sendCommand(args),
       prefix,
     });
-  } catch (err) {
-    console.warn(`Redis rate-limit store unavailable for "${prefix}", falling back to in-memory:`, err.message);
-    return undefined;
+    this.memoryStore = new MemoryStore();
   }
-};
+
+  // express-rate-limit calls init() once per store with the resolved
+  // options (windowMs etc). Both stores need it — whichever one ends up
+  // handling a given request must already be initialized.
+  //
+  // RedisStore.init() is async and loads Lua scripts into Redis
+  // (loadIncrementScript/loadGetScript) as part of initializing — if
+  // Redis is unreachable this rejects. express-rate-limit does not await
+  // or catch init()'s return value, so an unhandled rejection here can
+  // crash the process at startup whenever Redis is down. Must explicitly
+  // await + catch it ourselves.
+  async init(options) {
+    try {
+      await this.redisStore.init?.(options);
+    } catch (err) {
+      console.warn(
+        `Rate limit Redis store init failed (Redis unreachable): ${err.message}`,
+      );
+    }
+    await this.memoryStore.init?.(options);
+  }
+
+  _active() {
+    return isRedisReady() ? this.redisStore : this.memoryStore;
+  }
+
+  async increment(key) {
+    try {
+      if (isRedisReady()) {
+        return await this.redisStore.increment(key);
+      }
+    } catch (err) {
+      console.warn(
+        `Rate limit Redis increment failed, falling back to memory: ${err.message}`,
+      );
+    }
+    // Falling back here means this window's count for `key` starts fresh
+    // in memory rather than continuing the Redis count — acceptable,
+    // since the alternative (no limiting at all) is worse.
+    return this.memoryStore.increment(key);
+  }
+
+  async decrement(key) {
+    // Best-effort on whichever store is currently active; a decrement
+    // that lands on the "wrong" store after a mid-window failover just
+    // means one store's count is slightly off, which self-corrects when
+    // that window expires.
+    try {
+      await this._active().decrement(key);
+    } catch (err) {
+      console.warn(`Rate limit decrement failed: ${err.message}`);
+    }
+  }
+
+  async resetKey(key) {
+    try {
+      await this.redisStore.resetKey(key);
+    } catch {
+      // ignore — Redis may be down
+    }
+    try {
+      await this.memoryStore.resetKey(key);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+const makeStore = (prefix) => new FallbackStore(prefix);
 
 // General API limiter — 100 requests per 15 minutes (only for write operations)
 // GET requests are skipped to allow unlimited navigation
