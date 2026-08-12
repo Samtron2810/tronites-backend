@@ -11,6 +11,8 @@ import {
   listFollowingIds,
   createFollowEdge,
   removeFollowEdge,
+  getFollowerCount,
+  getFollowingCount,
 } from "../services/followService.js";
 
 export const followUser = async (req, res) => {
@@ -88,10 +90,10 @@ export const followUser = async (req, res) => {
     invalidateCache(`profile:${userToFollow._id}:*`);
 
     // Invalidate followers/following caches for both users
-    invalidateCache(`followers:${req.user._id}`);
-    invalidateCache(`followers:${userToFollow._id}`);
-    invalidateCache(`following:${req.user._id}`);
-    invalidateCache(`following:${userToFollow._id}`);
+    invalidateCache(`followers:${req.user._id}:*`);
+    invalidateCache(`followers:${userToFollow._id}:*`);
+    invalidateCache(`following:${req.user._id}:*`);
+    invalidateCache(`following:${userToFollow._id}:*`);
 
     // Invalidate current user's search cache so results reflect new follow state
     invalidateCache(`searchUsers:${req.user._id}:*`);
@@ -109,21 +111,25 @@ export const followUser = async (req, res) => {
 //PROFILE FUNCTION
 export const getUserProfile = async (req, res) => {
   try {
-    const cacheKey = `profile:${req.params.id}:${req.user._id}`;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 12, 1),
+      50,
+    );
+    const skip = (page - 1) * limit;
 
-    const result = await getOrSetCache(
-      cacheKey,
+    // User + followers/following cached separately from posts, since posts
+    // now vary by page/limit and shouldn't blow up the cache key space.
+    const userCacheKey = `profile:${req.params.id}:${req.user._id}`;
+
+    const userResult = await getOrSetCache(
+      userCacheKey,
       async () => {
         const user = await User.findById(req.params.id).select("-password");
 
         if (!user) {
           return null;
         }
-
-        // User posts
-        const posts = await Post.find({
-          user: user._id,
-        }).sort({ createdAt: -1 });
 
         // Followers/following now come from the Follow collection instead
         // of embedded arrays — fetched in parallel since they're
@@ -140,20 +146,46 @@ export const getUserProfile = async (req, res) => {
             followers,
             following,
           },
-          posts,
           isFollowing: following_current,
         };
       },
       180,
     );
 
-    if (!result) {
+    if (!userResult) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
-    res.status(200).json(result);
+    const postsCacheKey = `profile-posts:${req.params.id}:${page}:${limit}`;
+
+    const postsResult = await getOrSetCache(
+      postsCacheKey,
+      async () => {
+        const [posts, totalPosts] = await Promise.all([
+          Post.find({ user: req.params.id })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit),
+          Post.countDocuments({ user: req.params.id }),
+        ]);
+
+        return {
+          posts,
+          totalPosts,
+          currentPage: page,
+          totalPages: Math.ceil(totalPosts / limit),
+          hasMore: skip + posts.length < totalPosts,
+        };
+      },
+      180,
+    );
+
+    res.status(200).json({
+      ...userResult,
+      ...postsResult,
+    });
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -165,45 +197,57 @@ export const getUserProfile = async (req, res) => {
 export const searchUsers = async (req, res) => {
   try {
     const query = String(req.query.q || "").trim();
-    const cacheKey = `searchUsers:${req.user._id}:${query}`;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 10, 1),
+      30,
+    );
+    const skip = (page - 1) * limit;
 
-    const users = await getOrSetCache(
+    const cacheKey = `searchUsers:${req.user._id}:${query}:${page}:${limit}`;
+
+    const result = await getOrSetCache(
       cacheKey,
       async () => {
         let matchedUsers;
+        let totalUsers;
 
         if (query.length === 0) {
           // Get the list of users the current user is already following
           const followingIds = await listFollowingIds(req.user._id);
+          const excludeIds = [req.user._id, ...followingIds];
 
-          // Exclude both the current user and users they already follow
-          matchedUsers = await User.find({
-            _id: { $nin: [req.user._id, ...followingIds] },
-          })
-            .select("name bio profilePic")
-            .limit(5)
-            .lean();
+          [matchedUsers, totalUsers] = await Promise.all([
+            User.find({ _id: { $nin: excludeIds } })
+              .select("name bio profilePic")
+              .skip(skip)
+              .limit(limit)
+              .lean(),
+            User.countDocuments({ _id: { $nin: excludeIds } }),
+          ]);
         } else if (query.length < 2) {
-          return [];
+          return { users: [], hasMore: false };
         } else {
-          matchedUsers = await User.find({
-            name: {
-              $regex: query,
-              $options: "i",
-            },
-
+          const filter = {
+            name: { $regex: query, $options: "i" },
             // exclude current user
             _id: { $ne: req.user._id },
-          })
-            .select("name bio profilePic")
-            .limit(10)
-            .lean();
+          };
+
+          [matchedUsers, totalUsers] = await Promise.all([
+            User.find(filter)
+              .select("name bio profilePic")
+              .skip(skip)
+              .limit(limit)
+              .lean(),
+            User.countDocuments(filter),
+          ]);
         }
 
         // Attach each result's follower id list — the frontend uses
         // `user.followers.includes(currentUser._id)` to render follow
         // state on the Explore grid.
-        return await Promise.all(
+        const users = await Promise.all(
           matchedUsers.map(async (u) => {
             const followers = await listFollowers(u._id, "_id");
             return {
@@ -212,11 +256,13 @@ export const searchUsers = async (req, res) => {
             };
           }),
         );
+
+        return { users, hasMore: skip + users.length < totalUsers };
       },
       180,
     );
 
-    res.status(200).json(users);
+    res.status(200).json(result);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -294,9 +340,16 @@ export const updateBio = async (req, res) => {
 //GET FOLLOWERS API
 export const getFollowers = async (req, res) => {
   try {
-    const cacheKey = `followers:${req.params.id}`;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 20, 1),
+      50,
+    );
+    const skip = (page - 1) * limit;
 
-    const followers = await getOrSetCache(
+    const cacheKey = `followers:${req.params.id}:${page}:${limit}`;
+
+    const result = await getOrSetCache(
       cacheKey,
       async () => {
         const userExists = await User.exists({ _id: req.params.id });
@@ -304,18 +357,26 @@ export const getFollowers = async (req, res) => {
           return null;
         }
 
-        return await listFollowers(req.params.id, "name profilePic bio");
+        const [followers, totalFollowers] = await Promise.all([
+          listFollowers(req.params.id, "name profilePic bio", { skip, limit }),
+          getFollowerCount(req.params.id),
+        ]);
+
+        return {
+          followers,
+          hasMore: skip + followers.length < totalFollowers,
+        };
       },
       180,
     );
 
-    if (followers === null) {
+    if (result === null) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
-    res.status(200).json(followers);
+    res.status(200).json(result);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -326,9 +387,16 @@ export const getFollowers = async (req, res) => {
 //GET FOLLOWING API
 export const getFollowing = async (req, res) => {
   try {
-    const cacheKey = `following:${req.params.id}`;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 20, 1),
+      50,
+    );
+    const skip = (page - 1) * limit;
 
-    const following = await getOrSetCache(
+    const cacheKey = `following:${req.params.id}:${page}:${limit}`;
+
+    const result = await getOrSetCache(
       cacheKey,
       async () => {
         const userExists = await User.exists({ _id: req.params.id });
@@ -336,18 +404,26 @@ export const getFollowing = async (req, res) => {
           return null;
         }
 
-        return await listFollowing(req.params.id, "name profilePic bio");
+        const [following, totalFollowing] = await Promise.all([
+          listFollowing(req.params.id, "name profilePic bio", { skip, limit }),
+          getFollowingCount(req.params.id),
+        ]);
+
+        return {
+          following,
+          hasMore: skip + following.length < totalFollowing,
+        };
       },
       180,
     );
 
-    if (following === null) {
+    if (result === null) {
       return res.status(404).json({
         message: "User not found",
       });
     }
 
-    res.status(200).json(following);
+    res.status(200).json(result);
   } catch (error) {
     res.status(500).json({
       message: error.message,

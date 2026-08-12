@@ -62,6 +62,7 @@ export const createPost = async (req, res) => {
 
     // Invalidate feed cache for author's followers
     invalidateCache(`feed:${req.user._id}:*`);
+    invalidateCache(`profile-posts:${req.user._id}:*`);
 
     // Send response FIRST before real-time socket emissions
     res.status(201).json(populatedPost);
@@ -274,6 +275,7 @@ export const deletePost = async (req, res) => {
 
     // Invalidate feed cache
     invalidateCache(`feed:${req.user._id}:*`);
+    invalidateCache(`profile-posts:${req.user._id}:*`);
 
     res.status(200).json({ message: "Post deleted" });
   } catch (error) {

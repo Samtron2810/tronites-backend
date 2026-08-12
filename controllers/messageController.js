@@ -81,7 +81,9 @@ export const getConversations = async (req, res) => {
     // Do the heavy lifting in Mongo instead of loading full message
     // history into Node memory: group by conversation, keep only the
     // latest message + unread count per conversation, then paginate.
-    const conversations = await Message.aggregate([
+    // $facet runs the paginated page and a total distinct-conversation
+    // count in the same aggregation pass, so hasMore is cheap to derive.
+    const [result] = await Message.aggregate([
       {
         $match: {
           $or: [{ sender: currentUserId }, { receiver: currentUserId }],
@@ -119,34 +121,50 @@ export const getConversations = async (req, res) => {
         },
       },
       { $sort: { lastMessageAt: -1 } },
-      { $skip: skip },
-      { $limit: limit },
       {
-        $lookup: {
-          from: "users",
-          localField: "otherUserId",
-          foreignField: "_id",
-          as: "otherUser",
-        },
-      },
-      { $unwind: "$otherUser" },
-      {
-        $project: {
-          _id: 0,
-          conversationId: "$_id",
-          lastMessage: 1,
-          lastMessageAt: 1,
-          unreadCount: 1,
-          otherUser: {
-            _id: "$otherUser._id",
-            name: "$otherUser.name",
-            profilePic: "$otherUser.profilePic",
-          },
+        $facet: {
+          paginatedResults: [
+            { $skip: skip },
+            { $limit: limit },
+            {
+              $lookup: {
+                from: "users",
+                localField: "otherUserId",
+                foreignField: "_id",
+                as: "otherUser",
+              },
+            },
+            { $unwind: "$otherUser" },
+            {
+              $project: {
+                _id: 0,
+                conversationId: "$_id",
+                lastMessage: 1,
+                lastMessageAt: 1,
+                unreadCount: 1,
+                otherUser: {
+                  _id: "$otherUser._id",
+                  name: "$otherUser.name",
+                  profilePic: "$otherUser.profilePic",
+                },
+              },
+            },
+          ],
+          totalCount: [{ $count: "count" }],
         },
       },
     ]);
 
-    res.status(200).json(conversations);
+    const conversations = result?.paginatedResults || [];
+    const totalConversations = result?.totalCount?.[0]?.count || 0;
+
+    res.status(200).json({
+      conversations,
+      currentPage: page,
+      totalPages: Math.ceil(totalConversations / limit),
+      totalConversations,
+      hasMore: skip + conversations.length < totalConversations,
+    });
   } catch (error) {
     console.error("GET CONVERSATIONS ERROR:", error);
     res.status(500).json({ message: error.message });

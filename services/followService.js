@@ -17,18 +17,26 @@ export const getFollowerCount = (userId) => Follow.countDocuments({ following: u
 export const getFollowingCount = (userId) => Follow.countDocuments({ follower: userId });
 
 // List of populated user docs who follow `userId` (used by getFollowers).
-export const listFollowers = async (userId, select = "name profilePic bio") => {
-  const edges = await Follow.find({ following: userId })
+// `skip`/`limit` are optional — omit both for the full unpaginated list
+// (used by Profile's follower/following preview arrays).
+export const listFollowers = async (userId, select = "name profilePic bio", { skip, limit } = {}) => {
+  let query = Follow.find({ following: userId })
     .populate("follower", select)
     .sort({ createdAt: -1 });
+  if (typeof skip === "number") query = query.skip(skip);
+  if (typeof limit === "number") query = query.limit(limit);
+  const edges = await query;
   return edges.map((e) => e.follower).filter(Boolean);
 };
 
 // List of populated user docs `userId` follows (used by getFollowing).
-export const listFollowing = async (userId, select = "name profilePic bio") => {
-  const edges = await Follow.find({ follower: userId })
+export const listFollowing = async (userId, select = "name profilePic bio", { skip, limit } = {}) => {
+  let query = Follow.find({ follower: userId })
     .populate("following", select)
     .sort({ createdAt: -1 });
+  if (typeof skip === "number") query = query.skip(skip);
+  if (typeof limit === "number") query = query.limit(limit);
+  const edges = await query;
   return edges.map((e) => e.following).filter(Boolean);
 };
 
