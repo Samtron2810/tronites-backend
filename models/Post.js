@@ -14,9 +14,21 @@ const postSchema = new mongoose.Schema(
       maxlength: 280,
     },
 
+    // Legacy single-image field — kept so old posts keep rendering.
+    // New posts use `images` below instead.
     image: {
       type: String,
       default: "",
+    },
+
+    // Carousel images (max 4). New posts write here; `image` stays empty.
+    images: {
+      type: [String],
+      default: [],
+      validate: {
+        validator: (arr) => arr.length <= 4,
+        message: "A post can have at most 4 images",
+      },
     },
 
     likes: [

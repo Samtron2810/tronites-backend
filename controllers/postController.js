@@ -12,39 +12,49 @@ import { listFollowingIds } from "../services/followService.js";
 export const createPost = async (req, res) => {
   try {
     const { text } = req.body;
+    // req.files: multiple-image path (upload.array). req.file: legacy
+    // single-image path, kept for any older client still posting that way.
+    const files = req.files?.length ? req.files : req.file ? [req.file] : [];
 
-    if (!text?.trim() && !req.file) {
+    if (!text?.trim() && files.length === 0) {
       return res.status(400).json({
         message: "Post must contain text or image",
       });
     }
 
-    let imageUrl = "";
+    if (files.length > 4) {
+      return res.status(400).json({ message: "Max 4 images per post" });
+    }
 
-    if (req.file) {
-      const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+    let imageUrls = [];
 
-      // Enqueue the upload instead of calling cloudinary.uploader.upload()
-      // directly. Same end result (we still wait for the URL before
-      // responding — the client needs it), but the actual HTTP call to
-      // Cloudinary runs in the worker, not inline in this handler. Under
-      // a burst of simultaneous uploads, requests queue up for a worker
-      // slot instead of each one independently blocking on network I/O.
+    if (files.length > 0) {
+      // Enqueue each upload instead of calling cloudinary.uploader.upload()
+      // directly. Same end result (we still wait for the URLs before
+      // responding — the client needs them), but the actual HTTP calls to
+      // Cloudinary run in the worker, not inline in this handler. Running
+      // them in parallel (not sequentially) keeps a 4-image post from
+      // taking 4x as long as a 1-image post.
       try {
-        const result = await uploadImageAndWait("post-image", {
-          base64Data: b64,
-          folder: "tronites_posts",
-          transformation: [
-            {
-              width: 1600,
-              height: 1600,
-              crop: "limit",
-              quality: "auto",
-              fetch_format: "auto",
-            },
-          ],
-        });
-        imageUrl = result.secureUrl;
+        const results = await Promise.all(
+          files.map((file) => {
+            const b64 = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
+            return uploadImageAndWait("post-image", {
+              base64Data: b64,
+              folder: "tronites_posts",
+              transformation: [
+                {
+                  width: 1600,
+                  height: 1600,
+                  crop: "limit",
+                  quality: "auto",
+                  fetch_format: "auto",
+                },
+              ],
+            });
+          }),
+        );
+        imageUrls = results.map((r) => r.secureUrl);
       } catch (uploadError) {
         return res.status(uploadError.httpStatus || 502).json({
           message: uploadError.message,
@@ -56,7 +66,7 @@ export const createPost = async (req, res) => {
     const post = await Post.create({
       user: req.user._id,
       text,
-      image: imageUrl,
+      images: imageUrls,
     });
     const populatedPost = await post.populate("user", "name profilePic");
 
@@ -258,15 +268,20 @@ export const deletePost = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    // Delete Cloudinary image safely
-    if (post.image) {
-      try {
-        const publicId = post.image.split("/").slice(-1)[0].split(".")[0];
-        await cloudinary.uploader.destroy(`tronites_posts/${publicId}`);
-      } catch (err) {
-        console.log("Cloudinary delete failed:", err.message);
-      }
-    }
+    // Delete Cloudinary image(s) safely — legacy single `image` plus any
+    // carousel `images`, deleted in parallel and independently so one
+    // failure doesn't block the others.
+    const urlsToDelete = [post.image, ...(post.images || [])].filter(Boolean);
+    await Promise.all(
+      urlsToDelete.map(async (url) => {
+        try {
+          const publicId = url.split("/").slice(-1)[0].split(".")[0];
+          await cloudinary.uploader.destroy(`tronites_posts/${publicId}`);
+        } catch (err) {
+          console.log("Cloudinary delete failed:", err.message);
+        }
+      }),
+    );
 
     // Delete related comments
     await Comment.deleteMany({ post: post._id });

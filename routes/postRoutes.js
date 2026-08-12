@@ -1,6 +1,6 @@
 import express from "express";
 import protect from "../middleware/authMiddleware.js";
-import upload from "../middleware/uploadMiddleware.js";
+import { uploadMultiple } from "../middleware/uploadMiddleware.js";
 import {
   createPost,
   getFeedPosts,
@@ -17,7 +17,7 @@ router.post(
   "/",
   protect,
   postLimiter,
-  upload.single("image"),
+  uploadMultiple.array("images", 4),
   validate(createPostSchema),
   createPost,
 );
