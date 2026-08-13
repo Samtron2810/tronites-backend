@@ -16,6 +16,9 @@ import {
   checkUsername,
   setUsername,
   resolveUsername,
+  blockUser,
+  unblockUser,
+  getBlockStatus,
 } from "../controllers/userController.js";
 
 const router = express.Router();
@@ -24,6 +27,9 @@ router.get("/check-username", protect, checkUsername);
 router.put("/username", protect, validate(setUsernameSchema), setUsername);
 router.get("/u/:username", protect, resolveUsername);
 router.put("/follow/:id", protect, followUser);
+router.get("/:id/block-status", protect, getBlockStatus);
+router.post("/:id/block", protect, blockUser);
+router.delete("/:id/block", protect, unblockUser);
 router.get("/profile/:id", protect, getUserProfile);
 router.get("/search", protect, searchUsers);
 router.put(

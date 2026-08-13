@@ -9,6 +9,8 @@ import {
   getMessages,
   sendMessage,
   deleteMessage,
+  getMessageRequests,
+  respondToRequest,
 } from "../controllers/messageController.js";
 
 const router = express.Router();
@@ -19,6 +21,8 @@ router.get(
   validateQuery(paginationSchema),
   getConversations,
 );
+router.get("/requests", protect, getMessageRequests);
+router.put("/requests/:userId", protect, respondToRequest);
 router.get(
   "/:userId",
   protect,

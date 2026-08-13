@@ -1,12 +1,13 @@
 import Message from "../models/Message.js";
 import User from "../models/User.js";
+import Conversation from "../models/Conversation.js";
 import cloudinary from "../utils/cloudinary.js";
 import { emitToUser } from "../socket/socket.js";
-
-const getConversationId = (userA, userB) => {
-  const participants = [userA.toString(), userB.toString()].sort();
-  return `${participants[0]}_${participants[1]}`;
-};
+import { isBlockedEitherWay } from "../services/blockService.js";
+import {
+  getConversationId,
+  evaluateSendPermission,
+} from "../services/conversationService.js";
 
 export const sendMessage = async (req, res) => {
   try {
@@ -27,6 +28,21 @@ export const sendMessage = async (req, res) => {
     const receiver = await User.findById(receiverId).select("name profilePic");
     if (!receiver) {
       return res.status(404).json({ message: "Recipient not found." });
+    }
+
+    if (await isBlockedEitherWay(senderId, receiverId)) {
+      return res.status(403).json({
+        message: "You can't message this user.",
+        code: "BLOCKED",
+      });
+    }
+
+    const permission = await evaluateSendPermission(senderId, receiverId);
+    if (!permission.allowed) {
+      return res.status(403).json({
+        message: permission.reason,
+        code: permission.code,
+      });
     }
 
     let imageUrl = null;
@@ -52,6 +68,33 @@ export const sendMessage = async (req, res) => {
       image: imageUrl,
       conversationId: getConversationId(senderId, receiverId),
     });
+
+    // Reflect the permission outcome in the Conversation record.
+    if (permission.isNewRequest) {
+      await Conversation.create({
+        conversationId: permission.conversationId,
+        participants: [senderId, receiverId],
+        status: "pending",
+        initiator: senderId,
+      });
+    } else if (permission.implicitAccept) {
+      await Conversation.updateOne(
+        { conversationId: permission.conversationId },
+        { $set: { status: "accepted" } },
+      );
+    } else if (permission.isMutual && !permission.conversation) {
+      // Mutual followers messaging for the first time — record it as
+      // accepted so it's unambiguous if they later unfollow each other.
+      await Conversation.create({
+        conversationId: permission.conversationId,
+        participants: [senderId, receiverId],
+        status: "accepted",
+        initiator: senderId,
+      }).catch((err) => {
+        // Race: another request created it first — fine, ignore.
+        if (err.code !== 11000) throw err;
+      });
+    }
 
     const populatedMessage = await message.populate([
       { path: "sender", select: "_id name profilePic" },
@@ -122,6 +165,46 @@ export const getConversations = async (req, res) => {
       },
       { $sort: { lastMessageAt: -1 } },
       {
+        $lookup: {
+          from: "conversations",
+          localField: "_id",
+          foreignField: "conversationId",
+          as: "conversationMeta",
+        },
+      },
+      {
+        $addFields: {
+          conversationMeta: { $arrayElemAt: ["$conversationMeta", 0] },
+        },
+      },
+      {
+        // Hide from the main list when it's a request the current user
+        // hasn't responded to yet (they see it in Requests instead), or
+        // one they declined. Everything else — no Conversation record
+        // (legacy/mutual-follow threads), accepted, or a pending request
+        // *they* sent — stays visible here.
+        $match: {
+          $expr: {
+            $not: {
+              $and: [
+                { $ne: ["$conversationMeta", null] },
+                {
+                  $or: [
+                    {
+                      $and: [
+                        { $eq: ["$conversationMeta.status", "pending"] },
+                        { $ne: ["$conversationMeta.initiator", currentUserId] },
+                      ],
+                    },
+                    { $eq: ["$conversationMeta.status", "declined"] },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
+      {
         $facet: {
           paginatedResults: [
             { $skip: skip },
@@ -142,6 +225,9 @@ export const getConversations = async (req, res) => {
                 lastMessage: 1,
                 lastMessageAt: 1,
                 unreadCount: 1,
+                requestStatus: {
+                  $ifNull: ["$conversationMeta.status", "accepted"],
+                },
                 otherUser: {
                   _id: "$otherUser._id",
                   name: "$otherUser.name",
@@ -219,11 +305,30 @@ export const getMessages = async (req, res) => {
       emitToUser(currentUserId, "messagesRead", { conversationId });
     }
 
+    // Tell the frontend whether this thread is a pending request (and
+    // from whose side), or blocked, so it can render the right input
+    // state (Accept/Decline vs normal composer vs "can't message").
+    const [conversation, blocked] = await Promise.all([
+      Conversation.findOne({ conversationId }),
+      isBlockedEitherWay(currentUserId, otherUserId),
+    ]);
+
+    let requestInfo = { status: "accepted", isInitiator: false };
+    if (blocked) {
+      requestInfo = { status: "blocked", isInitiator: false };
+    } else if (conversation) {
+      requestInfo = {
+        status: conversation.status,
+        isInitiator: conversation.initiator.toString() === currentUserId.toString(),
+      };
+    }
+
     res.status(200).json({
       messages,
       currentPage: page,
       totalPages: Math.ceil(totalMessages / limit),
       hasMore: skip + recentMessages.length < totalMessages,
+      requestInfo,
     });
   } catch (error) {
     console.error("GET MESSAGES ERROR:", error);
@@ -254,6 +359,87 @@ export const deleteMessage = async (req, res) => {
     res.status(200).json({ message: "Message deleted." });
   } catch (error) {
     console.error("DELETE MESSAGE ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET MESSAGE REQUESTS — pending conversations where the current user is
+// the receiver (i.e. they didn't initiate), each with its one message.
+export const getMessageRequests = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+
+    const pending = await Conversation.find({
+      participants: currentUserId,
+      status: "pending",
+      initiator: { $ne: currentUserId },
+    })
+      .populate("participants", "name username profilePic")
+      .sort({ createdAt: -1 });
+
+    const requests = await Promise.all(
+      pending.map(async (conv) => {
+        const otherUser = conv.participants.find(
+          (p) => p._id.toString() !== currentUserId.toString(),
+        );
+        const firstMessage = await Message.findOne({
+          conversationId: conv.conversationId,
+        }).sort({ createdAt: 1 });
+
+        return {
+          conversationId: conv.conversationId,
+          otherUser,
+          message: firstMessage,
+          createdAt: conv.createdAt,
+        };
+      }),
+    );
+
+    res.status(200).json({ requests });
+  } catch (error) {
+    console.error("GET MESSAGE REQUESTS ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// RESPOND TO A MESSAGE REQUEST — accept or decline
+export const respondToRequest = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const otherUserId = req.params.userId;
+    const { action } = req.body; // "accept" | "decline"
+
+    if (!["accept", "decline"].includes(action)) {
+      return res.status(400).json({ message: "Invalid action." });
+    }
+
+    const conversationId = getConversationId(currentUserId, otherUserId);
+    const conversation = await Conversation.findOne({ conversationId });
+
+    if (!conversation || conversation.status !== "pending") {
+      return res.status(404).json({ message: "No pending request found." });
+    }
+    if (conversation.initiator.toString() === currentUserId.toString()) {
+      return res
+        .status(403)
+        .json({ message: "You can't respond to your own request." });
+    }
+
+    conversation.status = action === "accept" ? "accepted" : "declined";
+    await conversation.save();
+
+    if (action === "accept") {
+      // Notify the original sender their request was accepted.
+      // Decline is intentionally silent — no notification either way.
+      emitToUser(otherUserId, "messageRequestAccepted", {
+        conversationId,
+        by: currentUserId,
+      });
+    }
+
+    res.status(200).json({ status: conversation.status });
+  } catch (error) {
+    console.error("RESPOND TO REQUEST ERROR:", error);
     res.status(500).json({ message: error.message });
   }
 };

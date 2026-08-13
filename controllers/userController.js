@@ -1,9 +1,12 @@
 import User from "../models/User.js";
 import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
+import Block from "../models/Block.js";
 import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
+import { hasBlocked } from "../services/blockService.js";
+import { autoPromoteIfMutual } from "../services/conversationService.js";
 import {
   isFollowing,
   listFollowers,
@@ -58,6 +61,52 @@ export const setUsername = async (req, res) => {
     if (error.code === 11000) {
       return res.status(409).json({ message: "Username is already taken" });
     }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// BLOCK STATUS — has the current user blocked this profile, or vice versa?
+export const getBlockStatus = async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    const [iBlockedThem, theyBlockedMe] = await Promise.all([
+      hasBlocked(req.user._id, targetId),
+      hasBlocked(targetId, req.user._id),
+    ]);
+    res.status(200).json({ iBlockedThem, theyBlockedMe });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// BLOCK a user — messaging-only restriction, doesn't touch follow edges
+// or profile visibility (both stay as-is per product decision).
+export const blockUser = async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    if (targetId === req.user._id.toString()) {
+      return res.status(400).json({ message: "You can't block yourself" });
+    }
+    const target = await User.findById(targetId).select("_id");
+    if (!target) return res.status(404).json({ message: "User not found" });
+
+    await Block.create({ blocker: req.user._id, blocked: targetId }).catch((err) => {
+      if (err.code !== 11000) throw err; // already blocked — no-op
+    });
+
+    res.status(200).json({ blocked: true });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// UNBLOCK a user
+export const unblockUser = async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    await Block.deleteOne({ blocker: req.user._id, blocked: targetId });
+    res.status(200).json({ blocked: false });
+  } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
@@ -128,6 +177,14 @@ export const followUser = async (req, res) => {
           } catch (socketError) {
             console.error("Follow notification real-time error:", socketError);
           }
+        }
+
+        // If this follow makes it mutual, any pending message request
+        // between them auto-promotes to an open conversation.
+        try {
+          await autoPromoteIfMutual(currentUser._id, userToFollow._id);
+        } catch (promoteError) {
+          console.error("Auto-promote conversation error:", promoteError.message);
         }
       }
     }
