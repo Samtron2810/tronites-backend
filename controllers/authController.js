@@ -127,9 +127,16 @@ export const resendOtp = async (req, res) => {
 // LOGIN
 export const loginUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { identifier, password } = req.body;
 
-    const user = await User.findOne({ email });
+    // Accept either an email or a username in the same field — a plain
+    // "@" check is enough since usernames are restricted to
+    // lowercase/digits/underscore and can never contain one.
+    const query = identifier.includes("@")
+      ? { email: identifier }
+      : { username: identifier.toLowerCase() };
+
+    const user = await User.findOne(query);
 
     if (!user) {
       return res.status(400).json({ message: "User not found" });
