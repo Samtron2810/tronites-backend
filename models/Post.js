@@ -10,8 +10,15 @@ const postSchema = new mongoose.Schema(
 
     text: {
       type: String,
-      required: true,
+      default: "",
       maxlength: 280,
+    },
+
+    // Parsed from `text` at creation time (lowercased, no # prefix).
+    // Indexed for hashtag search/browse.
+    hashtags: {
+      type: [String],
+      default: [],
     },
 
     // Legacy single-image field — kept so old posts keep rendering.
@@ -49,6 +56,7 @@ const postSchema = new mongoose.Schema(
 // Indexes
 postSchema.index({ user: 1, createdAt: -1 });
 postSchema.index({ likes: 1 });
+postSchema.index({ hashtags: 1, createdAt: -1 });
 
 const Post = mongoose.model("Post", postSchema);
 

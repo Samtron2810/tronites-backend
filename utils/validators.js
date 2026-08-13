@@ -44,6 +44,10 @@ export const createCommentSchema = z.object({
     .trim()
     .min(1, "Comment cannot be empty")
     .max(280, "Comment must be at most 280 characters"),
+  parentCommentId: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/i, "Invalid comment id")
+    .optional(),
 });
 
 // ─── Message ────────────────────────────────────────────────────────────────
@@ -53,6 +57,19 @@ export const sendMessageSchema = z.object({
 });
 
 // ─── User ───────────────────────────────────────────────────────────────────
+
+export const setUsernameSchema = z.object({
+  username: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .min(3, "Username must be at least 3 characters")
+    .max(20, "Username must be at most 20 characters")
+    .regex(
+      /^[a-z0-9_]+$/,
+      "Username can only contain lowercase letters, numbers, and underscores",
+    ),
+});
 
 export const updateBioSchema = z.object({
   bio: z

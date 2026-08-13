@@ -15,6 +15,53 @@ import {
   getFollowingCount,
 } from "../services/followService.js";
 
+// CHECK USERNAME AVAILABILITY (live check while typing)
+export const checkUsername = async (req, res) => {
+  try {
+    const raw = (req.query.username || "").trim().toLowerCase();
+
+    if (!raw) {
+      return res.status(400).json({ message: "Username is required" });
+    }
+    if (!/^[a-z0-9_]{3,20}$/.test(raw)) {
+      return res.status(200).json({
+        available: false,
+        reason: "3-20 chars: lowercase letters, numbers, underscores only",
+      });
+    }
+
+    const existing = await User.findOne({ username: raw }).select("_id");
+    res.status(200).json({ available: !existing });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// SET USERNAME (one-time onboarding step post-signup, or later change)
+export const setUsername = async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    const existing = await User.findOne({ username });
+    if (existing && existing._id.toString() !== req.user._id.toString()) {
+      return res.status(409).json({ message: "Username is already taken" });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { username },
+      { new: true, runValidators: true },
+    ).select("-password");
+
+    res.status(200).json({ user });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ message: "Username is already taken" });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const followUser = async (req, res) => {
   try {
     const userToFollow = await User.findById(req.params.id);
@@ -105,6 +152,18 @@ export const followUser = async (req, res) => {
     res.status(500).json({
       message: error.message,
     });
+  }
+};
+
+// RESOLVE USERNAME -> USER ID (for @mention links and /u/:username routes)
+export const resolveUsername = async (req, res) => {
+  try {
+    const username = (req.params.username || "").trim().toLowerCase();
+    const user = await User.findOne({ username }).select("_id username name profilePic");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.status(200).json({ user });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -219,7 +278,7 @@ export const searchUsers = async (req, res) => {
 
           [matchedUsers, totalUsers] = await Promise.all([
             User.find({ _id: { $nin: excludeIds } })
-              .select("name bio profilePic")
+              .select("name username bio profilePic")
               .skip(skip)
               .limit(limit)
               .lean(),
@@ -229,14 +288,17 @@ export const searchUsers = async (req, res) => {
           return { users: [], hasMore: false };
         } else {
           const filter = {
-            name: { $regex: query, $options: "i" },
+            $or: [
+              { name: { $regex: query, $options: "i" } },
+              { username: { $regex: query, $options: "i" } },
+            ],
             // exclude current user
             _id: { $ne: req.user._id },
           };
 
           [matchedUsers, totalUsers] = await Promise.all([
             User.find(filter)
-              .select("name bio profilePic")
+              .select("name username bio profilePic")
               .skip(skip)
               .limit(limit)
               .lean(),

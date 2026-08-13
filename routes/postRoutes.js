@@ -6,6 +6,7 @@ import {
   getFeedPosts,
   likePost,
   deletePost,
+  getPostsByHashtag,
 } from "../controllers/postController.js";
 import { validate, validateQuery } from "../utils/validators.js";
 import { createPostSchema, paginationSchema } from "../utils/validators.js";
@@ -25,6 +26,12 @@ router.post(
 router.put("/like/:id", protect, likePost);
 
 router.get("/feed", protect, validateQuery(paginationSchema), getFeedPosts);
+router.get(
+  "/hashtag/:tag",
+  protect,
+  validateQuery(paginationSchema),
+  getPostsByHashtag,
+);
 
 router.delete("/:id", protect, deletePost);
 

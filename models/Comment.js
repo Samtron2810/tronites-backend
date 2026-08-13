@@ -19,6 +19,20 @@ const commentSchema = new mongoose.Schema(
       required: true,
       maxlength: 280,
     },
+
+    // Null = top-level comment. Set = this is a reply to that comment.
+    // Enforced 1-level deep at the controller (replies can't have a
+    // parentComment that is itself a reply).
+    parentComment: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Comment",
+      default: null,
+    },
+
+    repliesCount: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );
@@ -26,6 +40,7 @@ const commentSchema = new mongoose.Schema(
 // Indexes
 commentSchema.index({ post: 1, createdAt: -1 });
 commentSchema.index({ user: 1 });
+commentSchema.index({ parentComment: 1, createdAt: 1 });
 
 const Comment = mongoose.model("Comment", commentSchema);
 

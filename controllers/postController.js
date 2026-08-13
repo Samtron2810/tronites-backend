@@ -7,6 +7,7 @@ import { io, emitToUser, emitToFollowersOf } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { listFollowingIds } from "../services/followService.js";
+import { extractHashtags, extractMentions } from "../utils/textParser.js";
 
 // CREATE POST
 export const createPost = async (req, res) => {
@@ -67,8 +68,40 @@ export const createPost = async (req, res) => {
       user: req.user._id,
       text,
       images: imageUrls,
+      hashtags: extractHashtags(text),
     });
     const populatedPost = await post.populate("user", "name profilePic");
+
+    // Notify mentioned users (skip self-mentions). Best-effort — a
+    // failure here shouldn't fail the post creation, which has already
+    // succeeded by this point.
+    try {
+      const mentionedUsernames = extractMentions(text);
+      if (mentionedUsernames.length) {
+        const mentionedUsers = await User.find({
+          username: { $in: mentionedUsernames },
+          _id: { $ne: req.user._id },
+        }).select("_id");
+
+        await Promise.all(
+          mentionedUsers.map(async (mentionedUser) => {
+            const newNotif = await Notification.create({
+              recipient: mentionedUser._id,
+              sender: req.user._id,
+              type: "mention",
+              post: post._id,
+            });
+            const populatedNotif = await newNotif.populate(
+              "sender",
+              "name username profilePic",
+            );
+            emitToUser(mentionedUser._id, "newNotification", populatedNotif);
+          }),
+        );
+      }
+    } catch (mentionError) {
+      console.error("Mention notification error:", mentionError.message);
+    }
 
     // Invalidate feed cache for author's followers
     invalidateCache(`feed:${req.user._id}:*`);
@@ -158,6 +191,51 @@ export const getFeedPosts = async (req, res) => {
     res.status(500).json({
       message: error.message,
     });
+  }
+};
+
+// GET POSTS BY HASHTAG
+export const getPostsByHashtag = async (req, res) => {
+  try {
+    const tag = (req.params.tag || "").trim().toLowerCase();
+    if (!tag) return res.status(400).json({ message: "Hashtag is required" });
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const cacheKey = `hashtag:${tag}:${page}:${limit}`;
+
+    const result = await getOrSetCache(
+      cacheKey,
+      async () => {
+        const posts = await Post.find({ hashtags: tag })
+          .populate("user", "name username profilePic")
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit);
+
+        const totalPosts = await Post.countDocuments({ hashtags: tag });
+
+        const formattedPosts = posts.map((post) => {
+          const isLiked = post.likes.some(
+            (id) => id.toString() === req.user._id.toString(),
+          );
+          return { ...post._doc, isLiked };
+        });
+
+        return {
+          posts: formattedPosts,
+          totalPosts,
+          hasMore: skip + formattedPosts.length < totalPosts,
+        };
+      },
+      30,
+    );
+
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
 

@@ -7,6 +7,22 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Nullable until the post-signup "choose your username" step
+    // completes — null means the account exists but onboarding isn't
+    // finished. sparse:true lets multiple docs have null without
+    // violating the unique index.
+    username: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      lowercase: true,
+      minlength: 3,
+      maxlength: 20,
+      match: /^[a-z0-9_]+$/,
+      default: null,
+    },
+
     email: {
       type: String,
       required: true,

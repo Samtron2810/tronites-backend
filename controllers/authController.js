@@ -79,7 +79,12 @@ export const verifyOtp = async (req, res) => {
     // Generate token cookie
     generateToken(res, user._id);
 
-    res.status(201).json({ _id: user._id, name: user.name, email: user.email });
+    res.status(201).json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      username: user.username,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -142,6 +147,7 @@ export const loginUser = async (req, res) => {
       _id: user._id,
       name: user.name,
       email: user.email,
+      username: user.username,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
