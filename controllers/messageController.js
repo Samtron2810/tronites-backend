@@ -231,6 +231,7 @@ export const getConversations = async (req, res) => {
                 otherUser: {
                   _id: "$otherUser._id",
                   name: "$otherUser.name",
+                  username: "$otherUser.username",
                   profilePic: "$otherUser.profilePic",
                 },
               },
