@@ -18,7 +18,10 @@ const io = new Server(server, {
     credentials: true,
     methods: ["GET", "POST"],
   },
-  transports: ["websocket"],
+  // Not forcing transports to ["websocket"] here: that removes Socket.IO's
+  // normal polling-first-then-upgrade handshake, which is more resilient
+  // to proxies/load balancers that don't cleanly support an immediate
+  // WebSocket upgrade. Left at the library default (polling + websocket).
 });
 
 // --- Redis adapter: makes Socket.IO horizontally scalable ---
