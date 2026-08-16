@@ -29,20 +29,50 @@ export const isRedisReady = () => {
   return redisReady && redisClient.isReady;
 };
 
+// How long to wait for the *initial* connect before giving up and letting
+// the server boot without Redis. The client's default reconnectStrategy
+// retries forever and never rejects on its own — verified empirically
+// that an unbounded `await redisClient.connect()` hangs indefinitely when
+// Redis is unreachable, which would stop the server from ever starting.
+// The connection keeps retrying in the background after this timeout, so
+// the 'ready' listener above still fires — and redisReady flips back to
+// true automatically, with no restart needed — the moment Redis is
+// actually reachable.
+const CONNECT_TIMEOUT_MS = Number(process.env.REDIS_CONNECT_TIMEOUT_MS) || 5000;
+
 export const connectRedis = async () => {
   if (redisClient.isOpen) {
     return;
   }
 
   try {
-    await redisClient.connect();
+    await Promise.race([
+      redisClient.connect(),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`timed out after ${CONNECT_TIMEOUT_MS}ms`)),
+          CONNECT_TIMEOUT_MS,
+        ),
+      ),
+    ]);
   } catch (err) {
     redisReady = false;
 
     console.warn(
-      "Redis connection failed — continuing without Redis:",
+      "Redis did not connect at startup — continuing without Redis (caching, shared rate limiting, and the image-upload queue will run in fallback mode). It will connect automatically once reachable:",
       err.message,
     );
+  }
+};
+
+// Graceful-shutdown counterpart to connectRedis(). Safe to call even if
+// Redis never connected.
+export const disconnectRedis = async () => {
+  if (!redisClient.isOpen) return;
+  try {
+    await redisClient.quit();
+  } catch (err) {
+    console.warn("Redis client did not quit cleanly:", err.message);
   }
 };
 
@@ -76,11 +106,16 @@ export const invalidateCache = async (pattern) => {
   try {
     const keysToDelete = [];
 
-    for await (const key of redisClient.scanIterator({
+    // redis@6's scanIterator yields one BATCH (array of keys) per
+    // iteration, not a single key at a time — confirmed against the
+    // client's own source (`yield reply.keys`). Spreading each batch is
+    // required; pushing the batch array itself would silently produce a
+    // nested array that del() can't match against real key names.
+    for await (const batch of redisClient.scanIterator({
       MATCH: pattern,
       COUNT: 100,
     })) {
-      keysToDelete.push(key);
+      keysToDelete.push(...batch);
       // Delete in small batches so we don't build one giant DEL command
       // for patterns that match a huge number of keys.
       if (keysToDelete.length >= 500) {

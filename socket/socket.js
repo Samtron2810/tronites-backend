@@ -8,7 +8,6 @@ import cookie from "cookie";
 import getAllowedOrigins from "../config/allowedOrigins.js";
 import User from "../models/User.js";
 import { listFollowingIds } from "../services/followService.js";
-import { isRedisReady } from "../utils/redis.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -37,39 +36,87 @@ const pubClient = createClient({
 });
 const subClient = pubClient.duplicate();
 
-pubClient.on("error", (err) => console.error("Redis (socket pub) error:", err));
-subClient.on("error", (err) => console.error("Redis (socket sub) error:", err));
-
 let redisAdapterReady = false;
+let adapterAttached = false;
+
+// Wires the Redis adapter onto the io server. Idempotent, so it's safe to
+// call both from a successful boot-time connect and from a later
+// background reconnect without attaching it twice.
+const attachAdapter = () => {
+  if (adapterAttached) return;
+  io.adapter(createAdapter(pubClient, subClient));
+  adapterAttached = true;
+};
+
+// Registered unconditionally — not just inside a successful boot connect —
+// so that if Redis is unreachable at startup, a *later* successful connect
+// (the client's own reconnect strategy keeps retrying in the background)
+// still upgrades this instance to the Redis adapter and rebuilds presence,
+// with no restart required.
+pubClient.on("error", (err) => {
+  console.error("Redis (socket pub) error:", err.message);
+  redisAdapterReady = false;
+});
+subClient.on("error", (err) => {
+  console.error("Redis (socket sub) error:", err.message);
+});
+pubClient.on("ready", () => {
+  redisAdapterReady = true;
+  attachAdapter();
+  // Redis was down (or this is the first connect) — either way,
+  // reconcile the shared presence hash with what this instance actually
+  // has connected, so an outage doesn't erase real users.
+  rebuildPresenceFromLocalState();
+});
+
+// How long to wait for the initial pub/sub connect before falling back to
+// single-instance, in-memory mode. Needed because the client's default
+// reconnectStrategy retries forever and never rejects on its own —
+// verified empirically that an unbounded await here hangs forever when
+// Redis is unreachable, which would stop the server from ever starting.
+// The connection keeps retrying in the background after this timeout, so
+// the 'ready' listener above still fires — and the adapter attaches
+// automatically — the moment Redis becomes reachable.
+const ADAPTER_CONNECT_TIMEOUT_MS =
+  Number(process.env.REDIS_CONNECT_TIMEOUT_MS) || 5000;
 
 export const initSocketRedisAdapter = async () => {
   try {
-    await Promise.all([pubClient.connect(), subClient.connect()]);
-    io.adapter(createAdapter(pubClient, subClient));
+    await Promise.race([
+      Promise.all([pubClient.connect(), subClient.connect()]),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`timed out after ${ADAPTER_CONNECT_TIMEOUT_MS}ms`)),
+          ADAPTER_CONNECT_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+    attachAdapter();
     redisAdapterReady = true;
     console.log(
       "Socket.IO Redis adapter connected — horizontal scaling enabled",
     );
-
-    // If Redis drops later (not just at boot), fall back to the local
-    // in-memory presence map instead of continuing to read a hash that's
-    // no longer reachable.
-    pubClient.on("error", () => {
-      redisAdapterReady = false;
-    });
-    pubClient.on("ready", () => {
-      redisAdapterReady = true;
-      // Redis was down (or this is the first connect) — either way,
-      // reconcile the shared presence hash with what this instance
-      // actually has connected, so an outage doesn't erase real users.
-      rebuildPresenceFromLocalState();
-    });
   } catch (err) {
     console.warn(
-      "Socket.IO Redis adapter failed to connect — running single-instance, in-memory presence mode:",
+      "Socket.IO Redis adapter did not connect at startup — running single-instance, in-memory presence mode for now. It will upgrade automatically once Redis is reachable:",
       err.message,
     );
   }
+};
+
+// Live status for the readiness health check.
+export const isSocketAdapterReady = () => redisAdapterReady;
+
+// Graceful-shutdown counterpart to initSocketRedisAdapter(). Also clears
+// the presence sweep interval below — left running, it fires forever on
+// its own 15s timer and, once the clients are closed, logs a "client is
+// closed" error on every tick instead of stopping cleanly.
+export const disconnectSocketRedis = async () => {
+  clearInterval(presenceSweepInterval);
+  await Promise.allSettled([
+    pubClient.isOpen ? pubClient.quit() : Promise.resolve(),
+    subClient.isOpen ? subClient.quit() : Promise.resolve(),
+  ]);
 };
 
 // --- Online-user presence ---
@@ -148,12 +195,16 @@ export const leaveFollowersRoom = (socketOrUserId, followingId) => {
   }
 };
 
-// Reads global presence from Redis (all instances) when available,
-// falls back to this instance's local map if Redis is down. Checks
-// isRedisReady() too (not just redisAdapterReady) so a Redis outage that
-// happens after a successful boot connect still degrades correctly.
+// Reads global presence from Redis (all instances) when available, falls
+// back to this instance's local map if Redis is down. Gated on
+// redisAdapterReady alone — that flag already tracks pubClient's own
+// connection state via its 'ready'/'error' listeners above, so it's the
+// correct signal here. It used to also require the separate, unrelated
+// caching redisClient (utils/redis.js) to be ready, which meant a hiccup
+// on that entirely different connection could make presence fall back to
+// local-only even while pubClient itself was perfectly healthy.
 const getOnlineUsers = async () => {
-  if (redisAdapterReady && isRedisReady()) {
+  if (redisAdapterReady) {
     try {
       const ids = await pubClient.hKeys(PRESENCE_KEY);
       return ids;
@@ -244,7 +295,7 @@ const DECREMENT_SCRIPT = `
 `;
 
 const incrementPresence = async (userId) => {
-  if (!redisAdapterReady || !isRedisReady()) return;
+  if (!redisAdapterReady) return;
   try {
     await pubClient.eval(INCREMENT_SCRIPT, {
       keys: [PRESENCE_KEY, PRESENCE_HEARTBEAT_KEY],
@@ -256,7 +307,7 @@ const incrementPresence = async (userId) => {
 };
 
 const decrementPresence = async (userId) => {
-  if (!redisAdapterReady || !isRedisReady()) return;
+  if (!redisAdapterReady) return;
   try {
     await pubClient.eval(DECREMENT_SCRIPT, {
       keys: [PRESENCE_KEY, PRESENCE_HEARTBEAT_KEY],
@@ -272,7 +323,7 @@ const decrementPresence = async (userId) => {
 // sweep below can tell "still connected, server just hasn't heard a
 // disconnect yet" apart from "actually dead".
 const touchPresenceHeartbeat = async (userId) => {
-  if (!redisAdapterReady || !isRedisReady()) return;
+  if (!redisAdapterReady) return;
   try {
     await pubClient.zAdd(PRESENCE_HEARTBEAT_KEY, {
       score: Date.now(),
@@ -290,7 +341,7 @@ const touchPresenceHeartbeat = async (userId) => {
 // PRESENCE_TTL_FALLBACK_MS used to be declared for this purpose and never
 // wired up — this is that wiring.
 const sweepStalePresence = async () => {
-  if (!redisAdapterReady || !isRedisReady()) return;
+  if (!redisAdapterReady) return;
   try {
     const cutoff = Date.now() - PRESENCE_STALE_MS;
     const staleUserIds = await pubClient.zRangeByScore(
@@ -313,7 +364,7 @@ const sweepStalePresence = async () => {
   }
 };
 
-setInterval(sweepStalePresence, PRESENCE_SWEEP_INTERVAL_MS);
+const presenceSweepInterval = setInterval(sweepStalePresence, PRESENCE_SWEEP_INTERVAL_MS);
 
 // When Redis goes down, increment/decrement calls above no-op (no writes),
 // so PRESENCE_KEY is missing all activity from the outage. When Redis
