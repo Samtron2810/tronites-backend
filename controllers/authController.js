@@ -4,6 +4,7 @@ import Otp from "../models/Otp.js";
 import generateToken from "../utils/generateToken.js";
 import { sendEmail } from "../utils/brevoEmail.js";
 import { otpEmailTemplate } from "../utils/emailTemplate.js";
+import { toPrivateSelfDTO } from "../dtos/userDTO.js";
 
 // REGISTER
 // SEND OTP (used for registration)
@@ -173,5 +174,5 @@ export const logoutUser = (req, res) => {
 
 //get current user
 export const getMe = async (req, res) => {
-  res.status(200).json(req.user);
+  res.status(200).json(toPrivateSelfDTO(req.user));
 };

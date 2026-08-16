@@ -7,6 +7,7 @@ import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { hasBlocked } from "../services/blockService.js";
 import { autoPromoteIfMutual } from "../services/conversationService.js";
+import { toPublicUserDTO, toPrivateSelfDTO } from "../dtos/userDTO.js";
 import {
   isFollowing,
   listFollowers,
@@ -54,9 +55,9 @@ export const setUsername = async (req, res) => {
       req.user._id,
       { username },
       { new: true, runValidators: true },
-    ).select("-password");
+    ).select("name username bio profilePic email");
 
-    res.status(200).json({ user });
+    res.status(200).json({ user: toPrivateSelfDTO(user) });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(409).json({ message: "Username is already taken" });
@@ -236,12 +237,25 @@ export const getUserProfile = async (req, res) => {
 
     // User + followers/following cached separately from posts, since posts
     // now vary by page/limit and shouldn't blow up the cache key space.
+    // Cache key already varies per (target id, viewer id), so it's also
+    // safe to vary which fields get fetched/returned per viewer below —
+    // a self-view and someone-else's-view of the same target can never
+    // collide on this key.
     const userCacheKey = `profile:${req.params.id}:${req.user._id}`;
+    const isSelf = req.params.id === req.user._id.toString();
 
     const userResult = await getOrSetCache(
       userCacheKey,
       async () => {
-        const user = await User.findById(req.params.id).select("-password");
+        // Only fetch email from Mongo at all when this is a self-view —
+        // defense in depth on top of the DTO below: if a future code
+        // change accidentally serialized the raw doc instead of going
+        // through the DTO, a public-view query that never fetched email
+        // in the first place still can't leak it.
+        const selectFields = isSelf
+          ? "name username bio profilePic email"
+          : "name username bio profilePic";
+        const user = await User.findById(req.params.id).select(selectFields);
 
         if (!user) {
           return null;
@@ -258,7 +272,7 @@ export const getUserProfile = async (req, res) => {
 
         return {
           user: {
-            ...user.toObject(),
+            ...(isSelf ? toPrivateSelfDTO(user) : toPublicUserDTO(user)),
             followers,
             following,
           },
@@ -445,7 +459,7 @@ export const updateBio = async (req, res) => {
       req.user._id,
       { bio },
       { new: true },
-    ).select("-password");
+    ).select("bio");
 
     // Invalidate profile cache
     invalidateCache(`profile:${req.user._id}:*`);
