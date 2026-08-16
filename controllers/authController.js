@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import Otp from "../models/Otp.js";
-import generateToken from "../utils/generateToken.js";
+import generateToken, { clearAuthCookie } from "../utils/generateToken.js";
 import { sendEmail } from "../utils/brevoEmail.js";
 import { otpEmailTemplate } from "../utils/emailTemplate.js";
 import { toPrivateSelfDTO } from "../dtos/userDTO.js";
@@ -164,10 +164,7 @@ export const loginUser = async (req, res) => {
 
 //logout controller
 export const logoutUser = (req, res) => {
-  res.cookie("token", "", {
-    httpOnly: true,
-    expires: new Date(0),
-  });
+  clearAuthCookie(res);
 
   res.status(200).json({ message: "Logged out" });
 };

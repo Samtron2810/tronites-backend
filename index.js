@@ -23,6 +23,7 @@ import {
   disconnectSocketRedis,
 } from "./socket/socket.js";
 import { apiLimiter } from "./middleware/rateLimiter.js";
+import csrfProtection from "./middleware/csrfProtection.js";
 import { startImageUploadWorker } from "./queues/imageUploadWorker.js";
 import {
   imageUploadQueue,
@@ -45,6 +46,13 @@ app.use(
     credentials: true,
   }),
 );
+
+// CSRF defense: cookie auth requires SameSite=None across our two origins
+// (Vercel frontend, Render backend), which by itself carries no CSRF
+// protection, and CORS doesn't cover the gap either — see
+// middleware/csrfProtection.js for why. Placed before the rate limiter so
+// a rejected cross-site request doesn't spend a rate-limit slot.
+app.use("/api", csrfProtection);
 
 // Global rate limiter
 app.use("/api", apiLimiter);
