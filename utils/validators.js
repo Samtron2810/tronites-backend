@@ -8,10 +8,10 @@ export const registerSchema = z.object({
     .trim()
     .min(2, "Name must be at least 2 characters")
     .max(50, "Name must be at most 50 characters"),
-  email: z.string().trim().email("Invalid email address"),
+  email: z.string().trim().toLowerCase().email("Invalid email address"),
   password: z
     .string()
-    .min(6, "Password must be at least 6 characters")
+    .min(10, "Password must be at least 10 characters")
     .max(128, "Password too long"),
 });
 
@@ -24,8 +24,12 @@ export const loginSchema = z.object({
 });
 
 export const validateOtpSchema = z.object({
-  email: z.string().trim().email("Invalid email address"),
+  challengeId: z.string().trim().min(1, "Missing challenge ID"),
   otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits"),
+});
+
+export const resendOtpSchema = z.object({
+  challengeId: z.string().trim().min(1, "Missing challenge ID"),
 });
 
 // ─── Post ───────────────────────────────────────────────────────────────────

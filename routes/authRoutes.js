@@ -14,6 +14,7 @@ import {
   registerSchema,
   loginSchema,
   validateOtpSchema,
+  resendOtpSchema,
 } from "../utils/validators.js";
 import { authLimiter } from "../middleware/rateLimiter.js";
 
@@ -23,7 +24,7 @@ const router = express.Router();
 router.post("/register", authLimiter, validate(registerSchema), sendOtp);
 router.post("/send-otp", authLimiter, validate(registerSchema), sendOtp);
 router.post("/verify-otp", authLimiter, validate(validateOtpSchema), verifyOtp);
-router.post("/resend-otp", authLimiter, resendOtp);
+router.post("/resend-otp", authLimiter, validate(resendOtpSchema), resendOtp);
 
 router.post("/login", authLimiter, validate(loginSchema), loginUser);
 router.post("/logout", logoutUser);

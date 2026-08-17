@@ -1,16 +1,14 @@
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
-import Otp from "../models/Otp.js";
 import generateToken, { clearAuthCookie } from "../utils/generateToken.js";
-import { sendEmail } from "../utils/brevoEmail.js";
-import { otpEmailTemplate } from "../utils/emailTemplate.js";
 import { toPrivateSelfDTO } from "../dtos/userDTO.js";
+import { startChallenge, resendChallenge, verifyChallenge } from "../services/otpService.js";
 
 // REGISTER
 // SEND OTP (used for registration)
 export const sendOtp = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password } = req.body; // already trimmed+lowercased by registerSchema
 
     const userExists = await User.findOne({ email });
 
@@ -18,64 +16,37 @@ export const sendOtp = async (req, res) => {
       return res.status(400).json({ message: "Email is already been used" });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const passwordHash = await bcrypt.hash(password, 10);
 
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+    const { challengeId } = await startChallenge({
+      email,
+      payload: { name, passwordHash },
+      subject: "Your Tronites OTP",
+    });
 
-    await Otp.findOneAndUpdate(
-      { email },
-      { otp, payload: { name, passwordHash }, expiresAt },
-      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
-    );
-
-    // Send OTP email
-    const subject = "Your Tronites OTP";
-    const htmlContent = otpEmailTemplate(otp);
-
-    try {
-      await sendEmail({ to: email, subject, htmlContent });
-    } catch (emailErr) {
-      console.error("Brevo send error:", emailErr.message);
-      return res.status(502).json({ message: emailErr.message });
-    }
-
-    return res.status(200).json({ message: "OTP sent to your email" });
+    return res
+      .status(200)
+      .json({ message: "OTP sent to your email", challengeId, email });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
 
 // VERIFY OTP and create user
 export const verifyOtp = async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { challengeId, otp } = req.body;
 
-    const otpDoc = await Otp.findOne({ email });
-
-    if (!otpDoc) {
-      return res.status(400).json({ message: "OTP not found or expired" });
-    }
-
-    if (otpDoc.expiresAt < new Date()) {
-      return res.status(400).json({ message: "OTP expired" });
-    }
-
-    if (otpDoc.otp !== otp) {
-      return res.status(400).json({ message: "Invalid OTP" });
-    }
+    const { email, payload } = await verifyChallenge({ challengeId, otp });
 
     // Create user from payload
-    const { name, passwordHash } = otpDoc.payload || {};
+    const { name, passwordHash } = payload || {};
 
     if (!name || !passwordHash) {
       return res.status(400).json({ message: "Invalid OTP payload" });
     }
 
     const user = await User.create({ name, email, password: passwordHash });
-
-    // remove otp record
-    await Otp.deleteOne({ _id: otpDoc._id });
 
     // Generate token cookie
     generateToken(res, user._id);
@@ -87,43 +58,35 @@ export const verifyOtp = async (req, res) => {
       username: user.username,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
 
 // RESEND OTP
 export const resendOtp = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { challengeId } = req.body;
 
-    const existing = await Otp.findOne({ email });
-
-    if (!existing) {
-      return res.status(400).json({ message: "No pending OTP for this email" });
-    }
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-    existing.otp = otp;
-    existing.expiresAt = expiresAt;
-    await existing.save();
-
-    const subject = "Your Tronites OTP (Resend)";
-    const htmlContent = otpEmailTemplate(otp);
-
-    try {
-      await sendEmail({ to: email, subject, htmlContent });
-    } catch (emailErr) {
-      console.error("Brevo resend error:", emailErr.message);
-      return res.status(502).json({ message: emailErr.message });
-    }
+    await resendChallenge({
+      challengeId,
+      subject: "Your Tronites OTP (Resend)",
+    });
 
     res.status(200).json({ message: "OTP resent" });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
+
+// Precomputed once at startup, reused for every login attempt against an
+// unknown account. Keeps "no such user" and "wrong password" taking
+// about the same time — a generic error message alone doesn't stop
+// enumeration if one path is consistently faster than the other, since
+// bcrypt.compare's cost is what dominates response time here.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync(
+  "dummy-password-for-timing-safety",
+  10,
+);
 
 // LOGIN
 export const loginUser = async (req, res) => {
@@ -134,19 +97,20 @@ export const loginUser = async (req, res) => {
     // "@" check is enough since usernames are restricted to
     // lowercase/digits/underscore and can never contain one.
     const query = identifier.includes("@")
-      ? { email: identifier }
+      ? { email: identifier.trim().toLowerCase() }
       : { username: identifier.toLowerCase() };
 
     const user = await User.findOne(query);
 
-    if (!user) {
-      return res.status(400).json({ message: "User not found" });
-    }
+    const isMatch = await bcrypt.compare(
+      password,
+      user ? user.password : DUMMY_PASSWORD_HASH,
+    );
 
-    const isMatch = await bcrypt.compare(password, user.password);
-
-    if (!isMatch) {
-      return res.status(400).json({ message: "Invalid credentials" });
+    if (!user || !isMatch) {
+      return res
+        .status(400)
+        .json({ message: "Invalid email/username or password" });
     }
 
     generateToken(res, user._id);

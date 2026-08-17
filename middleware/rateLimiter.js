@@ -71,7 +71,9 @@ class FallbackStore {
   }
 
   _active() {
-    return isRedisReady() && this.redisStore ? this.redisStore : this.memoryStore;
+    return isRedisReady() && this.redisStore
+      ? this.redisStore
+      : this.memoryStore;
   }
 
   async increment(key) {
@@ -149,7 +151,7 @@ export const authLimiter = rateLimit({
 // Post creation limiter — 30 posts per hour
 export const postLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 30,
+  max: 10,
   message: {
     message: "Too many posts created, please slow down.",
   },
