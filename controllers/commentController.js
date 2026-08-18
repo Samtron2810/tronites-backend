@@ -5,6 +5,8 @@ import User from "../models/User.js";
 import { io, emitToUser } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { extractMentions } from "../utils/textParser.js";
+import { isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockService.js";
+import { hasMuted } from "../services/muteService.js";
 
 // ADD COMMENT (top-level, or a reply if parentCommentId is given)
 export const addComment = async (req, res) => {
@@ -17,6 +19,13 @@ export const addComment = async (req, res) => {
       return res.status(404).json({
         message: "Post not found",
       });
+    }
+
+    if (
+      post.user.toString() !== req.user._id.toString() &&
+      (await isBlockedEitherWay(req.user._id, post.user))
+    ) {
+      return res.status(403).json({ message: "You can't comment on this post." });
     }
 
     let parentComment = null;
@@ -60,7 +69,10 @@ export const addComment = async (req, res) => {
     // owner once via the "comment" path, skipped here since parentComment
     // exists).
     if (parentComment) {
-      if (parentComment.user.toString() !== req.user._id.toString()) {
+      if (
+        parentComment.user.toString() !== req.user._id.toString() &&
+        !(await hasMuted(parentComment.user, req.user._id))
+      ) {
         try {
           const newNotif = await Notification.create({
             recipient: parentComment.user,
@@ -78,7 +90,10 @@ export const addComment = async (req, res) => {
           console.error("Reply notification real-time error:", socketError);
         }
       }
-    } else if (post.user.toString() !== req.user._id.toString()) {
+    } else if (
+      post.user.toString() !== req.user._id.toString() &&
+      !(await hasMuted(post.user, req.user._id))
+    ) {
       try {
         const newNotif = await Notification.create({
           recipient: post.user,
@@ -111,21 +126,27 @@ export const addComment = async (req, res) => {
           _id: { $nin: [...alreadyNotified] },
         }).select("_id");
 
+        const blockedIds = await getBlockedEitherWayIds(req.user._id);
+
         await Promise.all(
-          mentionedUsers.map(async (mentionedUser) => {
-            const newNotif = await Notification.create({
-              recipient: mentionedUser._id,
-              sender: req.user._id,
-              type: "mention",
-              post: post._id,
-              comment: comment._id,
-            });
-            const populatedNotif = await newNotif.populate(
-              "sender",
-              "name username profilePic",
-            );
-            emitToUser(mentionedUser._id, "newNotification", populatedNotif);
-          }),
+          mentionedUsers
+            .filter((mentionedUser) => !blockedIds.has(mentionedUser._id.toString()))
+            .map(async (mentionedUser) => {
+              if (await hasMuted(mentionedUser._id, req.user._id)) return;
+
+              const newNotif = await Notification.create({
+                recipient: mentionedUser._id,
+                sender: req.user._id,
+                type: "mention",
+                post: post._id,
+                comment: comment._id,
+              });
+              const populatedNotif = await newNotif.populate(
+                "sender",
+                "name username profilePic",
+              );
+              emitToUser(mentionedUser._id, "newNotification", populatedNotif);
+            }),
         );
       }
     } catch (mentionError) {
@@ -239,7 +260,16 @@ export const getComments = async (req, res) => {
       180,
     );
 
-    res.status(200).json(comments);
+    // Not baked into the cached query itself — the comment list is
+    // cached once per post and shared across every viewer, but which
+    // comments to hide is specific to the viewer's own block list, so
+    // filtering has to happen per-request after the shared cache read.
+    const blockedIds = await getBlockedEitherWayIds(req.user._id);
+    const visible = blockedIds.size
+      ? comments.filter((c) => !blockedIds.has(c.user?._id?.toString()))
+      : comments;
+
+    res.status(200).json(visible);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -262,7 +292,12 @@ export const getReplies = async (req, res) => {
       180,
     );
 
-    res.status(200).json(replies);
+    const blockedIds = await getBlockedEitherWayIds(req.user._id);
+    const visible = blockedIds.size
+      ? replies.filter((r) => !blockedIds.has(r.user?._id?.toString()))
+      : replies;
+
+    res.status(200).json(visible);
   } catch (error) {
     res.status(500).json({
       message: error.message,

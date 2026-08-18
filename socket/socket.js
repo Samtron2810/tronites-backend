@@ -7,7 +7,8 @@ import jwt from "jsonwebtoken";
 import cookie from "cookie";
 import getAllowedOrigins from "../config/allowedOrigins.js";
 import User from "../models/User.js";
-import { listFollowingIds } from "../services/followService.js";
+import { isFollowing } from "../services/followService.js";
+import { getBlockedEitherWayIds } from "../services/blockService.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -206,7 +207,7 @@ export const leaveFollowersRoom = (socketOrUserId, followingId) => {
 // caching redisClient (utils/redis.js) to be ready, which meant a hiccup
 // on that entirely different connection could make presence fall back to
 // local-only even while pubClient itself was perfectly healthy.
-const getOnlineUsers = async () => {
+const getOnlineUserIds = async () => {
   if (redisAdapterReady) {
     try {
       const ids = await pubClient.hKeys(PRESENCE_KEY);
@@ -218,17 +219,93 @@ const getOnlineUsers = async () => {
   return Array.from(userSocketMap.keys());
 };
 
-// Debounced broadcast: connect/disconnect storms (e.g. mass reconnect after
-// a deploy) used to trigger one io.emit() per event — O(N) emits for N
-// state changes, each one O(N) to fan out = O(N^2) total. Collapsing
-// bursts into a single broadcast per 300ms window fixes that.
+// Small in-process cache for presenceVisibility lookups — this is read
+// on every presence broadcast for every online user, which without
+// caching would mean N extra Mongo reads (N = online user count) on
+// every single connect/disconnect anywhere on the platform. Visibility
+// preference changes rarely and isn't safety-critical to propagate
+// instantly (worst case, a user who just tightened their setting stays
+// visible to already-computed viewer lists for a few seconds), so a
+// short TTL is the right tradeoff over hitting Mongo every time.
+const presenceVisibilityCache = new Map(); // userId -> { value, expiresAt }
+const PRESENCE_VISIBILITY_CACHE_MS = 10000;
+
+const getPresenceVisibility = async (userId) => {
+  const cached = presenceVisibilityCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const user = await User.findById(userId).select("presenceVisibility").lean();
+  const value = user?.presenceVisibility || "everyone";
+  presenceVisibilityCache.set(userId, { value, expiresAt: Date.now() + PRESENCE_VISIBILITY_CACHE_MS });
+  return value;
+};
+
+// Builds the online-user list a SPECIFIC viewer is allowed to see. This
+// replaced a single global io.emit() that sent every online userId to
+// every connected socket regardless of relationship — meaning a blocked
+// user, a total stranger, or anyone at all could see exactly who on the
+// platform was currently online. Now each online candidate is checked
+// against the viewer's relationship to them:
+//   - "everyone": visible to any authenticated viewer (except a block
+//     either direction, which always wins over any visibility setting)
+//   - "followers": visible only if the candidate follows the viewer back
+//     (i.e. it's a connection from the candidate's side, not just "the
+//     viewer happens to follow them")
+//   - "nobody": never included, full stop
+const buildVisibleOnlineList = async (viewerId, onlineIds) => {
+  const candidates = onlineIds.filter((id) => id !== viewerId);
+  if (candidates.length === 0) return [viewerId].filter((id) => onlineIds.includes(id));
+
+  const blockedIds = await getBlockedEitherWayIds(viewerId);
+
+  const visible = [];
+  for (const candidateId of candidates) {
+    if (blockedIds.has(candidateId)) continue;
+
+    const visibility = await getPresenceVisibility(candidateId);
+    if (visibility === "nobody") continue;
+    if (visibility === "everyone") {
+      visible.push(candidateId);
+      continue;
+    }
+    // "followers": only show if the candidate follows the viewer —
+    // i.e. isFollowing(candidateId, viewerId) is true.
+    // eslint-disable-next-line no-await-in-loop
+    const candidateFollowsViewer = await isFollowing(candidateId, viewerId);
+    if (candidateFollowsViewer) visible.push(candidateId);
+  }
+
+  // Always include the viewer's own presence in their own list —
+  // clients use this to reflect their own online dot too.
+  if (onlineIds.includes(viewerId)) visible.push(viewerId);
+
+  return visible;
+};
+
+// Broadcasting is now per-user instead of one global io.emit() — each
+// online user gets their own filtered list emitted to just their room.
+// Debounced the same way the old global broadcast was: connect/
+// disconnect storms collapse into one recompute-and-fan-out pass per
+// 300ms window instead of one per individual state change.
 let broadcastPending = false;
 const broadcastOnlineUsers = () => {
   if (broadcastPending) return;
   broadcastPending = true;
   setTimeout(async () => {
     broadcastPending = false;
-    io.emit("getOnlineUsers", await getOnlineUsers());
+    const onlineIds = await getOnlineUserIds();
+    // Fan out to every currently-online user's room with a list built
+    // just for them. This is O(online users) filtering work per
+    // broadcast instead of O(1) — a deliberate tradeoff: presence
+    // privacy requires per-viewer computation, there's no way to
+    // compute one list that's simultaneously correct for every viewer's
+    // different visibility/block relationships.
+    await Promise.all(
+      onlineIds.map(async (viewerId) => {
+        const visible = await buildVisibleOnlineList(viewerId, onlineIds);
+        io.to(`user_${viewerId}`).emit("getOnlineUsers", visible);
+      }),
+    );
   }, 300);
 };
 
@@ -424,7 +501,9 @@ io.on("connection", (socket) => {
   // missed a broadcast (e.g. right after its own reconnect), instead of
   // waiting on some other user's connect/disconnect to trigger the next one.
   socket.on("getOnlineUsers:request", async () => {
-    socket.emit("getOnlineUsers", await getOnlineUsers());
+    const onlineIds = await getOnlineUserIds();
+    const visible = await buildVisibleOnlineList(userId, onlineIds);
+    socket.emit("getOnlineUsers", visible);
   });
 
   // Every socket for this user joins their personal room. This replaces

@@ -20,7 +20,7 @@ const otpSchema = new mongoose.Schema(
       required: true,
       trim: true,
       lowercase: true,
-      index: true,
+      unique: true,
     },
 
     // HMAC-SHA256 of the code (see utils/otp.js), never the code itself

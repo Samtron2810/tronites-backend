@@ -5,7 +5,7 @@ import Block from "../models/Block.js";
 import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
-import { hasBlocked } from "../services/blockService.js";
+import { hasBlocked, isBlockedEitherWay } from "../services/blockService.js";
 import { autoPromoteIfMutual } from "../services/conversationService.js";
 import { toPublicUserDTO, toPrivateSelfDTO } from "../dtos/userDTO.js";
 import {
@@ -80,8 +80,12 @@ export const getBlockStatus = async (req, res) => {
   }
 };
 
-// BLOCK a user — messaging-only restriction, doesn't touch follow edges
-// or profile visibility (both stay as-is per product decision).
+// BLOCK a user — full block semantics: severs the follow edge in both
+// directions (a blocked user should not keep showing up in your feed
+// via a follow that predates the block, and you shouldn't show up in
+// theirs), stops messaging (enforced in messageController via
+// isBlockedEitherWay), and hides posts/profile per the feed/profile
+// filtering added in postController/userController below.
 export const blockUser = async (req, res) => {
   try {
     const targetId = req.params.id;
@@ -95,17 +99,63 @@ export const blockUser = async (req, res) => {
       if (err.code !== 11000) throw err; // already blocked — no-op
     });
 
+    // Sever any follow edge either direction existed. Blocking someone
+    // you follow, or who follows you, should immediately stop their
+    // posts from reaching your feed and vice versa — a stale follow
+    // edge left in place would otherwise keep feeding blocked-user
+    // content through the follow-based feed query.
+    const [removedMineToThem, removedTheirsToMine] = await Promise.all([
+      removeFollowEdge(req.user._id, targetId),
+      removeFollowEdge(targetId, req.user._id),
+    ]);
+
+    if (removedMineToThem) {
+      leaveFollowersRoom(req.user._id.toString(), targetId);
+    }
+    if (removedTheirsToMine) {
+      leaveFollowersRoom(targetId, req.user._id.toString());
+    }
+
+    // Drop any pending/existing follow notifications between the two —
+    // no point notifying either side of a relationship that no longer
+    // exists.
+    await Notification.deleteMany({
+      type: "follow",
+      $or: [
+        { recipient: req.user._id, sender: targetId },
+        { recipient: targetId, sender: req.user._id },
+      ],
+    });
+
+    invalidateCache(`feed:${req.user._id}:*`);
+    invalidateCache(`feed:${targetId}:*`);
+    invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`profile:${targetId}:*`);
+    invalidateCache(`followers:${req.user._id}:*`);
+    invalidateCache(`followers:${targetId}:*`);
+    invalidateCache(`following:${req.user._id}:*`);
+    invalidateCache(`following:${targetId}:*`);
+
     res.status(200).json({ blocked: true });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// UNBLOCK a user
+// UNBLOCK a user — lifts the messaging/feed/profile restriction. Does
+// NOT restore the follow edge that blocking severed; if either side
+// wants to follow again post-unblock, that's a deliberate new action,
+// not something that should silently reappear.
 export const unblockUser = async (req, res) => {
   try {
     const targetId = req.params.id;
     await Block.deleteOne({ blocker: req.user._id, blocked: targetId });
+
+    invalidateCache(`feed:${req.user._id}:*`);
+    invalidateCache(`feed:${targetId}:*`);
+    invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`profile:${targetId}:*`);
+
     res.status(200).json({ blocked: false });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -131,6 +181,13 @@ export const followUser = async (req, res) => {
     }
 
     const alreadyFollowing = await isFollowing(currentUser._id, userToFollow._id);
+
+    // A block always wins over a new follow — unfollowing (the
+    // `alreadyFollowing` branch below) stays allowed either way since
+    // that only removes a relationship, it never creates one.
+    if (!alreadyFollowing && (await isBlockedEitherWay(currentUser._id, userToFollow._id))) {
+      return res.status(403).json({ message: "You can't follow this user." });
+    }
 
     if (alreadyFollowing) {
       // UNFOLLOW
@@ -235,6 +292,18 @@ export const getUserProfile = async (req, res) => {
     );
     const skip = (page - 1) * limit;
 
+    const isSelf = req.params.id === req.user._id.toString();
+
+    // A block hides the profile from both directions — check before
+    // touching the cache/DB at all so a blocked viewer can't even
+    // confirm the account still exists via a 200 vs 404 distinction.
+    // Self-view always allowed (isSelf implies no block check needed —
+    // a user can never have blocked themselves, see blockUser's
+    // self-block guard).
+    if (!isSelf && (await isBlockedEitherWay(req.user._id, req.params.id))) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
     // User + followers/following cached separately from posts, since posts
     // now vary by page/limit and shouldn't blow up the cache key space.
     // Cache key already varies per (target id, viewer id), so it's also
@@ -242,7 +311,6 @@ export const getUserProfile = async (req, res) => {
     // a self-view and someone-else's-view of the same target can never
     // collide on this key.
     const userCacheKey = `profile:${req.params.id}:${req.user._id}`;
-    const isSelf = req.params.id === req.user._id.toString();
 
     const userResult = await getOrSetCache(
       userCacheKey,
@@ -465,6 +533,23 @@ export const updateBio = async (req, res) => {
     invalidateCache(`profile:${req.user._id}:*`);
 
     res.status(200).json({ bio: user.bio });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// UPDATE PRESENCE VISIBILITY — who can see this user's online status.
+export const updatePresenceVisibility = async (req, res) => {
+  try {
+    const { presenceVisibility } = req.body;
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { presenceVisibility },
+      { new: true },
+    ).select("presenceVisibility");
+
+    res.status(200).json({ presenceVisibility: user.presenceVisibility });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

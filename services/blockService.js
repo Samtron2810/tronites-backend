@@ -17,3 +17,25 @@ export const hasBlocked = async (blockerId, blockedId) => {
   const edge = await Block.exists({ blocker: blockerId, blocked: blockedId });
   return Boolean(edge);
 };
+
+// Full set of user IDs that have any block relationship with `userId`
+// (either direction) as a Set of strings — the shape every "filter this
+// list against my blocks" call site below needs. One query, reused for
+// feed filtering, mention filtering, comment visibility, and
+// notification suppression, instead of N pairwise isBlockedEitherWay()
+// calls per list.
+export const getBlockedEitherWayIds = async (userId) => {
+  const edges = await Block.find({
+    $or: [{ blocker: userId }, { blocked: userId }],
+  })
+    .select("blocker blocked")
+    .lean();
+
+  const ids = new Set();
+  for (const e of edges) {
+    const blocker = e.blocker.toString();
+    const blocked = e.blocked.toString();
+    ids.add(blocker === userId.toString() ? blocked : blocker);
+  }
+  return ids;
+};

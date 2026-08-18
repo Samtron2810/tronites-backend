@@ -33,5 +33,11 @@ export const toPrivateSelfDTO = (user) => {
   return {
     ...toPublicUserDTO(u),
     email: u.email,
+    // Needed client-side only to decide whether to show the moderation
+    // queue entry point in the user menu. Never included in
+    // toPublicUserDTO — other users' roles are nobody else's business,
+    // and showing it publicly would let anyone enumerate moderators.
+    role: u.role,
+    presenceVisibility: u.presenceVisibility,
   };
 };

@@ -7,6 +7,8 @@ import { io, emitToUser, emitToFollowersOf } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { listFollowingIds } from "../services/followService.js";
+import { getMutedIds, hasMuted } from "../services/muteService.js";
+import { getBlockedEitherWayIds, isBlockedEitherWay } from "../services/blockService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
 
 // CREATE POST
@@ -72,9 +74,10 @@ export const createPost = async (req, res) => {
     });
     const populatedPost = await post.populate("user", "name profilePic");
 
-    // Notify mentioned users (skip self-mentions). Best-effort — a
-    // failure here shouldn't fail the post creation, which has already
-    // succeeded by this point.
+    // Notify mentioned users (skip self-mentions, blocked relationships,
+    // and anyone who's muted the poster). Best-effort — a failure here
+    // shouldn't fail the post creation, which has already succeeded by
+    // this point.
     try {
       const mentionedUsernames = extractMentions(text);
       if (mentionedUsernames.length) {
@@ -83,20 +86,30 @@ export const createPost = async (req, res) => {
           _id: { $ne: req.user._id },
         }).select("_id");
 
+        const blockedIds = await getBlockedEitherWayIds(req.user._id);
+
         await Promise.all(
-          mentionedUsers.map(async (mentionedUser) => {
-            const newNotif = await Notification.create({
-              recipient: mentionedUser._id,
-              sender: req.user._id,
-              type: "mention",
-              post: post._id,
-            });
-            const populatedNotif = await newNotif.populate(
-              "sender",
-              "name username profilePic",
-            );
-            emitToUser(mentionedUser._id, "newNotification", populatedNotif);
-          }),
+          mentionedUsers
+            .filter((mentionedUser) => !blockedIds.has(mentionedUser._id.toString()))
+            .map(async (mentionedUser) => {
+              // A mute is one-directional and only affects the muter's
+              // own feed/notifications, not the sender's ability to
+              // notify — check from the recipient's side: has the
+              // person being mentioned muted the poster?
+              if (await hasMuted(mentionedUser._id, req.user._id)) return;
+
+              const newNotif = await Notification.create({
+                recipient: mentionedUser._id,
+                sender: req.user._id,
+                type: "mention",
+                post: post._id,
+              });
+              const populatedNotif = await newNotif.populate(
+                "sender",
+                "name username profilePic",
+              );
+              emitToUser(mentionedUser._id, "newNotification", populatedNotif);
+            }),
         );
       }
     } catch (mentionError) {
@@ -141,8 +154,16 @@ export const getFeedPosts = async (req, res) => {
         // Current logged in user
         const followingIds = await listFollowingIds(req.user._id);
 
+        // Muting doesn't touch the follow edge (it's meant to be
+        // silent and reversible without unfollowing) — so unlike a
+        // block, a muted account's posts have to be filtered out here
+        // explicitly rather than already being absent from
+        // followingIds.
+        const mutedIds = await getMutedIds(req.user._id);
+        const visibleFollowingIds = followingIds.filter((id) => !mutedIds.has(id));
+
         // Users allowed in feed
-        const feedUsers = [...followingIds, req.user._id];
+        const feedUsers = [...visibleFollowingIds, req.user._id];
 
         // Fetch posts
         const posts = await Post.find({
@@ -252,6 +273,17 @@ export const likePost = async (req, res) => {
 
     const userId = req.user._id;
 
+    // Direct-ID access can reach a post even when it's absent from feed
+    // /profile views (e.g. an old link, a cached client). Block still
+    // applies — enforced here rather than relying on the post simply
+    // being unreachable through normal browsing.
+    if (
+      post.user.toString() !== userId.toString() &&
+      (await isBlockedEitherWay(userId, post.user))
+    ) {
+      return res.status(403).json({ message: "You can't interact with this post." });
+    }
+
     const alreadyLiked = post.likes.some(
       (id) => id.toString() === userId.toString(),
     );
@@ -273,8 +305,12 @@ export const likePost = async (req, res) => {
       // Like
       post.likes.push(userId);
 
-      // Create like notification (don't notify yourself)
-      if (post.user.toString() !== userId.toString()) {
+      // Create like notification (don't notify yourself, or a poster
+      // who's muted this liker)
+      if (
+        post.user.toString() !== userId.toString() &&
+        !(await hasMuted(post.user, userId))
+      ) {
         // Prevent duplicate like notifications
         const existingNotification = await Notification.findOne({
           recipient: post.user,

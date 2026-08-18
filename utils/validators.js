@@ -23,13 +23,25 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
+// generateChallengeId() (utils/otp.js) is crypto.randomBytes(24) encoded
+// as base64url — always exactly 32 characters from the URL-safe alphabet,
+// no padding. Matching that shape here instead of "any non-empty string"
+// rejects malformed/guessed IDs before they ever reach a database query.
+const CHALLENGE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+
 export const validateOtpSchema = z.object({
-  challengeId: z.string().trim().min(1, "Missing challenge ID"),
+  challengeId: z
+    .string()
+    .trim()
+    .regex(CHALLENGE_ID_PATTERN, "Invalid challenge ID"),
   otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits"),
 });
 
 export const resendOtpSchema = z.object({
-  challengeId: z.string().trim().min(1, "Missing challenge ID"),
+  challengeId: z
+    .string()
+    .trim()
+    .regex(CHALLENGE_ID_PATTERN, "Invalid challenge ID"),
 });
 
 // ─── Post ───────────────────────────────────────────────────────────────────
@@ -112,6 +124,36 @@ export const paginationSchema = z.object({
       if (num > 50) return 50;
       return num;
     }),
+});
+
+// ─── Report / Mute ──────────────────────────────────────────────────────────
+
+const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
+
+export const createReportSchema = z.object({
+  targetType: z.enum(["user", "post", "comment", "message"]),
+  targetId: z.string().regex(OBJECT_ID_PATTERN, "Invalid target id"),
+  reason: z.enum([
+    "spam",
+    "harassment",
+    "hate_speech",
+    "violence",
+    "nudity_sexual_content",
+    "self_harm",
+    "impersonation",
+    "misinformation",
+    "other",
+  ]),
+  details: z.string().trim().max(500).optional().default(""),
+});
+
+export const resolveReportSchema = z.object({
+  status: z.enum(["actioned", "dismissed"]),
+  note: z.string().trim().max(500).optional().default(""),
+});
+
+export const presenceVisibilitySchema = z.object({
+  presenceVisibility: z.enum(["everyone", "followers", "nobody"]),
 });
 
 // ─── Middleware factory ──────────────────────────────────────────────────────

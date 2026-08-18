@@ -46,6 +46,29 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+
+    // Who can see this user's online/offline status. "everyone" matches
+    // the historical (pre-P0.7) behavior. "followers" limits it to
+    // people this user follows back — i.e. connections, not just anyone
+    // who chose to follow them. "nobody" hides it from all other users
+    // entirely, including mutuals. Default stays "everyone" so existing
+    // users see no behavior change unless they opt into more privacy.
+    presenceVisibility: {
+      type: String,
+      enum: ["everyone", "followers", "nobody"],
+      default: "everyone",
+    },
+
+    // Gates the moderation queue (list/resolve reports). Only ever set
+    // directly in the database or by an existing admin via a future
+    // admin tool — there is no self-service endpoint that changes this,
+    // so a compromised or malicious regular account can never grant
+    // itself moderator access through the API.
+    role: {
+      type: String,
+      enum: ["user", "moderator", "admin"],
+      default: "user",
+    },
   },
   { timestamps: true },
 );
