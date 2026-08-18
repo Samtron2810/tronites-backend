@@ -53,6 +53,18 @@ export const sendMessage = async (req, res) => {
         const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
         const result = await cloudinary.uploader.upload(b64, {
           folder: "tronites_messages",
+          // Server-side safety net: even if a client sends an
+          // uncompressed image, cap dimensions and let Cloudinary
+          // auto-optimize quality/format (same pattern as post images).
+          transformation: [
+            {
+              width: 1280,
+              height: 1280,
+              crop: "limit",
+              quality: "auto",
+              fetch_format: "auto",
+            },
+          ],
         });
         imageUrl = result.secure_url;
       } catch (uploadError) {
@@ -320,7 +332,8 @@ export const getMessages = async (req, res) => {
     } else if (conversation) {
       requestInfo = {
         status: conversation.status,
-        isInitiator: conversation.initiator.toString() === currentUserId.toString(),
+        isInitiator:
+          conversation.initiator.toString() === currentUserId.toString(),
       };
     }
 

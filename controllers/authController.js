@@ -2,7 +2,12 @@ import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import generateToken, { clearAuthCookie } from "../utils/generateToken.js";
 import { toPrivateSelfDTO } from "../dtos/userDTO.js";
-import { startChallenge, resendChallenge, verifyChallenge, unconsumeChallenge } from "../services/otpService.js";
+import {
+  startChallenge,
+  resendChallenge,
+  verifyChallenge,
+  unconsumeChallenge,
+} from "../services/otpService.js";
 import { generateChallengeId } from "../utils/otp.js";
 
 // REGISTER
@@ -105,12 +110,7 @@ export const verifyOtp = async (req, res) => {
     // Generate token cookie
     generateToken(res, user._id);
 
-    res.status(201).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      username: user.username,
-    });
+    res.status(201).json(toPrivateSelfDTO(user));
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
   }
@@ -169,12 +169,7 @@ export const loginUser = async (req, res) => {
 
     generateToken(res, user._id);
 
-    res.status(200).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      username: user.username,
-    });
+    res.status(200).json(toPrivateSelfDTO(user));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
