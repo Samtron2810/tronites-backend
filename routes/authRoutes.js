@@ -3,6 +3,8 @@ import {
   sendOtp,
   verifyOtp,
   resendOtp,
+  forgotPassword,
+  resetPassword,
   loginUser,
   logoutUser,
   getMe,
@@ -15,6 +17,8 @@ import {
   loginSchema,
   validateOtpSchema,
   resendOtpSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
 } from "../utils/validators.js";
 import { authLimiter } from "../middleware/rateLimiter.js";
 
@@ -25,6 +29,21 @@ router.post("/register", authLimiter, validate(registerSchema), sendOtp);
 router.post("/send-otp", authLimiter, validate(registerSchema), sendOtp);
 router.post("/verify-otp", authLimiter, validate(validateOtpSchema), verifyOtp);
 router.post("/resend-otp", authLimiter, validate(resendOtpSchema), resendOtp);
+
+// Forgot/reset password — both share the authLimiter (10/15min per IP) so
+// a single client can't spam reset emails or brute-force reset codes.
+router.post(
+  "/forgot-password",
+  authLimiter,
+  validate(forgotPasswordSchema),
+  forgotPassword,
+);
+router.post(
+  "/reset-password",
+  authLimiter,
+  validate(resetPasswordSchema),
+  resetPassword,
+);
 
 router.post("/login", authLimiter, validate(loginSchema), loginUser);
 router.post("/logout", logoutUser);

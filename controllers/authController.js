@@ -9,6 +9,7 @@ import {
   unconsumeChallenge,
 } from "../services/otpService.js";
 import { generateChallengeId } from "../utils/otp.js";
+import { passwordResetEmailTemplate } from "../utils/emailTemplate.js";
 
 // REGISTER
 // SEND OTP (used for registration)
@@ -127,6 +128,102 @@ export const resendOtp = async (req, res) => {
     });
 
     res.status(200).json({ message: "OTP resent" });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// FORGOT PASSWORD
+//
+// Response is intentionally identical whether or not the email is
+// registered — the same anti-enumeration pattern as sendOtp above. A real
+// account owner gets the actual OTP email; an attacker probing addresses
+// gets no signal. Unlike sendOtp, a "fake challenge" for an unknown
+// address carries NO payload, so even if an attacker happened to obtain a
+// challengeId from a non-existent account (e.g. via a captured response),
+// resetPassword's payload.type check would reject it.
+export const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body; // already trimmed+lowercased by forgotPasswordSchema
+
+    const user = await User.findOne({ email }).select("_id");
+
+    if (!user) {
+      // Do NOT reveal existence. Do NOT start/send a real challenge for
+      // an address with no account — that would only waste rate-limit
+      // budget and email. Return a well-formed but non-existent
+      // challengeId so the response shape is identical to the success
+      // path; any OTP submitted against it fails verifyChallenge()'s
+      // existence check with the generic error.
+      return res.status(200).json({
+        message: "If this address is registered, we've sent a code.",
+        challengeId: generateChallengeId(),
+        email,
+      });
+    }
+
+    const { challengeId } = await startChallenge({
+      email,
+      // Distinguishes this from a registration challenge. resetPassword
+      // refuses any challenge whose payload isn't exactly this — so a
+      // registration OTP (payload { name, passwordHash }) can never be
+      // redirected to reset a password.
+      payload: { type: "passwordReset" },
+      subject: "Reset your Tronites password",
+      emailTemplate: passwordResetEmailTemplate,
+    });
+
+    return res.status(200).json({
+      message: "If this address is registered, we've sent a code.",
+      challengeId,
+      email,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// RESET PASSWORD (verify OTP + set new password)
+//
+// The verification itself is handled entirely by verifyChallenge() in
+// otpService.js — atomic single-use consumption, 5-attempt cap, 5-minute
+// expiry, timing-safe HMAC comparison. This controller's only extra job
+// is confirming the challenge was created for a password reset (payload
+// type check) and then updating the user's password + passwordChangedAt
+// so every previously-issued JWT becomes invalid (see authMiddleware).
+export const resetPassword = async (req, res) => {
+  try {
+    const { challengeId, otp, newPassword } = req.body;
+
+    const verified = await verifyChallenge({ challengeId, otp });
+    const { email, payload } = verified;
+
+    // Registration challenges carry payload { name, passwordHash }; fake
+    // challenges (unknown email in forgotPassword) carry no payload at
+    // all. Only challenges explicitly created for a reset are accepted
+    // here — the optional chaining means a missing payload fails the
+    // check and is rejected instead of crashing.
+    if (payload?.type !== "passwordReset") {
+      return res.status(400).json({ message: "Invalid OTP payload" });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    // passwordChangedAt drives the session-invalidation check in
+    // authMiddleware: any JWT issued before this timestamp is rejected.
+    await User.updateOne(
+      { email },
+      {
+        $set: {
+          password: passwordHash,
+          passwordChangedAt: new Date(),
+        },
+      },
+    );
+
+    res
+      .status(200)
+      .json({ message: "Password reset successful. Please sign in." });
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
   }

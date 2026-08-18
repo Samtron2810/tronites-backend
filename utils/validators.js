@@ -16,10 +16,7 @@ export const registerSchema = z.object({
 });
 
 export const loginSchema = z.object({
-  identifier: z
-    .string()
-    .trim()
-    .min(1, "Email or username is required"),
+  identifier: z.string().trim().min(1, "Email or username is required"),
   password: z.string().min(1, "Password is required"),
 });
 
@@ -42,6 +39,28 @@ export const resendOtpSchema = z.object({
     .string()
     .trim()
     .regex(CHALLENGE_ID_PATTERN, "Invalid challenge ID"),
+});
+
+// Forgot-password request. The response is intentionally neutral whether
+// or not the email exists (see forgotPassword in authController.js), so
+// this schema only needs to ensure the input is a well-formed address.
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().email("Invalid email address"),
+});
+
+// Reset-password request: the challengeId + OTP come straight from the
+// existing verify flow (same shape as validateOtpSchema), and the new
+// password matches the registration strength rules — min 10 chars.
+export const resetPasswordSchema = z.object({
+  challengeId: z
+    .string()
+    .trim()
+    .regex(CHALLENGE_ID_PATTERN, "Invalid challenge ID"),
+  otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits"),
+  newPassword: z
+    .string()
+    .min(10, "Password must be at least 10 characters")
+    .max(128, "Password too long"),
 });
 
 // ─── Post ───────────────────────────────────────────────────────────────────

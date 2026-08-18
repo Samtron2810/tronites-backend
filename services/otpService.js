@@ -1,7 +1,15 @@
 import Otp from "../models/Otp.js";
-import { generateOtp, generateChallengeId, hashOtp, verifyOtpHash } from "../utils/otp.js";
+import {
+  generateOtp,
+  generateChallengeId,
+  hashOtp,
+  verifyOtpHash,
+} from "../utils/otp.js";
 import { sendEmail } from "../utils/brevoEmail.js";
-import { otpEmailTemplate } from "../utils/emailTemplate.js";
+import {
+  otpEmailTemplate,
+  passwordResetEmailTemplate,
+} from "../utils/emailTemplate.js";
 
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds between any two sends
@@ -53,9 +61,18 @@ export const checkAndBumpSendRate = (existingDoc, now = Date.now()) => {
   };
 };
 
-const deliver = async (email, subject, otp) => {
+// emailTemplate is a function (otp) => html string. Defaults to the
+// registration OTP template; callers can pass a different one (e.g.
+// passwordResetEmailTemplate) so the same challenge machinery — hashing,
+// rate limits, atomic verify, expiry — is reused verbatim.
+const deliver = async (
+  email,
+  subject,
+  otp,
+  emailTemplate = otpEmailTemplate,
+) => {
   try {
-    await sendEmail({ to: email, subject, htmlContent: otpEmailTemplate(otp) });
+    await sendEmail({ to: email, subject, htmlContent: emailTemplate(otp) });
   } catch (emailErr) {
     throw httpError(502, emailErr.message);
   }
@@ -79,7 +96,12 @@ const deliver = async (email, subject, otp) => {
 // is astronomically unlikely (would need two more requests to land in
 // the same few-millisecond gap) and is allowed to surface as a 500
 // rather than retrying indefinitely.
-const startChallengeOnce = async ({ email, payload, subject }) => {
+const startChallengeOnce = async ({
+  email,
+  payload,
+  subject,
+  emailTemplate,
+}) => {
   const existing = await Otp.findOne({ email });
   const rate = checkAndBumpSendRate(existing);
 
@@ -112,17 +134,27 @@ const startChallengeOnce = async ({ email, payload, subject }) => {
     throw err;
   }
 
-  await deliver(email, subject, otp);
+  await deliver(email, subject, otp, emailTemplate);
 
   return { challengeId, email };
 };
 
-export const startChallenge = async ({ email, payload, subject }) => {
+export const startChallenge = async ({
+  email,
+  payload,
+  subject,
+  emailTemplate,
+}) => {
   try {
-    return await startChallengeOnce({ email, payload, subject });
+    return await startChallengeOnce({ email, payload, subject, emailTemplate });
   } catch (err) {
     if (err.isRaceRetry) {
-      return await startChallengeOnce({ email, payload, subject });
+      return await startChallengeOnce({
+        email,
+        payload,
+        subject,
+        emailTemplate,
+      });
     }
     throw err;
   }
@@ -135,7 +167,10 @@ export const startChallenge = async ({ email, payload, subject }) => {
 export const resendChallenge = async ({ challengeId, subject }) => {
   const existing = await Otp.findOne({ challengeId });
   if (!existing) {
-    throw httpError(400, "This code has expired or doesn't exist. Please start again.");
+    throw httpError(
+      400,
+      "This code has expired or doesn't exist. Please start again.",
+    );
   }
 
   const rate = checkAndBumpSendRate(existing);
@@ -150,7 +185,15 @@ export const resendChallenge = async ({ challengeId, subject }) => {
   existing.sendWindowStart = rate.sendWindowStart;
   await existing.save();
 
-  await deliver(existing.email, subject, otp);
+  // Pick the same template style used for the original send — the stored
+  // payload.type tells us whether this challenge is a password reset or
+  // a registration, so a resend of a reset code stays visually
+  // consistent with the original reset email.
+  const template =
+    existing.payload?.type === "passwordReset"
+      ? passwordResetEmailTemplate
+      : otpEmailTemplate;
+  await deliver(existing.email, subject, otp, template);
 
   return { email: existing.email };
 };
@@ -196,7 +239,10 @@ export const verifyChallenge = async ({ challengeId, otp }) => {
     if (doc.expiresAt < new Date()) {
       throw httpError(400, "Code expired. Please request a new one.");
     }
-    throw httpError(400, "Too many incorrect attempts. Please request a new code.");
+    throw httpError(
+      400,
+      "Too many incorrect attempts. Please request a new code.",
+    );
   }
 
   if (!verifyOtpHash(otp, reserved.otpHash)) {
@@ -213,7 +259,11 @@ export const verifyChallenge = async ({ challengeId, otp }) => {
     throw httpError(400, "Code already used.");
   }
 
-  return { email: consumed.email, payload: consumed.payload, _id: consumed._id.toString() };
+  return {
+    email: consumed.email,
+    payload: consumed.payload,
+    _id: consumed._id.toString(),
+  };
 };
 
 // Recovery path for the gap between "challenge verified" and "account
@@ -234,7 +284,11 @@ export const verifyChallenge = async ({ challengeId, otp }) => {
 // reused/replaced by a newer send in the meantime.
 export const unconsumeChallenge = async (challengeDocId) => {
   await Otp.updateOne(
-    { _id: challengeDocId, usedAt: { $ne: null }, expiresAt: { $gt: new Date() } },
+    {
+      _id: challengeDocId,
+      usedAt: { $ne: null },
+      expiresAt: { $gt: new Date() },
+    },
     { $set: { usedAt: null } },
   );
 };

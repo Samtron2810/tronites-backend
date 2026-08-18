@@ -36,6 +36,15 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Set whenever the password is changed (reset flow). The auth
+    // middleware compares each JWT's `iat` against this timestamp: any
+    // token issued before the change is rejected, which invalidates all
+    // existing sessions (including stolen cookies) after a reset.
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+    },
+
     bio: {
       type: String,
       default: "",
