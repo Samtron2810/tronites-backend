@@ -7,7 +7,7 @@ import jwt from "jsonwebtoken";
 import cookie from "cookie";
 import getAllowedOrigins from "../config/allowedOrigins.js";
 import User from "../models/User.js";
-import { isFollowing } from "../services/followService.js";
+import { isFollowing, listFollowingIds } from "../services/followService.js";
 import { getBlockedEitherWayIds } from "../services/blockService.js";
 
 const app = express();
@@ -90,7 +90,10 @@ export const initSocketRedisAdapter = async () => {
       Promise.all([pubClient.connect(), subClient.connect()]),
       new Promise((_, reject) =>
         setTimeout(
-          () => reject(new Error(`timed out after ${ADAPTER_CONNECT_TIMEOUT_MS}ms`)),
+          () =>
+            reject(
+              new Error(`timed out after ${ADAPTER_CONNECT_TIMEOUT_MS}ms`),
+            ),
           ADAPTER_CONNECT_TIMEOUT_MS,
         ),
       ),
@@ -236,7 +239,10 @@ const getPresenceVisibility = async (userId) => {
 
   const user = await User.findById(userId).select("presenceVisibility").lean();
   const value = user?.presenceVisibility || "everyone";
-  presenceVisibilityCache.set(userId, { value, expiresAt: Date.now() + PRESENCE_VISIBILITY_CACHE_MS });
+  presenceVisibilityCache.set(userId, {
+    value,
+    expiresAt: Date.now() + PRESENCE_VISIBILITY_CACHE_MS,
+  });
   return value;
 };
 
@@ -254,7 +260,8 @@ const getPresenceVisibility = async (userId) => {
 //   - "nobody": never included, full stop
 const buildVisibleOnlineList = async (viewerId, onlineIds) => {
   const candidates = onlineIds.filter((id) => id !== viewerId);
-  if (candidates.length === 0) return [viewerId].filter((id) => onlineIds.includes(id));
+  if (candidates.length === 0)
+    return [viewerId].filter((id) => onlineIds.includes(id));
 
   const blockedIds = await getBlockedEitherWayIds(viewerId);
 
@@ -444,7 +451,10 @@ const sweepStalePresence = async () => {
   }
 };
 
-const presenceSweepInterval = setInterval(sweepStalePresence, PRESENCE_SWEEP_INTERVAL_MS);
+const presenceSweepInterval = setInterval(
+  sweepStalePresence,
+  PRESENCE_SWEEP_INTERVAL_MS,
+);
 
 // When Redis goes down, increment/decrement calls above no-op (no writes),
 // so PRESENCE_KEY is missing all activity from the outage. When Redis

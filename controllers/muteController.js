@@ -1,6 +1,6 @@
 import User from "../models/User.js";
 import { muteUser, unmuteUser, hasMuted } from "../services/muteService.js";
-import { invalidateCache } from "../utils/redis.js";
+import { invalidateCache, invalidateFeedCache } from "../utils/redis.js";
 
 export const getMuteStatus = async (req, res) => {
   try {
@@ -25,7 +25,7 @@ export const muteUserHandler = async (req, res) => {
     // Muting changes what shows up in this user's own feed — the cached
     // feed page for this user specifically needs to drop the muted
     // account's posts on next read.
-    invalidateCache(`feed:${req.user._id}:*`);
+    invalidateFeedCache(req.user._id);
 
     res.status(200).json({ muted: true });
   } catch (error) {
@@ -37,7 +37,7 @@ export const unmuteUserHandler = async (req, res) => {
   try {
     const targetId = req.params.id;
     await unmuteUser(req.user._id, targetId);
-    invalidateCache(`feed:${req.user._id}:*`);
+    invalidateFeedCache(req.user._id);
     res.status(200).json({ muted: false });
   } catch (error) {
     res.status(500).json({ message: error.message });

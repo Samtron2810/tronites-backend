@@ -140,4 +140,43 @@ export const deleteCacheKey = async (key) => {
   }
 };
 
+// --- Versioned feed cache ---
+//
+// invalidateCache(`feed:${userId}:*`) used SCAN to find and delete every
+// paginated feed key for a user. SCAN is non-blocking (unlike KEYS), but
+// it's still an O(keyspace) walk that runs on every single like/post/mute
+// change — for a user with many cached feed pages, or a busy keyspace,
+// that's a lot of avoidable work for what is fundamentally a "throw away
+// old data" operation.
+//
+// A version counter makes invalidation O(1): bump the counter, and every
+// previously-cached `feed:v{oldVersion}:...` key is simply never read
+// again (it expires naturally via its own TTL — no explicit delete
+// needed). Reads always ask for the *current* version's key.
+const getFeedVersion = async (userId) => {
+  try {
+    const v = await redisClient.get(`feedVersion:${userId}`);
+    return v ? Number(v) : 1;
+  } catch {
+    // Redis down — every caller gets the same fallback version, which is
+    // fine: without Redis, getOrSetCache's own get/set calls no-op too,
+    // so this key is never actually written or read from cache anyway.
+    return 1;
+  }
+};
+
+export const getFeedCacheKey = async (userId, page, limit) => {
+  const version = await getFeedVersion(userId);
+  return `feed:v${version}:${userId}:${page}:${limit}`;
+};
+
+// O(1) invalidation: bump the version counter. No SCAN, no DEL.
+export const invalidateFeedCache = async (userId) => {
+  try {
+    await redisClient.incr(`feedVersion:${userId}`);
+  } catch {
+    // Redis down — skip
+  }
+};
+
 export default redisClient;

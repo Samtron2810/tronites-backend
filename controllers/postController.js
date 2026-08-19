@@ -4,12 +4,19 @@ import Comment from "../models/Comment.js";
 import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
 import { io, emitToUser, emitToFollowersOf } from "../socket/socket.js";
-import { getOrSetCache, invalidateCache } from "../utils/redis.js";
+import { getOrSetCache, invalidateCache, getFeedCacheKey, invalidateFeedCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { listFollowingIds } from "../services/followService.js";
 import { getMutedIds, hasMuted } from "../services/muteService.js";
 import { getBlockedEitherWayIds, isBlockedEitherWay } from "../services/blockService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
+import {
+  hasLiked,
+  getLikedPostIds,
+  createLikeEdge,
+  removeLikeEdge,
+  removeAllLikesForPost,
+} from "../services/likeService.js";
 
 // CREATE POST
 export const createPost = async (req, res) => {
@@ -117,7 +124,7 @@ export const createPost = async (req, res) => {
     }
 
     // Invalidate feed cache for author's followers
-    invalidateCache(`feed:${req.user._id}:*`);
+    invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
 
     // Send response FIRST before real-time socket emissions
@@ -146,7 +153,7 @@ export const getFeedPosts = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const cacheKey = `feed:${req.user._id}:${page}:${limit}`;
+    const cacheKey = await getFeedCacheKey(req.user._id, page, limit);
 
     const result = await getOrSetCache(
       cacheKey,
@@ -179,17 +186,17 @@ export const getFeedPosts = async (req, res) => {
           user: { $in: feedUsers },
         });
 
-        // Add isLiked field
-        const formattedPosts = posts.map((post) => {
-          const isLiked = post.likes.some(
-            (id) => id.toString() === req.user._id.toString(),
-          );
+        // Bulk-check which of these posts the viewer has liked — one
+        // query instead of an in-memory array scan per post.
+        const likedPostIds = await getLikedPostIds(
+          req.user._id,
+          posts.map((p) => p._id),
+        );
 
-          return {
-            ...post._doc,
-            isLiked,
-          };
-        });
+        const formattedPosts = posts.map((post) => ({
+          ...post._doc,
+          isLiked: likedPostIds.has(post._id.toString()),
+        }));
 
         return {
           posts: formattedPosts,
@@ -238,12 +245,15 @@ export const getPostsByHashtag = async (req, res) => {
 
         const totalPosts = await Post.countDocuments({ hashtags: tag });
 
-        const formattedPosts = posts.map((post) => {
-          const isLiked = post.likes.some(
-            (id) => id.toString() === req.user._id.toString(),
-          );
-          return { ...post._doc, isLiked };
-        });
+        const likedPostIds = await getLikedPostIds(
+          req.user._id,
+          posts.map((p) => p._id),
+        );
+
+        const formattedPosts = posts.map((post) => ({
+          ...post._doc,
+          isLiked: likedPostIds.has(post._id.toString()),
+        }));
 
         return {
           posts: formattedPosts,
@@ -284,83 +294,101 @@ export const likePost = async (req, res) => {
       return res.status(403).json({ message: "You can't interact with this post." });
     }
 
-    const alreadyLiked = post.likes.some(
-      (id) => id.toString() === userId.toString(),
-    );
+    // Read-then-act, same as the follow/unfollow toggle — but the actual
+    // race safety comes from the Like collection's unique {user, post}
+    // index (see createLikeEdge/removeLikeEdge), not from this read. Two
+    // concurrent "like" clicks can both see `alreadyLiked: false`; only
+    // one of them will succeed in creating the edge, and the other's
+    // createLikeEdge call becomes a no-op via the E11000 branch — so the
+    // counter below never double-increments even under a race.
+    const alreadyLiked = await hasLiked(userId, post._id);
+    let liked;
 
     if (alreadyLiked) {
       // Unlike
-      post.likes = post.likes.filter(
-        (id) => id.toString() !== userId.toString(),
-      );
+      const removed = await removeLikeEdge(userId, post._id);
+      liked = false;
+      if (removed) {
+        post.likesCount = Math.max(0, post.likesCount - 1);
+        await post.updateOne({ $inc: { likesCount: -1 } });
 
-      // Remove like notification
-      await Notification.deleteOne({
-        recipient: post.user,
-        sender: userId,
-        type: "like",
-        post: post._id,
-      });
-    } else {
-      // Like
-      post.likes.push(userId);
-
-      // Create like notification (don't notify yourself, or a poster
-      // who's muted this liker)
-      if (
-        post.user.toString() !== userId.toString() &&
-        !(await hasMuted(post.user, userId))
-      ) {
-        // Prevent duplicate like notifications
-        const existingNotification = await Notification.findOne({
+        // Remove like notification
+        await Notification.deleteOne({
           recipient: post.user,
           sender: userId,
           type: "like",
           post: post._id,
         });
+      }
+    } else {
+      // Like
+      const created = await createLikeEdge(userId, post._id);
+      liked = true;
+      if (created) {
+        post.likesCount += 1;
+        await post.updateOne({ $inc: { likesCount: 1 } });
 
-        if (!existingNotification) {
-          const newNotif = await Notification.create({
+        // Create like notification (don't notify yourself, or a poster
+        // who's muted this liker)
+        if (
+          post.user.toString() !== userId.toString() &&
+          !(await hasMuted(post.user, userId))
+        ) {
+          // Prevent duplicate like notifications
+          const existingNotification = await Notification.findOne({
             recipient: post.user,
             sender: userId,
             type: "like",
             post: post._id,
           });
 
-          // Emit "newNotification" to post owner's connected socket IDs
-          try {
-            const populatedNotif = await newNotif.populate(
-              "sender",
-              "name profilePic",
-            );
-            emitToUser(post.user, "newNotification", populatedNotif);
-          } catch (socketError) {
-            console.error("Like notification real-time error:", socketError);
+          if (!existingNotification) {
+            const newNotif = await Notification.create({
+              recipient: post.user,
+              sender: userId,
+              type: "like",
+              post: post._id,
+            });
+
+            // Emit "newNotification" to post owner's connected socket IDs
+            try {
+              const populatedNotif = await newNotif.populate(
+                "sender",
+                "name profilePic",
+              );
+              emitToUser(post.user, "newNotification", populatedNotif);
+            } catch (socketError) {
+              console.error("Like notification real-time error:", socketError);
+            }
           }
         }
       }
     }
 
-    await post.save();
-
     // Invalidate feed caches for both users
-    invalidateCache(`feed:${req.user._id}:*`);
-    invalidateCache(`feed:${post.user}:*`);
+    invalidateFeedCache(req.user._id);
+    invalidateFeedCache(post.user);
 
-    // Emit "likeUpdate" to the post's specific room
+    // Emit "likeUpdate" to the post's specific room. Sends only the count
+    // and the acting user's own like state — not the full liker list,
+    // which used to leak every liker's identity to every room member on
+    // every single like (O(N) payload growing with popularity). Clients
+    // that need "who liked this" fetch it via a dedicated paginated
+    // endpoint instead (listLikers in likeService).
     try {
       io.to(`post_${post._id}`).emit("likeUpdate", {
         postId: post._id,
-        likesCount: post.likes.length,
-        likes: post.likes,
+        likesCount: post.likesCount,
+        userId: userId.toString(),
+        liked,
       });
     } catch (socketError) {
       console.error("Like count emission error:", socketError);
     }
 
     res.status(200).json({
-      likes: post.likes.length,
-      liked: !alreadyLiked,
+      likes: post.likesCount,
+      liked,
     });
   } catch (error) {
     res.status(500).json({
@@ -400,10 +428,15 @@ export const deletePost = async (req, res) => {
     // Delete related comments
     await Comment.deleteMany({ post: post._id });
 
+    // Delete related likes — otherwise these edges would stay in the
+    // Like collection forever, orphaned, referencing a post that no
+    // longer exists.
+    await removeAllLikesForPost(post._id);
+
     await post.deleteOne();
 
     // Invalidate feed cache
-    invalidateCache(`feed:${req.user._id}:*`);
+    invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
 
     res.status(200).json({ message: "Post deleted" });

@@ -3,7 +3,7 @@ import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
 import Block from "../models/Block.js";
 import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
-import { getOrSetCache, invalidateCache } from "../utils/redis.js";
+import { getOrSetCache, invalidateCache, invalidateFeedCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { hasBlocked, isBlockedEitherWay } from "../services/blockService.js";
 import { autoPromoteIfMutual } from "../services/conversationService.js";
@@ -18,6 +18,7 @@ import {
   getFollowerCount,
   getFollowingCount,
 } from "../services/followService.js";
+import { getLikedPostIds } from "../services/likeService.js";
 
 // CHECK USERNAME AVAILABILITY (live check while typing)
 export const checkUsername = async (req, res) => {
@@ -127,8 +128,8 @@ export const blockUser = async (req, res) => {
       ],
     });
 
-    invalidateCache(`feed:${req.user._id}:*`);
-    invalidateCache(`feed:${targetId}:*`);
+    invalidateFeedCache(req.user._id);
+    invalidateFeedCache(targetId);
     invalidateCache(`profile:${req.user._id}:*`);
     invalidateCache(`profile:${targetId}:*`);
     invalidateCache(`followers:${req.user._id}:*`);
@@ -151,8 +152,8 @@ export const unblockUser = async (req, res) => {
     const targetId = req.params.id;
     await Block.deleteOne({ blocker: req.user._id, blocked: targetId });
 
-    invalidateCache(`feed:${req.user._id}:*`);
-    invalidateCache(`feed:${targetId}:*`);
+    invalidateFeedCache(req.user._id);
+    invalidateFeedCache(targetId);
     invalidateCache(`profile:${req.user._id}:*`);
     invalidateCache(`profile:${targetId}:*`);
 
@@ -358,6 +359,12 @@ export const getUserProfile = async (req, res) => {
 
     const postsCacheKey = `profile-posts:${req.params.id}:${page}:${limit}`;
 
+    // This cache entry is shared across every viewer of this profile
+    // (keyed only by profile owner + page/limit), so it must never store
+    // viewer-specific data. isLiked depends on who's asking, so it's
+    // computed fresh per-request below, after the shared cache read —
+    // not inside the cached fetchFn, where it would leak one viewer's
+    // like-state into another viewer's cached response.
     const postsResult = await getOrSetCache(
       postsCacheKey,
       async () => {
@@ -380,9 +387,19 @@ export const getUserProfile = async (req, res) => {
       180,
     );
 
+    const likedPostIds = await getLikedPostIds(
+      req.user._id,
+      postsResult.posts.map((p) => p._id),
+    );
+    const postsWithLikeState = postsResult.posts.map((post) => ({
+      ...(post._doc || post),
+      isLiked: likedPostIds.has(post._id.toString()),
+    }));
+
     res.status(200).json({
       ...userResult,
       ...postsResult,
+      posts: postsWithLikeState,
     });
   } catch (error) {
     res.status(500).json({

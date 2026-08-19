@@ -38,12 +38,10 @@ const postSchema = new mongoose.Schema(
       },
     },
 
-    likes: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "User",
-      },
-    ],
+    likesCount: {
+      type: Number,
+      default: 0,
+    },
 
     commentsCount: {
       type: Number,
@@ -55,7 +53,6 @@ const postSchema = new mongoose.Schema(
 
 // Indexes
 postSchema.index({ user: 1, createdAt: -1 });
-postSchema.index({ likes: 1 });
 postSchema.index({ hashtags: 1, createdAt: -1 });
 
 const Post = mongoose.model("Post", postSchema);
