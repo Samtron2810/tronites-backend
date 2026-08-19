@@ -7,6 +7,13 @@ import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { extractMentions } from "../utils/textParser.js";
 import { isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockService.js";
 import { hasMuted } from "../services/muteService.js";
+import {
+  getLikedCommentIds,
+  createCommentLikeEdge,
+  removeCommentLikeEdge,
+  removeAllLikesForComment,
+  removeAllLikesForComments,
+} from "../services/commentLikeService.js";
 
 // ADD COMMENT (top-level, or a reply if parentCommentId is given)
 export const addComment = async (req, res) => {
@@ -174,6 +181,81 @@ export const addComment = async (req, res) => {
   }
 };
 
+// LIKE/UNLIKE COMMENT (or reply — same Comment model, so this handles both)
+export const likeComment = async (req, res) => {
+  try {
+    const comment = await Comment.findById(req.params.id);
+    if (!comment) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+
+    const userId = req.user._id;
+
+    if (
+      comment.user.toString() !== userId.toString() &&
+      (await isBlockedEitherWay(userId, comment.user))
+    ) {
+      return res.status(403).json({ message: "You can't interact with this comment." });
+    }
+
+    // Read-then-act; race safety comes from the unique {user, comment}
+    // index on CommentLike, same as post likes (see likePost).
+    const removed = await removeCommentLikeEdge(userId, comment._id);
+    let liked;
+
+    if (removed) {
+      liked = false;
+      comment.likesCount = Math.max(0, comment.likesCount - 1);
+      await comment.updateOne({ $inc: { likesCount: -1 } });
+    } else {
+      const created = await createCommentLikeEdge(userId, comment._id);
+      liked = true;
+      if (created) {
+        comment.likesCount += 1;
+        await comment.updateOne({ $inc: { likesCount: 1 } });
+
+        if (
+          comment.user.toString() !== userId.toString() &&
+          !(await hasMuted(comment.user, userId))
+        ) {
+          try {
+            const newNotif = await Notification.create({
+              recipient: comment.user,
+              sender: userId,
+              type: "commentLike",
+              post: comment.post,
+              comment: comment._id,
+            });
+            const populatedNotif = await newNotif.populate(
+              "sender",
+              "name profilePic",
+            );
+            emitToUser(comment.user, "newNotification", populatedNotif);
+          } catch (socketError) {
+            console.error("Comment like notification error:", socketError);
+          }
+        }
+      }
+    }
+
+    try {
+      io.to(`post_${comment.post}`).emit("commentLikeUpdate", {
+        postId: comment.post,
+        commentId: comment._id,
+        likesCount: comment.likesCount,
+        userId: userId.toString(),
+        liked,
+      });
+    } catch (socketError) {
+      console.error("Comment like emission error:", socketError);
+    }
+
+    res.status(200).json({ likes: comment.likesCount, liked });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // DELETE COMMENT (cascades to replies if this is a top-level comment)
 export const deleteComment = async (req, res) => {
   try {
@@ -207,6 +289,14 @@ export const deleteComment = async (req, res) => {
     }
 
     await comment.deleteOne();
+
+    // Clean up like edges — this comment's own, plus every cascaded
+    // reply's, so no orphaned CommentLike rows reference a deleted
+    // comment.
+    await removeAllLikesForComment(comment._id);
+    if (deletedReplyIds.length) {
+      await removeAllLikesForComments(deletedReplyIds);
+    }
 
     if (post) {
       post.commentsCount = Math.max(0, post.commentsCount - deletedCount);
@@ -262,14 +352,23 @@ export const getComments = async (req, res) => {
 
     // Not baked into the cached query itself — the comment list is
     // cached once per post and shared across every viewer, but which
-    // comments to hide is specific to the viewer's own block list, so
-    // filtering has to happen per-request after the shared cache read.
+    // comments to hide (blocklist) and isLiked are both viewer-specific,
+    // so both are applied per-request after the shared cache read.
     const blockedIds = await getBlockedEitherWayIds(req.user._id);
     const visible = blockedIds.size
       ? comments.filter((c) => !blockedIds.has(c.user?._id?.toString()))
       : comments;
 
-    res.status(200).json(visible);
+    const likedCommentIds = await getLikedCommentIds(
+      req.user._id,
+      visible.map((c) => c._id),
+    );
+    const withLikeState = visible.map((c) => ({
+      ...(c._doc || c),
+      isLiked: likedCommentIds.has(c._id.toString()),
+    }));
+
+    res.status(200).json(withLikeState);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -297,7 +396,16 @@ export const getReplies = async (req, res) => {
       ? replies.filter((r) => !blockedIds.has(r.user?._id?.toString()))
       : replies;
 
-    res.status(200).json(visible);
+    const likedCommentIds = await getLikedCommentIds(
+      req.user._id,
+      visible.map((r) => r._id),
+    );
+    const withLikeState = visible.map((r) => ({
+      ...(r._doc || r),
+      isLiked: likedCommentIds.has(r._id.toString()),
+    }));
+
+    res.status(200).json(withLikeState);
   } catch (error) {
     res.status(500).json({
       message: error.message,

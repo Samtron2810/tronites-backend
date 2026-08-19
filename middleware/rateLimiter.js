@@ -160,6 +160,20 @@ export const postLimiter = rateLimit({
   store: makeStore("rl:post:"),
 });
 
+// Post edit limiter — separate from postLimiter (creation) since edits
+// are typically fixing a typo, not new content; a tighter shared budget
+// would make someone spend their post quota just to correct one.
+export const editPostLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: {
+    message: "Too many edits, please slow down.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: makeStore("rl:editpost:"),
+});
+
 // Comment limiter — 60 comments per hour
 export const commentLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

@@ -74,6 +74,20 @@ export const createPostSchema = z.object({
     .default(""),
 });
 
+// Edit is text-only (images are fixed after posting). Empty text is
+// allowed here the same way it's allowed on create — an image post can
+// have no caption — the controller re-checks that text+images aren't
+// both empty using the post's *existing* images, since edit can't add
+// images to a text-only post.
+export const editPostSchema = z.object({
+  text: z
+    .string()
+    .trim()
+    .max(280, "Post text must be at most 280 characters")
+    .optional()
+    .default(""),
+});
+
 // ─── Comment ────────────────────────────────────────────────────────────────
 
 export const createCommentSchema = z.object({
@@ -173,6 +187,12 @@ export const resolveReportSchema = z.object({
 
 export const presenceVisibilitySchema = z.object({
   presenceVisibility: z.enum(["everyone", "followers", "nobody"]),
+});
+
+// ─── Admin ──────────────────────────────────────────────────────────────────
+
+export const updateRoleSchema = z.object({
+  role: z.enum(["user", "moderator", "admin"]),
 });
 
 // ─── Middleware factory ──────────────────────────────────────────────────────

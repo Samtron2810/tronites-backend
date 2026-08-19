@@ -19,6 +19,7 @@ import {
   getFollowingCount,
 } from "../services/followService.js";
 import { getLikedPostIds } from "../services/likeService.js";
+import { getBookmarkedPostIds } from "../services/bookmarkService.js";
 
 // CHECK USERNAME AVAILABILITY (live check while typing)
 export const checkUsername = async (req, res) => {
@@ -387,13 +388,15 @@ export const getUserProfile = async (req, res) => {
       180,
     );
 
-    const likedPostIds = await getLikedPostIds(
-      req.user._id,
-      postsResult.posts.map((p) => p._id),
-    );
+    const postIds = postsResult.posts.map((p) => p._id);
+    const [likedPostIds, bookmarkedPostIds] = await Promise.all([
+      getLikedPostIds(req.user._id, postIds),
+      getBookmarkedPostIds(req.user._id, postIds),
+    ]);
     const postsWithLikeState = postsResult.posts.map((post) => ({
       ...(post._doc || post),
       isLiked: likedPostIds.has(post._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(post._id.toString()),
     }));
 
     res.status(200).json({

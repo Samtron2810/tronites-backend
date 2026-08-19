@@ -7,6 +7,7 @@ import { commentLimiter } from "../middleware/rateLimiter.js";
 
 import {
   addComment,
+  likeComment,
   getComments,
   deleteComment,
   getReplies,
@@ -21,6 +22,7 @@ router.post(
   validate(createCommentSchema),
   addComment,
 );
+router.put("/like/:id", protect, likeComment);
 router.delete("/:id", protect, deleteComment);
 router.get("/:id", protect, getComments);
 router.get("/:id/replies", protect, getReplies);

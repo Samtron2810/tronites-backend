@@ -15,6 +15,8 @@ import userRoutes from "./routes/userRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
 import reportRoutes from "./routes/reportRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
+import webhookRoutes from "./routes/webhookRoutes.js";
 import {
   app,
   server,
@@ -26,16 +28,29 @@ import {
 import { apiLimiter } from "./middleware/rateLimiter.js";
 import csrfProtection from "./middleware/csrfProtection.js";
 import { startImageUploadWorker } from "./queues/imageUploadWorker.js";
+import { startVideoUploadWorker } from "./queues/videoUploadWorker.js";
 import {
   imageUploadQueue,
   imageUploadQueueEvents,
 } from "./queues/imageUploadQueue.js";
+import { videoUploadQueue } from "./queues/videoUploadQueue.js";
 import { connectRedis, isRedisReady, disconnectRedis } from "./utils/redis.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
 // to key limits per real client instead of erroring or bucketing everyone together.
 app.set("trust proxy", 1);
+
+// Mounted before express.json() (below) and before CSRF/rate-limiting —
+// two reasons: (1) whichever body parser touches the request stream
+// first wins, and this route needs the exact raw bytes for Cloudinary's
+// signature check (see webhookController.js), not JSON already parsed
+// by the app-wide middleware; (2) Cloudinary's server calls this
+// directly, not a browser session, so the SameSite-cookie-based CSRF
+// defense doesn't apply and would only ever reject it. The handler
+// itself verifies Cloudinary's signature, which is this route's actual
+// authentication.
+app.use("/api/webhooks", webhookRoutes);
 
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
@@ -66,6 +81,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/admin", adminRoutes);
 app.get("/", (req, res) => {
   res.send("API Running...");
 });
@@ -109,6 +125,7 @@ const startServer = async () => {
   await initSocketRedisAdapter();
 
   const worker = startImageUploadWorker();
+  const videoWorker = startVideoUploadWorker();
 
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
@@ -140,8 +157,10 @@ const startServer = async () => {
         worker ? worker.close() : Promise.resolve(),
         imageUploadQueue.close(),
         imageUploadQueueEvents.close(),
+        videoWorker ? videoWorker.close() : Promise.resolve(),
+        videoUploadQueue.close(),
       ]);
-      console.log("Image upload queue/worker closed");
+      console.log("Image/video upload queues and workers closed");
 
       await disconnectSocketRedis();
       console.log("Socket Redis adapter disconnected");

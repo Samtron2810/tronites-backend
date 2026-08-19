@@ -41,3 +41,21 @@ export const toPrivateSelfDTO = (user) => {
     presenceVisibility: u.presenceVisibility,
   };
 };
+
+// Public fields plus role — for an admin viewing/managing arbitrary
+// users' roles. Distinct from toPrivateSelfDTO (which is only ever
+// returned to the account owner themselves): this is returned to an
+// admin about *other* users, gated entirely by the requireAdmin
+// middleware at the route level, not by identity-matching like
+// toPrivateSelfDTO's callers do.
+export const toAdminUserDTO = (user) => {
+  if (!user) return null;
+  const u = typeof user.toObject === "function" ? user.toObject() : user;
+
+  return {
+    ...toPublicUserDTO(u),
+    email: u.email,
+    role: u.role,
+    createdAt: u.createdAt,
+  };
+};
