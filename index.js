@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import mongoose from "mongoose";
+import helmet from "helmet";
 
 import connectDB from "./config/db.js";
 import getAllowedOrigins from "./config/allowedOrigins.js";
@@ -35,11 +36,22 @@ import {
 } from "./queues/imageUploadQueue.js";
 import { videoUploadQueue } from "./queues/videoUploadQueue.js";
 import { connectRedis, isRedisReady, disconnectRedis } from "./utils/redis.js";
+import errorHandler from "./middleware/errorHandler.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
 // to key limits per real client instead of erroring or bucketing everyone together.
 app.set("trust proxy", 1);
+
+// Security response headers — this is a JSON API with no server-rendered
+// HTML, so helmet's default CSP (aimed at browser-rendered pages) isn't
+// especially meaningful here; contentSecurityPolicy is disabled to avoid
+// shipping a policy that doesn't apply to anything this server returns.
+// The headers that do matter for an API — X-Content-Type-Options (stops
+// browsers from MIME-sniffing a JSON response as something executable),
+// Strict-Transport-Security, X-Frame-Options, and the rest of helmet's
+// non-CSP defaults — still apply.
+app.use(helmet({ contentSecurityPolicy: false }));
 
 // Mounted before express.json() (below) and before CSRF/rate-limiting —
 // two reasons: (1) whichever body parser touches the request stream
@@ -85,7 +97,6 @@ app.use("/api/admin", adminRoutes);
 app.get("/", (req, res) => {
   res.send("API Running...");
 });
-
 // Liveness: process is up and handling requests. Never checks dependencies
 // — a Redis or Mongo outage should show up as "not ready", not "not
 // alive", so an orchestrator doesn't kill a process that's correctly
@@ -110,6 +121,18 @@ app.get("/health/ready", (req, res) => {
     socketAdapter: socketAdapterOk ? "connected" : "fallback",
   });
 });
+
+// Unmatched route — must come after every real route above, before the
+// error handler.
+app.use((req, res) => {
+  res.status(404).json({ message: "Route not found." });
+});
+
+// Must be registered last, after every route and other middleware —
+// Express only routes to an error handler (4-arg signature) when
+// something upstream calls next(err) or an asyncHandler-wrapped promise
+// rejects.
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
@@ -182,4 +205,13 @@ const startServer = async () => {
   process.on("SIGINT", () => shutdown("SIGINT"));
 };
 
-startServer();
+// Only auto-starts outside of tests — tests import `app` directly (see
+// tests/setup.js) and manage their own isolated DB connection via
+// mongodb-memory-server, so they don't want this module's side effects:
+// a real Mongo/Redis connection attempt, BullMQ workers, signal
+// handlers, or a listening HTTP server.
+if (process.env.NODE_ENV !== "test") {
+  startServer();
+}
+
+export { app };
