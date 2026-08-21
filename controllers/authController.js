@@ -24,7 +24,7 @@ import { passwordResetEmailTemplate } from "../utils/emailTemplate.js";
 // "sent" from "already registered" from the API response alone.
 export const sendOtp = async (req, res) => {
   try {
-    const { name, email, password } = req.body; // already trimmed+lowercased by registerSchema
+    const { firstName, lastName, email, password } = req.body; // already trimmed+validated by registerSchema
 
     const userExists = await User.findOne({ email }).select("_id");
 
@@ -52,7 +52,7 @@ export const sendOtp = async (req, res) => {
 
     const { challengeId } = await startChallenge({
       email,
-      payload: { name, passwordHash },
+      payload: { firstName, lastName, passwordHash },
       subject: "Your Tronites OTP",
     });
 
@@ -80,15 +80,15 @@ export const verifyOtp = async (req, res) => {
     const { email, payload, _id: otpDocId } = verified;
 
     // Create user from payload
-    const { name, passwordHash } = payload || {};
+    const { firstName, lastName, passwordHash } = payload || {};
 
-    if (!name || !passwordHash) {
+    if (!firstName || !lastName || !passwordHash) {
       return res.status(400).json({ message: "Invalid OTP payload" });
     }
 
     let user;
     try {
-      user = await User.create({ name, email, password: passwordHash });
+      user = await User.create({ firstName, lastName, email, password: passwordHash });
     } catch (createErr) {
       // The challenge is already marked used (verifyChallenge's job is
       // to guarantee a code can't be consumed twice). If account

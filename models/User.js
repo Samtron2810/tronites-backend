@@ -2,6 +2,26 @@ import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema(
   {
+    firstName: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 30,
+      match: /^[A-Za-z]+$/,
+    },
+
+    lastName: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 30,
+      match: /^[A-Za-z]+$/,
+    },
+
+    // Derived display name (`${firstName} ${lastName}`), stored so every
+    // existing read site (DTOs, search index, mention suggestions, etc.)
+    // keeps working unchanged. Kept in sync in the pre-save hook below —
+    // never set directly by callers.
     name: {
       type: String,
       required: true,
@@ -81,6 +101,15 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+// Keep `name` derived from firstName/lastName on every save, so nothing
+// downstream (DTOs, text search, sockets) needs to know the split exists.
+userSchema.pre("validate", function (next) {
+  if (this.firstName || this.lastName) {
+    this.name = `${this.firstName || ""} ${this.lastName || ""}`.trim();
+  }
+  next();
+});
 
 // Indexes (email is already indexed via `unique: true` in the schema)
 userSchema.index({ name: 1 });

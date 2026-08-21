@@ -2,12 +2,21 @@ import { z } from "zod";
 
 // ─── Auth ───────────────────────────────────────────────────────────────────
 
+const NAME_PATTERN = /^[A-Za-z]+$/;
+
 export const registerSchema = z.object({
-  name: z
+  firstName: z
     .string()
     .trim()
-    .min(2, "Name must be at least 2 characters")
-    .max(50, "Name must be at most 50 characters"),
+    .min(2, "First name must be at least 2 characters")
+    .max(30, "First name must be at most 30 characters")
+    .regex(NAME_PATTERN, "First name can only contain letters"),
+  lastName: z
+    .string()
+    .trim()
+    .min(2, "Last name must be at least 2 characters")
+    .max(30, "Last name must be at most 30 characters")
+    .regex(NAME_PATTERN, "Last name can only contain letters"),
   email: z.string().trim().toLowerCase().email("Invalid email address"),
   password: z
     .string()
