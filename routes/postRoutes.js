@@ -4,6 +4,7 @@ import {
   createPost,
   createImageUploadSignature,
   createVideoUploadSignature,
+  signWidgetUploadParams,
   editPost,
   getFeedPosts,
   searchPosts,
@@ -21,7 +22,11 @@ import {
   editPostSchema,
   paginationSchema,
 } from "../utils/validators.js";
-import { postLimiter, editPostLimiter } from "../middleware/rateLimiter.js";
+import {
+  postLimiter,
+  editPostLimiter,
+  apiLimiter,
+} from "../middleware/rateLimiter.js";
 
 const router = express.Router();
 
@@ -46,6 +51,19 @@ router.post(
   postLimiter,
   validate(createVideoSignatureSchema),
   createVideoUploadSignature,
+);
+
+// Cloudinary Upload Widget signing callback — the widget calls this
+// directly (once per upload attempt, possibly more on retry) with the
+// exact params it wants signed. No validation schema here since the
+// param shape is Cloudinary's widget internals, not our API contract;
+// apiLimiter (not postLimiter) since this isn't itself a post-creation
+// action and the widget may call it more than once per post.
+router.post(
+  "/signature/video/sign",
+  protect,
+  apiLimiter,
+  signWidgetUploadParams,
 );
 
 router.put("/like/:id", protect, likePost);

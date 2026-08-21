@@ -1,4 +1,3 @@
-import crypto from "crypto";
 import Post from "../models/Post.js";
 import User from "../models/User.js";
 import Comment from "../models/Comment.js";
@@ -224,11 +223,13 @@ export const createImageUploadSignature = async (req, res) => {
   }
 };
 
-// Creates the post shell (video.status: "processing") and returns signed
-// upload params for the video. The frontend uploads the video directly to
-// Cloudinary with these params; Cloudinary's async eager transformation
-// then calls our webhook (notification_url) which flips the post to
-// "ready" with the playable URL.
+// Creates the post shell (video.status: "processing") and returns the
+// fixed upload config (folder/eager/notification_url/context) the
+// Cloudinary Upload Widget needs. The widget itself decides the exact
+// param set per-attempt and calls POST /posts/signature/video/sign (see
+// signVideoUploadParams below) to get a signature for those params —
+// this endpoint does NOT return a signature, only the postId + config
+// used to construct the widget.
 export const createVideoUploadSignature = async (req, res) => {
   try {
     const { text } = req.body;
@@ -240,41 +241,10 @@ export const createVideoUploadSignature = async (req, res) => {
       video: { status: "processing" },
     });
 
-    const timestamp = Math.round(Date.now() / 1000);
     const folder = "tronites_videos";
     const eager = `so_0,du_${MAX_VIDEO_DURATION_SECONDS},f_mp4,vc_h264,q_auto`;
     const notificationUrl = `${BACKEND_PUBLIC_URL}/api/webhooks/cloudinary`;
     const context = `postId=${post._id.toString()}`;
-
-    // Params that must be signed — Cloudinary rejects the upload if the
-    // signature doesn't match these exact values.
-    //
-    // NOTE: We build the signature manually (not via
-    // cloudinary.utils.api_sign_request) to guarantee the exact string
-    // matches what the browser sends. The browser does NOT include
-    // `resource_type` as a form field — it only appears in the upload URL
-    // path (`.../video/upload`). So `resource_type` must be EXCLUDED from
-    // the string-to-sign, or the signature never matches. Building the
-    // HMAC-SHA1 over the exact sorted params (without resource_type)
-    // matches what Cloudinary verifies.
-    const paramsToSign = {
-      timestamp,
-      folder,
-      eager,
-      eager_async: true,
-      notification_url: notificationUrl,
-      context,
-    };
-
-    const stringToSign = Object.keys(paramsToSign)
-      .sort()
-      .map((key) => `${key}=${paramsToSign[key]}`)
-      .join("&");
-
-    const signature = crypto
-      .createHmac("sha1", process.env.CLOUDINARY_API_SECRET)
-      .update(stringToSign)
-      .digest("hex");
 
     // Notify mentioned users immediately — no reason to wait for video
     // processing to notify someone they were mentioned in the caption.
@@ -319,14 +289,10 @@ export const createVideoUploadSignature = async (req, res) => {
 
     res.status(201).json({
       postId: post._id,
-      signature,
-      timestamp,
       apiKey: process.env.CLOUDINARY_API_KEY,
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       folder,
-      resourceType: "video",
       eager,
-      eagerAsync: true,
       notificationUrl,
       context,
     });
@@ -341,6 +307,38 @@ export const createVideoUploadSignature = async (req, res) => {
     }
   } catch (error) {
     console.error("CREATE VIDEO SIGNATURE ERROR:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Signing callback for the Cloudinary Upload Widget. The widget builds
+// its own params_to_sign object (folder/eager/context/etc, whatever was
+// passed into its config) and POSTs it here as-is; we just sign exactly
+// what it sent using the SDK's own signer, matching the algorithm
+// Cloudinary itself verifies against. We never rebuild the param string
+// by hand — the widget already assembled it identically to what it will
+// upload, so re-deriving it here (as the old manual-signature flow did)
+// is both unnecessary and the previous source of drift.
+//
+// This endpoint is intentionally generic (works for image or video
+// widgets) but only video currently uses the widget — see
+// createImageUploadSignature for the still-manual image flow.
+export const signWidgetUploadParams = async (req, res) => {
+  try {
+    const { paramsToSign } = req.body;
+
+    if (!paramsToSign || typeof paramsToSign !== "object") {
+      return res.status(400).json({ message: "Missing paramsToSign." });
+    }
+
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      process.env.CLOUDINARY_API_SECRET,
+    );
+
+    res.status(200).json({ signature });
+  } catch (error) {
+    console.error("SIGN WIDGET UPLOAD ERROR:", error.message);
     res.status(500).json({ message: error.message });
   }
 };

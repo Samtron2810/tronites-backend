@@ -35,6 +35,7 @@ import {
 } from "./queues/imageUploadQueue.js";
 import { connectRedis, isRedisReady, disconnectRedis } from "./utils/redis.js";
 import errorHandler from "./middleware/errorHandler.js";
+import { cleanupAbandonedVideoShells } from "./jobs/cleanupAbandonedVideoShells.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -147,6 +148,18 @@ const startServer = async () => {
 
   const worker = startImageUploadWorker();
 
+  // Fallback cleanup for video post shells abandoned before the
+  // Cloudinary Upload Widget's close/error/success callback ever fires
+  // (crash, closed tab, lost network) — see jobs/cleanupAbandonedVideoShells.js.
+  // Runs once at boot (catches anything abandoned while the server was
+  // down) and then hourly.
+  const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+  cleanupAbandonedVideoShells();
+  const cleanupInterval = setInterval(
+    cleanupAbandonedVideoShells,
+    CLEANUP_INTERVAL_MS,
+  );
+
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
   // up a second, unrelated http.Server and leave Socket.IO unreachable).
@@ -167,6 +180,8 @@ const startServer = async () => {
     forceExit.unref();
 
     try {
+      clearInterval(cleanupInterval);
+
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see
       // socket/socket.js).
