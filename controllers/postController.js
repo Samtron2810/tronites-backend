@@ -285,12 +285,20 @@ export const createVideoPost = async (req, res) => {
       return res.status(400).json({ message: "Invalid video URL" });
     }
 
-    // Same thumbnail derivation the webhook used to do: Cloudinary can
-    // generate a jpg frame from any timestamp via a delivery URL — this
-    // constructs one at the 1-second mark without a second upload/job.
-    const thumbnailUrl = url
-      .replace("/upload/", "/upload/so_1,f_jpg/")
-      .replace(/\.mp4$/, ".jpg");
+    // Thumbnail derivation: Cloudinary can generate a jpg frame from any
+    // timestamp via a delivery URL — this constructs one at the 1-second
+    // mark without a second upload/job. The eager MP4 URL already carries
+    // its transformation segment (/upload/so_0,du_30,f_mp4,...), so that
+    // segment must be REPLACED with so_1,f_jpg — blindly inserting another
+    // segment in front of it would chain f_jpg with f_mp4 and produce a
+    // broken image.
+    const eagerSegment = `/upload/${`so_0,du_${MAX_VIDEO_DURATION_SECONDS},f_mp4,vc_h264,q_auto`}/`;
+    let thumbnailUrl = url.replace(eagerSegment, "/upload/so_1,f_jpg/");
+    if (!thumbnailUrl.includes("so_1,f_jpg")) {
+      // Fallback: raw (non-eager) secure_url — insert after /upload/.
+      thumbnailUrl = url.replace("/upload/", "/upload/so_1,f_jpg/");
+    }
+    thumbnailUrl = thumbnailUrl.replace(/\.mp4$/, ".jpg");
 
     const post = await Post.create({
       user: req.user._id,
