@@ -185,7 +185,6 @@ export const createPost = async (req, res) => {
 // arbitrary folders or with arbitrary transformations.
 
 const MAX_VIDEO_DURATION_SECONDS = 30;
-const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL;
 
 // Generates signed upload params for a single image. The frontend calls
 // this once per post (with the image count), then uploads each image
@@ -223,31 +222,91 @@ export const createImageUploadSignature = async (req, res) => {
   }
 };
 
-// Creates the post shell (video.status: "processing") and returns the
-// fixed upload config (folder/eager/notification_url/context) the
-// Cloudinary Upload Widget needs. The widget itself decides the exact
-// param set per-attempt and calls POST /posts/signature/video/sign (see
-// signVideoUploadParams below) to get a signature for those params —
-// this endpoint does NOT return a signature, only the postId + config
-// used to construct the widget.
+// Returns signed upload params for a direct browser video upload (the
+// custom uploader replaces the old Cloudinary Upload Widget — see
+// frontend/src/services/videoUpload.js). No post shell is created here:
+// unlike the old webhook-driven flow, the frontend uploads first and
+// only then calls POST /posts/video with the finished asset, so a post
+// can never exist in a half-uploaded state. Eager is synchronous (no
+// eager_async), so Cloudinary's upload response itself contains the
+// trimmed/transformed MP4 URL — no webhook round-trip needed at all,
+// which also removes the BACKEND_PUBLIC_URL requirement.
 export const createVideoUploadSignature = async (req, res) => {
   try {
-    const { text } = req.body;
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = "tronites_videos";
+    const eager = `so_0,du_${MAX_VIDEO_DURATION_SECONDS},f_mp4,vc_h264,q_auto`;
+
+    // Params that must be signed — Cloudinary rejects the upload if the
+    // signature doesn't match these exact values. The frontend must send
+    // exactly these params (plus file/api_key/timestamp) and nothing else.
+    const paramsToSign = { timestamp, folder, eager };
+
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      process.env.CLOUDINARY_API_SECRET,
+    );
+
+    res.status(200).json({
+      signature,
+      timestamp,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      folder,
+      eager,
+    });
+  } catch (error) {
+    console.error("CREATE VIDEO SIGNATURE ERROR:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// CREATE VIDEO POST — called by the custom uploader AFTER the video has
+// been uploaded directly to Cloudinary from the browser (signed via
+// createVideoUploadSignature above). Because the upload response already
+// contains the transformed asset (synchronous eager), the post is created
+// fully "ready" in one shot — there is no processing state, no webhook,
+// and therefore no way for a post to get stuck or be orphaned.
+export const createVideoPost = async (req, res) => {
+  try {
+    const { text, video } = req.body;
+    const { publicId, url, durationSeconds } = video;
+
+    // Validate the asset belongs to our Cloudinary account and folder —
+    // same arbitrary-URL-injection defense as image posts in createPost.
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const allowedPrefix = `https://res.cloudinary.com/${cloudName}/video/upload/`;
+    if (
+      typeof url !== "string" ||
+      !url.startsWith(allowedPrefix) ||
+      typeof publicId !== "string" ||
+      !publicId.startsWith("tronites_videos/")
+    ) {
+      return res.status(400).json({ message: "Invalid video URL" });
+    }
+
+    // Same thumbnail derivation the webhook used to do: Cloudinary can
+    // generate a jpg frame from any timestamp via a delivery URL — this
+    // constructs one at the 1-second mark without a second upload/job.
+    const thumbnailUrl = url
+      .replace("/upload/", "/upload/so_1,f_jpg/")
+      .replace(/\.mp4$/, ".jpg");
 
     const post = await Post.create({
       user: req.user._id,
       text,
       hashtags: extractHashtags(text),
-      video: { status: "processing" },
+      video: {
+        publicId,
+        url,
+        thumbnailUrl,
+        durationSeconds: durationSeconds || null,
+        status: "ready",
+      },
     });
 
-    const folder = "tronites_videos";
-    const eager = `so_0,du_${MAX_VIDEO_DURATION_SECONDS},f_mp4,vc_h264,q_auto`;
-    const notificationUrl = `${BACKEND_PUBLIC_URL}/api/webhooks/cloudinary`;
-    const context = `postId=${post._id.toString()}`;
-
-    // Notify mentioned users immediately — no reason to wait for video
-    // processing to notify someone they were mentioned in the caption.
+    // Notify mentioned users (skip self-mentions, blocked relationships,
+    // and anyone who's muted the poster). Best-effort — same as createPost.
     try {
       const mentionedUsernames = extractMentions(text);
       if (mentionedUsernames.length) {
@@ -287,58 +346,17 @@ export const createVideoUploadSignature = async (req, res) => {
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
 
-    res.status(201).json({
-      postId: post._id,
-      apiKey: process.env.CLOUDINARY_API_KEY,
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-      folder,
-      eager,
-      notificationUrl,
-      context,
-    });
+    const populatedPost = await post.populate("user", "name profilePic");
+    res.status(201).json(populatedPost);
 
-    // Real-time post feed update for followers — the post shell is
-    // visible immediately with "Processing video..." state.
+    // Real-time post feed update for followers.
     try {
-      const populatedPost = await post.populate("user", "name profilePic");
       emitToFollowersOf(req.user._id, "newPost", populatedPost);
     } catch (socketError) {
       console.error("Real-time feed emission error:", socketError);
     }
   } catch (error) {
-    console.error("CREATE VIDEO SIGNATURE ERROR:", error.message);
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// Signing callback for the Cloudinary Upload Widget. The widget builds
-// its own params_to_sign object (folder/eager/context/etc, whatever was
-// passed into its config) and POSTs it here as-is; we just sign exactly
-// what it sent using the SDK's own signer, matching the algorithm
-// Cloudinary itself verifies against. We never rebuild the param string
-// by hand — the widget already assembled it identically to what it will
-// upload, so re-deriving it here (as the old manual-signature flow did)
-// is both unnecessary and the previous source of drift.
-//
-// This endpoint is intentionally generic (works for image or video
-// widgets) but only video currently uses the widget — see
-// createImageUploadSignature for the still-manual image flow.
-export const signWidgetUploadParams = async (req, res) => {
-  try {
-    const { paramsToSign } = req.body;
-
-    if (!paramsToSign || typeof paramsToSign !== "object") {
-      return res.status(400).json({ message: "Missing paramsToSign." });
-    }
-
-    const signature = cloudinary.utils.api_sign_request(
-      paramsToSign,
-      process.env.CLOUDINARY_API_SECRET,
-    );
-
-    res.status(200).json({ signature });
-  } catch (error) {
-    console.error("SIGN WIDGET UPLOAD ERROR:", error.message);
+    console.error("CREATE VIDEO POST ERROR:", error.message);
     res.status(500).json({ message: error.message });
   }
 };

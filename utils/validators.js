@@ -94,14 +94,27 @@ export const createImageSignatureSchema = z.object({
   count: z.number().int().min(1).max(4).optional().default(1),
 });
 
-// Signed browser upload: request a signature for a video upload.
-export const createVideoSignatureSchema = z.object({
+// Signed browser upload: request a signature for a video upload. No body
+// needed — the post is created separately after the upload completes
+// (see createVideoPostSchema), so this is just an empty-object check.
+export const createVideoSignatureSchema = z.object({});
+
+// Create a video post from an already-uploaded Cloudinary asset (the
+// custom uploader flow — see controllers/postController.js). The URL/
+// publicId are re-validated against our cloud + folder in the controller;
+// this schema only enforces shape.
+export const createVideoPostSchema = z.object({
   text: z
     .string()
     .trim()
     .max(280, "Post text must be at most 280 characters")
     .optional()
     .default(""),
+  video: z.object({
+    publicId: z.string().trim().min(1, "Missing video publicId").max(255),
+    url: z.string().url("Invalid video URL"),
+    durationSeconds: z.number().positive().max(600).nullable().optional(),
+  }),
 });
 
 // Edit is text-only (images are fixed after posting). Empty text is
@@ -228,7 +241,11 @@ export const updateRoleSchema = z.object({
 // ─── Middleware factory ──────────────────────────────────────────────────────
 
 export const validate = (schema) => (req, res, next) => {
-  const result = schema.safeParse(req.body);
+  // Default to {} for bodyless requests: axios doesn't send a
+  // Content-Type/body at all when a POST has no data, so express.json()
+  // never runs and req.body stays undefined — z.object() schemas would
+  // otherwise reject it with "expected object, received undefined".
+  const result = schema.safeParse(req.body ?? {});
   if (!result.success) {
     const firstError = result.error.issues[0];
     const errors = result.error.issues.map((issue) => ({

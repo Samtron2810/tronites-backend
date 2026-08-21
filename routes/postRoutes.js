@@ -4,7 +4,7 @@ import {
   createPost,
   createImageUploadSignature,
   createVideoUploadSignature,
-  signWidgetUploadParams,
+  createVideoPost,
   editPost,
   getFeedPosts,
   searchPosts,
@@ -19,14 +19,11 @@ import {
   createPostSchema,
   createImageSignatureSchema,
   createVideoSignatureSchema,
+  createVideoPostSchema,
   editPostSchema,
   paginationSchema,
 } from "../utils/validators.js";
-import {
-  postLimiter,
-  editPostLimiter,
-  apiLimiter,
-} from "../middleware/rateLimiter.js";
+import { postLimiter, editPostLimiter } from "../middleware/rateLimiter.js";
 
 const router = express.Router();
 
@@ -42,9 +39,8 @@ router.post(
   createImageUploadSignature,
 );
 
-// Signed browser upload: create the post shell and request a signature
-// for the video upload. The frontend uploads the video directly to
-// Cloudinary; the webhook flips the post to "ready" when done.
+// Signed browser upload: request a signature for a direct video upload.
+// No post is created here — see POST /video below.
 router.post(
   "/signature/video",
   protect,
@@ -53,17 +49,15 @@ router.post(
   createVideoUploadSignature,
 );
 
-// Cloudinary Upload Widget signing callback — the widget calls this
-// directly (once per upload attempt, possibly more on retry) with the
-// exact params it wants signed. No validation schema here since the
-// param shape is Cloudinary's widget internals, not our API contract;
-// apiLimiter (not postLimiter) since this isn't itself a post-creation
-// action and the widget may call it more than once per post.
+// Custom uploader flow: create the video post AFTER the browser has
+// uploaded the asset directly to Cloudinary (signed via /signature/video).
+// The controller validates the asset belongs to our cloud + folder.
 router.post(
-  "/signature/video/sign",
+  "/video",
   protect,
-  apiLimiter,
-  signWidgetUploadParams,
+  postLimiter,
+  validate(createVideoPostSchema),
+  createVideoPost,
 );
 
 router.put("/like/:id", protect, likePost);
