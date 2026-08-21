@@ -1,6 +1,8 @@
 import { Worker } from "bullmq";
 import cloudinary from "../utils/cloudinary.js";
 import Post from "../models/Post.js";
+import { emitToUser, emitToFollowersOf } from "../socket/socket.js";
+import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
 
 const connection = {
   url: process.env.REDIS_URL || "redis://localhost:6379",
@@ -84,15 +86,27 @@ export const startVideoUploadWorker = () => {
 
     worker.on("failed", async (job, err) => {
       console.error(`Video upload job ${job?.id} failed:`, err.message);
-      if (job?.data?.postId) {
-        await Post.updateOne(
-          { _id: job.data.postId },
+      const postId = job?.data?.postId;
+      if (!postId) return;
+
+      try {
+        const post = await Post.findOneAndUpdate(
+          { _id: postId },
           { $set: { "video.status": "failed" } },
-        ).catch((updateErr) =>
-          console.error(
-            `Failed to mark post ${job.data.postId} video as failed:`,
-            updateErr.message,
-          ),
+          { new: true },
+        );
+        if (!post) return;
+
+        invalidateFeedCache(post.user);
+        invalidateCache(`profile-posts:${post.user}:*`);
+
+        const failPayload = { postId: post._id, video: { status: "failed" } };
+        emitToUser(post.user, "videoFailed", failPayload);
+        emitToFollowersOf(post.user, "videoFailed", failPayload);
+      } catch (updateErr) {
+        console.error(
+          `Failed to mark post ${postId} video as failed:`,
+          updateErr.message,
         );
       }
     });

@@ -1,15 +1,23 @@
+import crypto from "crypto";
 import Post from "../models/Post.js";
 import User from "../models/User.js";
 import Comment from "../models/Comment.js";
 import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
 import { io, emitToUser, emitToFollowersOf } from "../socket/socket.js";
-import { getOrSetCache, invalidateCache, getFeedCacheKey, invalidateFeedCache } from "../utils/redis.js";
+import {
+  getOrSetCache,
+  invalidateCache,
+  getFeedCacheKey,
+  invalidateFeedCache,
+} from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
-import { enqueueVideoUpload } from "../queues/videoUploadQueue.js";
 import { listFollowingIds } from "../services/followService.js";
 import { getMutedIds, hasMuted } from "../services/muteService.js";
-import { getBlockedEitherWayIds, isBlockedEitherWay } from "../services/blockService.js";
+import {
+  getBlockedEitherWayIds,
+  isBlockedEitherWay,
+} from "../services/blockService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
 import {
   hasLiked,
@@ -26,33 +34,46 @@ import {
   listBookmarkedPosts,
 } from "../services/bookmarkService.js";
 
-// CREATE POST
+// CREATE POST — images now arrive as Cloudinary URLs (signed browser
+// upload flow, see createImageUploadSignature). The frontend uploads
+// directly to Cloudinary, gets back secure_urls, and sends them here.
+// Legacy multer-file path is kept for backward compatibility with any
+// older client still posting that way.
 export const createPost = async (req, res) => {
   try {
     const { text } = req.body;
-    // req.files: multiple-image path (upload.array). req.file: legacy
-    // single-image path, kept for any older client still posting that way.
+    // New path: images come as an array of Cloudinary URLs in the body.
+    const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
+    // Legacy path: multer files (upload.array). req.file: legacy single.
     const files = req.files?.length ? req.files : req.file ? [req.file] : [];
 
-    if (!text?.trim() && files.length === 0) {
+    if (!text?.trim() && bodyImages.length === 0 && files.length === 0) {
       return res.status(400).json({
         message: "Post must contain text or image",
       });
     }
 
-    if (files.length > 4) {
+    if (bodyImages.length + files.length > 4) {
       return res.status(400).json({ message: "Max 4 images per post" });
     }
 
     let imageUrls = [];
 
-    if (files.length > 0) {
-      // Enqueue each upload instead of calling cloudinary.uploader.upload()
-      // directly. Same end result (we still wait for the URLs before
-      // responding — the client needs them), but the actual HTTP calls to
-      // Cloudinary run in the worker, not inline in this handler. Running
-      // them in parallel (not sequentially) keeps a 4-image post from
-      // taking 4x as long as a 1-image post.
+    if (bodyImages.length > 0) {
+      // Validate the URLs come from our Cloudinary account to prevent
+      // arbitrary URL injection into the DB.
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+      const allowedPrefix = `https://res.cloudinary.com/${cloudName}/`;
+      const valid = bodyImages.every(
+        (url) => typeof url === "string" && url.startsWith(allowedPrefix),
+      );
+      if (!valid) {
+        return res.status(400).json({ message: "Invalid image URL" });
+      }
+      imageUrls = bodyImages;
+    } else if (files.length > 0) {
+      // Legacy multer path — upload via the image queue (kept for old
+      // clients). New clients use the signed browser upload instead.
       try {
         const results = await Promise.all(
           files.map((file) => {
@@ -105,7 +126,9 @@ export const createPost = async (req, res) => {
 
         await Promise.all(
           mentionedUsers
-            .filter((mentionedUser) => !blockedIds.has(mentionedUser._id.toString()))
+            .filter(
+              (mentionedUser) => !blockedIds.has(mentionedUser._id.toString()),
+            )
             .map(async (mentionedUser) => {
               // A mute is one-directional and only affects the muter's
               // own feed/notifications, not the sender's ability to
@@ -154,20 +177,61 @@ export const createPost = async (req, res) => {
   }
 };
 
-// CREATE VIDEO POST — separate from createPost: video processing is
-// async (see videoUploadQueue.js), so this responds immediately with
-// the post in "processing" state instead of waiting for the finished
-// URL like createPost does for images.
-const MAX_VIDEO_DURATION_SECONDS = 30;
+// ─── Signed browser upload (Option B) ───────────────────────────────────────
+// The frontend uploads media directly to Cloudinary (no Redis, no backend
+// bandwidth). The backend only generates a signed upload request — the
+// signature is an HMAC of the upload params + timestamp using the API
+// secret, which never leaves the server. Cloudinary validates the
+// signature before accepting the upload, so users can't upload to
+// arbitrary folders or with arbitrary transformations.
 
-export const createVideoPost = async (req, res) => {
+const MAX_VIDEO_DURATION_SECONDS = 30;
+const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL;
+
+// Generates signed upload params for a single image. The frontend calls
+// this once per post (with the image count), then uploads each image
+// directly to Cloudinary using the returned signature.
+export const createImageUploadSignature = async (req, res) => {
+  try {
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = "tronites_posts";
+    const transformation = "w_1600,h_1600,c_limit,q_auto,f_auto";
+
+    // Params that must be signed — Cloudinary rejects the upload if the
+    // signature doesn't match these exact values.
+    const paramsToSign = {
+      timestamp,
+      folder,
+      transformation,
+    };
+
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      process.env.CLOUDINARY_API_SECRET,
+    );
+
+    res.status(200).json({
+      signature,
+      timestamp,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      folder,
+      transformation,
+    });
+  } catch (error) {
+    console.error("CREATE IMAGE SIGNATURE ERROR:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Creates the post shell (video.status: "processing") and returns signed
+// upload params for the video. The frontend uploads the video directly to
+// Cloudinary with these params; Cloudinary's async eager transformation
+// then calls our webhook (notification_url) which flips the post to
+// "ready" with the playable URL.
+export const createVideoUploadSignature = async (req, res) => {
   try {
     const { text } = req.body;
-    const file = req.file;
-
-    if (!file) {
-      return res.status(400).json({ message: "Video file is required" });
-    }
 
     const post = await Post.create({
       user: req.user._id,
@@ -176,30 +240,44 @@ export const createVideoPost = async (req, res) => {
       video: { status: "processing" },
     });
 
-    try {
-      const b64 = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
-      await enqueueVideoUpload({
-        base64Data: b64,
-        postId: post._id.toString(),
-        maxDurationSeconds: MAX_VIDEO_DURATION_SECONDS,
-      });
-    } catch (queueError) {
-      // Enqueue failed before any Cloudinary work started — no orphaned
-      // remote asset to worry about, just remove the post shell we
-      // created above instead of leaving a permanently-stuck
-      // "processing" post with no job behind it.
-      await post.deleteOne();
-      return res.status(queueError.httpStatus || 503).json({
-        message: queueError.message,
-        code: queueError.code || "VIDEO_QUEUE_UNAVAILABLE",
-      });
-    }
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = "tronites_videos";
+    const eager = `so_0,du_${MAX_VIDEO_DURATION_SECONDS},f_mp4,vc_h264,q_auto`;
+    const notificationUrl = `${BACKEND_PUBLIC_URL}/api/webhooks/cloudinary`;
+    const context = `postId=${post._id.toString()}`;
 
-    const populatedPost = await post.populate("user", "name profilePic");
+    // Params that must be signed — Cloudinary rejects the upload if the
+    // signature doesn't match these exact values.
+    //
+    // NOTE: We build the signature manually (not via
+    // cloudinary.utils.api_sign_request) to guarantee the exact string
+    // matches what the browser sends. The browser does NOT include
+    // `resource_type` as a form field — it only appears in the upload URL
+    // path (`.../video/upload`). So `resource_type` must be EXCLUDED from
+    // the string-to-sign, or the signature never matches. Building the
+    // HMAC-SHA1 over the exact sorted params (without resource_type)
+    // matches what Cloudinary verifies.
+    const paramsToSign = {
+      timestamp,
+      folder,
+      eager,
+      eager_async: true,
+      notification_url: notificationUrl,
+      context,
+    };
 
-    // Mentions notified immediately, same as createPost — no reason to
-    // wait for video processing to notify someone they were mentioned
-    // in the caption.
+    const stringToSign = Object.keys(paramsToSign)
+      .sort()
+      .map((key) => `${key}=${paramsToSign[key]}`)
+      .join("&");
+
+    const signature = crypto
+      .createHmac("sha1", process.env.CLOUDINARY_API_SECRET)
+      .update(stringToSign)
+      .digest("hex");
+
+    // Notify mentioned users immediately — no reason to wait for video
+    // processing to notify someone they were mentioned in the caption.
     try {
       const mentionedUsernames = extractMentions(text);
       if (mentionedUsernames.length) {
@@ -212,7 +290,9 @@ export const createVideoPost = async (req, res) => {
 
         await Promise.all(
           mentionedUsers
-            .filter((mentionedUser) => !blockedIds.has(mentionedUser._id.toString()))
+            .filter(
+              (mentionedUser) => !blockedIds.has(mentionedUser._id.toString()),
+            )
             .map(async (mentionedUser) => {
               if (await hasMuted(mentionedUser._id, req.user._id)) return;
 
@@ -237,15 +317,30 @@ export const createVideoPost = async (req, res) => {
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
 
-    res.status(201).json(populatedPost);
+    res.status(201).json({
+      postId: post._id,
+      signature,
+      timestamp,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      folder,
+      resourceType: "video",
+      eager,
+      eagerAsync: true,
+      notificationUrl,
+      context,
+    });
 
+    // Real-time post feed update for followers — the post shell is
+    // visible immediately with "Processing video..." state.
     try {
+      const populatedPost = await post.populate("user", "name profilePic");
       emitToFollowersOf(req.user._id, "newPost", populatedPost);
     } catch (socketError) {
       console.error("Real-time feed emission error:", socketError);
     }
   } catch (error) {
-    console.error("CREATE VIDEO POST ERROR:", error.message);
+    console.error("CREATE VIDEO SIGNATURE ERROR:", error.message);
     res.status(500).json({ message: error.message });
   }
 };
@@ -298,7 +393,9 @@ export const editPost = async (req, res) => {
 
         await Promise.all(
           mentionedUsers
-            .filter((mentionedUser) => !blockedIds.has(mentionedUser._id.toString()))
+            .filter(
+              (mentionedUser) => !blockedIds.has(mentionedUser._id.toString()),
+            )
             .map(async (mentionedUser) => {
               if (await hasMuted(mentionedUser._id, req.user._id)) return;
 
@@ -341,12 +438,39 @@ export const editPost = async (req, res) => {
   }
 };
 
+// Stuck-post cleanup: a video post can be left in "processing" forever
+// if the Cloudinary webhook never fires (e.g. the notification_url was
+// unreachable, or the eager transformation silently failed). This
+// fire-and-forget sweep marks any post stuck in "processing" for more
+// than STALE_PROCESSING_MS as "failed" so the feed shows a clear error
+// state instead of an infinite spinner. Runs on each feed fetch (cheap:
+// one indexed query) and never blocks the response.
+const STALE_PROCESSING_MS = 10 * 60 * 1000; // 10 minutes
+
+const markStaleProcessingVideosAsFailed = async () => {
+  try {
+    const cutoff = new Date(Date.now() - STALE_PROCESSING_MS);
+    await Post.updateMany(
+      {
+        "video.status": "processing",
+        updatedAt: { $lt: cutoff },
+      },
+      { $set: { "video.status": "failed" } },
+    );
+  } catch (err) {
+    console.error("Stale video cleanup error:", err.message);
+  }
+};
+
 // GET PERSONALIZED FEED POSTS
 export const getFeedPosts = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
+
+    // Fire-and-forget — don't block the feed response on cleanup.
+    markStaleProcessingVideosAsFailed();
 
     const cacheKey = await getFeedCacheKey(req.user._id, page, limit);
 
@@ -362,7 +486,9 @@ export const getFeedPosts = async (req, res) => {
         // explicitly rather than already being absent from
         // followingIds.
         const mutedIds = await getMutedIds(req.user._id);
-        const visibleFollowingIds = followingIds.filter((id) => !mutedIds.has(id));
+        const visibleFollowingIds = followingIds.filter(
+          (id) => !mutedIds.has(id),
+        );
 
         // Users allowed in feed
         const feedUsers = [...visibleFollowingIds, req.user._id];
@@ -552,7 +678,9 @@ export const likePost = async (req, res) => {
       post.user.toString() !== userId.toString() &&
       (await isBlockedEitherWay(userId, post.user))
     ) {
-      return res.status(403).json({ message: "You can't interact with this post." });
+      return res
+        .status(403)
+        .json({ message: "You can't interact with this post." });
     }
 
     // Read-then-act, same as the follow/unfollow toggle — but the actual
@@ -672,7 +800,9 @@ export const toggleBookmark = async (req, res) => {
       post.user.toString() !== userId.toString() &&
       (await isBlockedEitherWay(userId, post.user))
     ) {
-      return res.status(403).json({ message: "You can't interact with this post." });
+      return res
+        .status(403)
+        .json({ message: "You can't interact with this post." });
     }
 
     // Read-then-act, race safety comes from the unique {user, post}

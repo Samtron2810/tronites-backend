@@ -29,12 +29,10 @@ import {
 import { apiLimiter } from "./middleware/rateLimiter.js";
 import csrfProtection from "./middleware/csrfProtection.js";
 import { startImageUploadWorker } from "./queues/imageUploadWorker.js";
-import { startVideoUploadWorker } from "./queues/videoUploadWorker.js";
 import {
   imageUploadQueue,
   imageUploadQueueEvents,
 } from "./queues/imageUploadQueue.js";
-import { videoUploadQueue } from "./queues/videoUploadQueue.js";
 import { connectRedis, isRedisReady, disconnectRedis } from "./utils/redis.js";
 import errorHandler from "./middleware/errorHandler.js";
 
@@ -148,7 +146,6 @@ const startServer = async () => {
   await initSocketRedisAdapter();
 
   const worker = startImageUploadWorker();
-  const videoWorker = startVideoUploadWorker();
 
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
@@ -180,10 +177,8 @@ const startServer = async () => {
         worker ? worker.close() : Promise.resolve(),
         imageUploadQueue.close(),
         imageUploadQueueEvents.close(),
-        videoWorker ? videoWorker.close() : Promise.resolve(),
-        videoUploadQueue.close(),
       ]);
-      console.log("Image/video upload queues and workers closed");
+      console.log("Image upload queue and worker closed");
 
       await disconnectSocketRedis();
       console.log("Socket Redis adapter disconnected");

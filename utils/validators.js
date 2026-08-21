@@ -72,6 +72,27 @@ export const createPostSchema = z.object({
     .max(280, "Post text must be at most 280 characters")
     .optional()
     .default(""),
+  // Signed browser upload: images arrive as Cloudinary URLs.
+  images: z
+    .array(z.string().url("Invalid image URL"))
+    .max(4, "Max 4 images per post")
+    .optional()
+    .default([]),
+});
+
+// Signed browser upload: request a signature for image uploads.
+export const createImageSignatureSchema = z.object({
+  count: z.number().int().min(1).max(4).optional().default(1),
+});
+
+// Signed browser upload: request a signature for a video upload.
+export const createVideoSignatureSchema = z.object({
+  text: z
+    .string()
+    .trim()
+    .max(280, "Post text must be at most 280 characters")
+    .optional()
+    .default(""),
 });
 
 // Edit is text-only (images are fixed after posting). Empty text is

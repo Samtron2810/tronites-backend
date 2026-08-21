@@ -51,22 +51,43 @@ export const handleCloudinaryWebhook = async (req, res) => {
     // by public_id, which is Cloudinary's ID, not ours.
     const postId = context?.custom?.postId;
     if (!postId) {
-      console.error("Cloudinary webhook: no postId in context, public_id:", public_id);
+      console.error(
+        "Cloudinary webhook: no postId in context, public_id:",
+        public_id,
+      );
       return res.status(200).json({ received: true });
     }
 
     const post = await Post.findById(postId);
-    if (!post || post.video?.publicId !== public_id) {
-      // Post was deleted, or this callback is for a different/stale
-      // asset than what the post currently references — nothing to
-      // update.
+    if (!post) {
+      // Post was deleted — nothing to update.
       return res.status(200).json({ received: true });
+    }
+
+    // With the signed browser upload flow, the post shell is created
+    // before the video is uploaded, so publicId isn't known yet. Record
+    // it from the callback. If a publicId is already stored and it
+    // doesn't match, this is a stale/different asset — ignore it.
+    if (post.video?.publicId && post.video.publicId !== public_id) {
+      return res.status(200).json({ received: true });
+    }
+    if (!post.video?.publicId) {
+      post.video.publicId = public_id;
     }
 
     const readyVariant = eager?.[0];
     if (!readyVariant?.secure_url) {
       post.video.status = "failed";
       await post.save();
+      invalidateFeedCache(post.user);
+      invalidateCache(`profile-posts:${post.user}:*`);
+      try {
+        const failPayload = { postId: post._id, video: { status: "failed" } };
+        emitToUser(post.user, "videoFailed", failPayload);
+        emitToFollowersOf(post.user, "videoFailed", failPayload);
+      } catch (socketError) {
+        console.error("Video-failed emission error:", socketError.message);
+      }
       return res.status(200).json({ received: true });
     }
 

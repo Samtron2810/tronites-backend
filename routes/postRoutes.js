@@ -1,9 +1,9 @@
 import express from "express";
 import protect from "../middleware/authMiddleware.js";
-import { uploadMultiple, uploadVideo } from "../middleware/uploadMiddleware.js";
 import {
   createPost,
-  createVideoPost,
+  createImageUploadSignature,
+  createVideoUploadSignature,
   editPost,
   getFeedPosts,
   searchPosts,
@@ -14,32 +14,48 @@ import {
   getPostsByHashtag,
 } from "../controllers/postController.js";
 import { validate, validateQuery } from "../utils/validators.js";
-import { createPostSchema, editPostSchema, paginationSchema } from "../utils/validators.js";
+import {
+  createPostSchema,
+  createImageSignatureSchema,
+  createVideoSignatureSchema,
+  editPostSchema,
+  paginationSchema,
+} from "../utils/validators.js";
 import { postLimiter, editPostLimiter } from "../middleware/rateLimiter.js";
 
 const router = express.Router();
 
+// Signed browser upload: images arrive as Cloudinary URLs in the body.
+router.post("/", protect, postLimiter, validate(createPostSchema), createPost);
+
+// Signed browser upload: request a signature for image uploads.
 router.post(
-  "/",
+  "/signature/image",
   protect,
   postLimiter,
-  uploadMultiple.array("images", 4),
-  validate(createPostSchema),
-  createPost,
+  validate(createImageSignatureSchema),
+  createImageUploadSignature,
 );
 
+// Signed browser upload: create the post shell and request a signature
+// for the video upload. The frontend uploads the video directly to
+// Cloudinary; the webhook flips the post to "ready" when done.
 router.post(
-  "/video",
+  "/signature/video",
   protect,
   postLimiter,
-  uploadVideo.single("video"),
-  validate(createPostSchema),
-  createVideoPost,
+  validate(createVideoSignatureSchema),
+  createVideoUploadSignature,
 );
 
 router.put("/like/:id", protect, likePost);
 router.put("/bookmark/:id", protect, toggleBookmark);
-router.get("/bookmarks", protect, validateQuery(paginationSchema), getBookmarkedPosts);
+router.get(
+  "/bookmarks",
+  protect,
+  validateQuery(paginationSchema),
+  getBookmarkedPosts,
+);
 
 router.put(
   "/:id",
