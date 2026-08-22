@@ -19,7 +19,7 @@
     "@getbrevo/brevo": "^6.0.2",
     "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^3.0.3",
-    "bullmq": "^5.34.5",
+    "bullmq": "^6.1.2",
     "cloudinary": "^2.10.0",
     "cookie": "^0.7.2",
     "cookie-parser": "^1.4.7",
