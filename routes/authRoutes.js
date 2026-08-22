@@ -7,6 +7,7 @@ import {
   resetPassword,
   loginUser,
   logoutUser,
+  refreshAccessToken,
   getMe,
 } from "../controllers/authController.js";
 
@@ -47,6 +48,12 @@ router.post(
 
 router.post("/login", authLimiter, validate(loginSchema), loginUser);
 router.post("/logout", logoutUser);
+// No auth middleware here by design — the whole point of /refresh is to
+// mint a new access token when the old one has already expired, so it
+// only checks the refresh token cookie, not `protect`'s access-token
+// check. authLimiter still applies to bound brute-force attempts against
+// the refresh cookie itself.
+router.post("/refresh", authLimiter, refreshAccessToken);
 router.get("/me", protect, getMe);
 
 export default router;
