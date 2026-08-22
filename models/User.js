@@ -104,11 +104,10 @@ const userSchema = new mongoose.Schema(
 
 // Keep `name` derived from firstName/lastName on every save, so nothing
 // downstream (DTOs, text search, sockets) needs to know the split exists.
-userSchema.pre("validate", function (next) {
+userSchema.pre("validate", function () {
   if (this.firstName || this.lastName) {
     this.name = `${this.firstName || ""} ${this.lastName || ""}`.trim();
   }
-  next();
 });
 
 // Indexes (email is already indexed via `unique: true` in the schema)
