@@ -383,7 +383,7 @@ export const editPost = async (req, res) => {
     }
 
     const { text } = req.body;
-    const hasImages = (post.images?.length || 0) > 0 || Boolean(post.image);
+    const hasImages = (post.images?.length || 0) > 0;
 
     if (!text?.trim() && !hasImages) {
       return res.status(400).json({
@@ -894,10 +894,9 @@ export const deletePost = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    // Delete Cloudinary image(s) safely — legacy single `image` plus any
-    // carousel `images`, deleted in parallel and independently so one
-    // failure doesn't block the others.
-    const urlsToDelete = [post.image, ...(post.images || [])].filter(Boolean);
+    // Delete Cloudinary image(s) safely — deleted in parallel and
+    // independently so one failure doesn't block the others.
+    const urlsToDelete = post.images || [];
     await Promise.all(
       urlsToDelete.map(async (url) => {
         try {

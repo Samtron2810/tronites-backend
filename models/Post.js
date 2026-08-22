@@ -21,14 +21,7 @@ const postSchema = new mongoose.Schema(
       default: [],
     },
 
-    // Legacy single-image field — kept so old posts keep rendering.
-    // New posts use `images` below instead.
-    image: {
-      type: String,
-      default: "",
-    },
-
-    // Carousel images (max 4). New posts write here; `image` stays empty.
+    // Carousel images (max 4).
     images: {
       type: [String],
       default: [],
