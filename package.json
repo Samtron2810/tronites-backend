@@ -1,7 +1,8 @@
 {
-  "name": "backend",
+  "name": "tronites-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Tronites — social media platform backend (Node/Express/MongoDB)",
+  "author": "Samtron2810",
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",

@@ -7,7 +7,7 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
       maxlength: 30,
-      match: /^[A-Za-z]+$/,
+      match: /^[\p{L}\p{M}][\p{L}\p{M}' -]*$/u,
     },
 
     lastName: {
@@ -15,7 +15,7 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
       maxlength: 30,
-      match: /^[A-Za-z]+$/,
+      match: /^[\p{L}\p{M}][\p{L}\p{M}' -]*$/u,
     },
 
     // Derived display name (`${firstName} ${lastName}`), stored so every
@@ -104,10 +104,11 @@ const userSchema = new mongoose.Schema(
 
 // Keep `name` derived from firstName/lastName on every save, so nothing
 // downstream (DTOs, text search, sockets) needs to know the split exists.
-userSchema.pre("validate", function () {
+userSchema.pre("validate", function (next) {
   if (this.firstName || this.lastName) {
     this.name = `${this.firstName || ""} ${this.lastName || ""}`.trim();
   }
+  next();
 });
 
 // Indexes (email is already indexed via `unique: true` in the schema)
