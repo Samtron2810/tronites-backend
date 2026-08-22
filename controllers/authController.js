@@ -1,6 +1,13 @@
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
-import generateToken, { clearAuthCookie } from "../utils/generateToken.js";
+import {
+  issueSession,
+  refreshSession,
+  revokeSession,
+  revokeAllSessions,
+  clearAuthCookies,
+  REFRESH_COOKIE_NAME,
+} from "../utils/tokens.js";
 import { toPrivateSelfDTO } from "../dtos/userDTO.js";
 import {
   startChallenge,
@@ -108,8 +115,11 @@ export const verifyOtp = async (req, res) => {
       throw createErr;
     }
 
-    // Generate token cookie
-    generateToken(res, user._id);
+    // Generate session (access + refresh token cookies)
+    await issueSession(res, user._id, {
+      userAgent: req.headers["user-agent"] || "",
+      ip: req.ip || "",
+    });
 
     res.status(201).json(toPrivateSelfDTO(user));
   } catch (error) {
@@ -210,7 +220,11 @@ export const resetPassword = async (req, res) => {
     const passwordHash = await bcrypt.hash(newPassword, 10);
 
     // passwordChangedAt drives the session-invalidation check in
-    // authMiddleware: any JWT issued before this timestamp is rejected.
+    // authMiddleware for any access token still valid from before this
+    // reset. That covers the 15-minute access-token window; the refresh
+    // tokens covering the following 30 days are killed outright here so
+    // a stolen refresh token from before the reset can't mint further
+    // access tokens either.
     await User.updateOne(
       { email },
       {
@@ -220,6 +234,9 @@ export const resetPassword = async (req, res) => {
         },
       },
     );
+
+    const resetUser = await User.findOne({ email }).select("_id");
+    if (resetUser) await revokeAllSessions(resetUser._id);
 
     res
       .status(200)
@@ -264,7 +281,10 @@ export const loginUser = async (req, res) => {
         .json({ message: "Invalid email/username or password" });
     }
 
-    generateToken(res, user._id);
+    await issueSession(res, user._id, {
+      userAgent: req.headers["user-agent"] || "",
+      ip: req.ip || "",
+    });
 
     res.status(200).json(toPrivateSelfDTO(user));
   } catch (error) {
@@ -272,9 +292,30 @@ export const loginUser = async (req, res) => {
   }
 };
 
+// REFRESH — exchanges a valid refresh token for a new access token (and
+// rotates the refresh token itself). Called by the frontend axios
+// interceptor when a request comes back 401 due to access-token expiry,
+// so a 15-minute access token doesn't force a re-login every 15 minutes.
+export const refreshAccessToken = async (req, res) => {
+  try {
+    const presented = req.cookies[REFRESH_COOKIE_NAME];
+    const result = await refreshSession(res, presented);
+
+    if (!result) {
+      clearAuthCookies(res);
+      return res.status(401).json({ message: "Session expired, please log in again" });
+    }
+
+    res.status(200).json({ message: "Refreshed" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 //logout controller
-export const logoutUser = (req, res) => {
-  clearAuthCookie(res);
+export const logoutUser = async (req, res) => {
+  await revokeSession(req.cookies[REFRESH_COOKIE_NAME]);
+  clearAuthCookies(res);
 
   res.status(200).json({ message: "Logged out" });
 };

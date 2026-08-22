@@ -63,7 +63,12 @@ app.use(helmet({ contentSecurityPolicy: false }));
 // authentication.
 app.use("/api/webhooks", webhookRoutes);
 
-app.use(express.json({ limit: "20mb" }));
+// Media (images/video) goes straight to Cloudinary from the client, not
+// through this JSON body — the API only ever receives text, URLs, and
+// metadata. 1mb is generous headroom for that; 20mb needlessly widened
+// the DoS surface since a large JSON body is expensive to parse before
+// rate limiting even gets a chance to reject it.
+app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 app.use(cookieParser());
 
