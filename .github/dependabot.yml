@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Patch/minor bumps are usually safe to land together; keep major
+      # bumps (framework/driver upgrades that may need code changes) as
+      # separate, individually-reviewed PRs instead of bundling them in.
+      routine-updates:
+        update-types:
+          - "minor"
+          - "patch"

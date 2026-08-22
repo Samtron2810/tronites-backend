@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+      - run: npm ci
+      # No ESLint config exists yet in this repo — syntax-check every
+      # source file instead as a cheap floor (catches the class of typo
+      # a linter would also catch, without requiring an eslint setup
+      # this repo doesn't have). Swap for `npm run lint` once one's added.
+      - name: Syntax check
+        run: |
+          find . -name "*.js" \
+            -not -path "./node_modules/*" \
+            -print0 | xargs -0 -n1 node --check
+      - run: npm test

@@ -21,8 +21,15 @@ const postSchema = new mongoose.Schema(
       default: [],
     },
 
-    // Legacy single-image field — kept so old posts keep rendering.
-    // New posts use `images` below instead.
+    // Legacy single-image field. Fully superseded by `images` below —
+    // scripts/mergeLegacyPostImage.js merges any remaining values into
+    // images[] and unsets this field. Kept in the schema (not removed)
+    // until that migration is confirmed run against production, so
+    // Mongoose doesn't strip/reject the field on old unmigrated
+    // documents. Safe to delete this field entirely once migration is
+    // verified complete — search the codebase for `post.image` (the two
+    // remaining dual-read sites in postController.js and PostCard.jsx
+    // are both commented with this same note).
     image: {
       type: String,
       default: "",

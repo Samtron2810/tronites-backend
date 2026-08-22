@@ -9,9 +9,7 @@ lerna-debug.log*
 
 node_modules
 scripts
-tests
 .env
-.github/
 vitest.config.js
 test-cloudinary.js
 dist
@@ -30,5 +28,4 @@ dist-ssr
 *.sw?
 
 *playground*
-"scripts/"
-".github/" 
+"scripts/" 

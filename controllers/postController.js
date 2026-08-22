@@ -383,7 +383,11 @@ export const editPost = async (req, res) => {
     }
 
     const { text } = req.body;
-    const hasImages = (post.images?.length || 0) > 0 || Boolean(post.image);
+    // `image` is a legacy field, fully merged into `images[]` by
+    // scripts/mergeLegacyPostImage.js — run that migration before
+    // deploying this check if any legacy rows haven't been migrated yet,
+    // or old image-only posts' edits would incorrectly reject as empty.
+    const hasImages = (post.images?.length || 0) > 0;
 
     if (!text?.trim() && !hasImages) {
       return res.status(400).json({
@@ -487,16 +491,24 @@ const markStaleProcessingVideosAsFailed = async () => {
 };
 
 // GET PERSONALIZED FEED POSTS
+//
+// Cursor-based (keyset) pagination on _id, not offset/skip. With skip(),
+// (a) skip() gets slow scanning past N discarded docs on large
+// collections, and (b) a post created between two page fetches shifts
+// every subsequent page by one, so page 2 duplicates page 1's last item.
+// _id is ObjectId, which is monotonically increasing with createdAt for
+// this app's insert pattern, so `_id < cursor` is equivalent to
+// `createdAt < cursor's createdAt` but is a single indexed inequality
+// instead of a skip — correct regardless of inserts happening mid-scroll.
 export const getFeedPosts = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
+    const cursor = req.query.before; // last post _id from the previous page
 
     // Fire-and-forget — don't block the feed response on cleanup.
     markStaleProcessingVideosAsFailed();
 
-    const cacheKey = await getFeedCacheKey(req.user._id, page, limit);
+    const cacheKey = await getFeedCacheKey(req.user._id, cursor || "start", limit);
 
     const result = await getOrSetCache(
       cacheKey,
@@ -517,29 +529,30 @@ export const getFeedPosts = async (req, res) => {
         // Users allowed in feed
         const feedUsers = [...visibleFollowingIds, req.user._id];
 
-        // Fetch posts
-        const posts = await Post.find({
+        const filter = {
           user: { $in: feedUsers },
-        })
-          .populate("user", "name profilePic")
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(limit);
+          ...(cursor ? { _id: { $lt: cursor } } : {}),
+        };
 
-        // Total count for pagination
-        const totalPosts = await Post.countDocuments({
-          user: { $in: feedUsers },
-        });
+        // Fetch one extra doc to know if there's a next page without a
+        // separate countDocuments() call.
+        const posts = await Post.find(filter)
+          .populate("user", "name profilePic")
+          .sort({ _id: -1 })
+          .limit(limit + 1);
+
+        const hasMore = posts.length > limit;
+        const page = hasMore ? posts.slice(0, limit) : posts;
 
         // Bulk-check which of these posts the viewer has liked/bookmarked
         // — one query each instead of an in-memory array scan per post.
-        const postIds = posts.map((p) => p._id);
+        const postIds = page.map((p) => p._id);
         const [likedPostIds, bookmarkedPostIds] = await Promise.all([
           getLikedPostIds(req.user._id, postIds),
           getBookmarkedPostIds(req.user._id, postIds),
         ]);
 
-        const formattedPosts = posts.map((post) => ({
+        const formattedPosts = page.map((post) => ({
           ...post._doc,
           isLiked: likedPostIds.has(post._id.toString()),
           isBookmarked: bookmarkedPostIds.has(post._id.toString()),
@@ -547,9 +560,8 @@ export const getFeedPosts = async (req, res) => {
 
         return {
           posts: formattedPosts,
-          totalPosts,
-          currentPage: page,
-          totalPages: Math.ceil(totalPosts / limit),
+          hasMore,
+          nextCursor: hasMore ? page[page.length - 1]._id : null,
         };
       },
       // Short TTL by design: likes/comments update live via socket for
@@ -575,31 +587,35 @@ export const getPostsByHashtag = async (req, res) => {
     const tag = (req.params.tag || "").trim().toLowerCase();
     if (!tag) return res.status(400).json({ message: "Hashtag is required" });
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
+    const cursor = req.query.before; // last post _id from the previous page
 
-    const cacheKey = `hashtag:${tag}:${page}:${limit}`;
+    const cacheKey = `hashtag:${tag}:${cursor || "start"}:${limit}`;
 
     // Shared across every viewer of this hashtag page (keyed only by
-    // tag/page/limit) — same reasoning as profile-posts: isLiked/
+    // tag/cursor/limit) — same reasoning as profile-posts: isLiked/
     // isBookmarked are viewer-specific and must be computed per-request,
     // outside the cached fetchFn, not baked into the shared cache entry.
     const result = await getOrSetCache(
       cacheKey,
       async () => {
-        const posts = await Post.find({ hashtags: tag })
-          .populate("user", "name username profilePic")
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(limit);
+        const filter = {
+          hashtags: tag,
+          ...(cursor ? { _id: { $lt: cursor } } : {}),
+        };
 
-        const totalPosts = await Post.countDocuments({ hashtags: tag });
+        const posts = await Post.find(filter)
+          .populate("user", "name username profilePic")
+          .sort({ _id: -1 })
+          .limit(limit + 1);
+
+        const hasMore = posts.length > limit;
+        const page = hasMore ? posts.slice(0, limit) : posts;
 
         return {
-          posts,
-          totalPosts,
-          hasMore: skip + posts.length < totalPosts,
+          posts: page,
+          hasMore,
+          nextCursor: hasMore ? page[page.length - 1]._id : null,
         };
       },
       30,
@@ -624,15 +640,29 @@ export const getPostsByHashtag = async (req, res) => {
 };
 
 // SEARCH POSTS (content search — matches caption text via MongoDB $text)
+//
+// Sort is (textScore desc, _id desc) — relevance first, recency as a
+// tiebreaker among equally-relevant posts. skip()-based pagination has
+// the same problems here as feed/hashtag, but the cursor can't be a bare
+// _id like those use, since ordering isn't purely chronological: a page-2
+// request needs "give me results ranked below the last one I saw", i.e.
+// (score < lastScore) OR (score == lastScore AND _id < lastId). That
+// compound condition is what keeps relevance ordering correct while
+// still avoiding skip().
 export const searchPosts = async (req, res) => {
   try {
     const query = String(req.query.q || "").trim();
-    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(
       Math.max(parseInt(req.query.limit, 10) || 10, 1),
       30,
     );
-    const skip = (page - 1) * limit;
+    // Cursor from the previous page's last result: its score + _id.
+    const cursorScore =
+      req.query.afterScore !== undefined
+        ? parseFloat(req.query.afterScore)
+        : null;
+    const cursorId = req.query.afterId || null;
+    const hasCursor = cursorScore !== null && cursorId && !Number.isNaN(cursorScore);
 
     if (query.length < 2) {
       return res.status(200).json({ posts: [], hasMore: false });
@@ -651,30 +681,53 @@ export const searchPosts = async (req, res) => {
       ...(blockedIds.size ? { user: { $nin: [...blockedIds] } } : {}),
     };
 
-    const [posts, totalPosts] = await Promise.all([
-      Post.find(filter, { score: { $meta: "textScore" } })
-        .populate("user", "name username profilePic")
-        .sort({ score: { $meta: "textScore" }, createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Post.countDocuments(filter),
-    ]);
+    // Mongo can't apply a $lt/$or filter against the $meta-projected
+    // score inside the same find() (meta projection is evaluated after
+    // the query stage runs), so the compound (score, _id) cursor is
+    // applied in-memory against a capped candidate set instead. $text +
+    // the block filter already narrows results sharply for real queries,
+    // so MAX_SEARCH_CANDIDATES bounds worst-case work without a second
+    // round-trip; if it's ever hit, the result silently truncates rather
+    // than paginating past it — acceptable since search result sets this
+    // deep are not a realistic user journey.
+    const MAX_SEARCH_CANDIDATES = 500;
+    const candidates = await Post.find(filter, { score: { $meta: "textScore" } })
+      .populate("user", "name username profilePic")
+      .sort({ score: { $meta: "textScore" }, _id: -1 })
+      .limit(MAX_SEARCH_CANDIDATES);
 
-    const postIds = posts.map((p) => p._id);
+    const filtered = hasCursor
+      ? candidates.filter((p) => {
+          const s = p._doc.score;
+          if (s < cursorScore) return true;
+          if (s === cursorScore) return p._id.toString() < cursorId;
+          return false;
+        })
+      : candidates;
+
+    const hasMore = filtered.length > limit;
+    const page = hasMore ? filtered.slice(0, limit) : filtered;
+
+    const postIds = page.map((p) => p._id);
     const [likedPostIds, bookmarkedPostIds] = await Promise.all([
       getLikedPostIds(req.user._id, postIds),
       getBookmarkedPostIds(req.user._id, postIds),
     ]);
 
-    const formattedPosts = posts.map((post) => ({
+    const formattedPosts = page.map((post) => ({
       ...post._doc,
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
     }));
 
+    const last = page[page.length - 1];
+
     res.status(200).json({
       posts: formattedPosts,
-      hasMore: skip + formattedPosts.length < totalPosts,
+      hasMore,
+      nextCursor: hasMore
+        ? { afterScore: last._doc.score, afterId: last._id }
+        : null,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -894,9 +947,15 @@ export const deletePost = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    // Delete Cloudinary image(s) safely — legacy single `image` plus any
-    // carousel `images`, deleted in parallel and independently so one
-    // failure doesn't block the others.
+    // Delete Cloudinary image(s) safely — carousel `images`, deleted in
+    // parallel and independently so one failure doesn't block the
+    // others. Also includes the legacy `image` field as a safety net:
+    // scripts/mergeLegacyPostImage.js merges `image` into `images[]` and
+    // unsets it, but until that migration has actually been run against
+    // production data, any row it hasn't reached yet would silently
+    // orphan its Cloudinary asset on delete if `image` weren't checked
+    // here too. Safe to simplify to images-only once the migration is
+    // confirmed complete (post.image will always be absent by then).
     const urlsToDelete = [post.image, ...(post.images || [])].filter(Boolean);
     await Promise.all(
       urlsToDelete.map(async (url) => {
