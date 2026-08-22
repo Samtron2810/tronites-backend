@@ -165,9 +165,12 @@ const getFeedVersion = async (userId) => {
   }
 };
 
-export const getFeedCacheKey = async (userId, page, limit) => {
+// `pageKey` is either a page number (legacy) or a cursor id / "start" —
+// it's just an opaque string differentiating cache entries, the function
+// doesn't care what it represents.
+export const getFeedCacheKey = async (userId, pageKey, limit) => {
   const version = await getFeedVersion(userId);
-  return `feed:v${version}:${userId}:${page}:${limit}`;
+  return `feed:v${version}:${userId}:${pageKey}:${limit}`;
 };
 
 // O(1) invalidation: bump the version counter. No SCAN, no DEL.

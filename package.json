@@ -10,9 +10,11 @@
     "test": "vitest run"
   },
   "keywords": [],
-  "author": "",
   "license": "ISC",
   "type": "module",
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  },
   "dependencies": {
     "@getbrevo/brevo": "^6.0.2",
     "@socket.io/redis-adapter": "^8.3.0",
