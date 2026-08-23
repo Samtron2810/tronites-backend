@@ -15,7 +15,7 @@ export const sendMessage = async (req, res) => {
     const receiverId = req.params.userId;
     const { text } = req.body;
 
-    if ((!text || !text.trim()) && !req.file) {
+    if ((!text || !text.trim()) && (!req.files || req.files.length === 0)) {
       return res.status(400).json({ message: "Message cannot be empty." });
     }
 
@@ -45,28 +45,30 @@ export const sendMessage = async (req, res) => {
       });
     }
 
-    let imageUrl = null;
+    let imageUrls = [];
 
-    // Upload image to Cloudinary if provided
-    if (req.file) {
+    // Upload up to 4 images to Cloudinary if provided
+    if (req.files && req.files.length > 0) {
       try {
-        const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
-        const result = await cloudinary.uploader.upload(b64, {
-          folder: "tronites_messages",
-          // Server-side safety net: even if a client sends an
-          // uncompressed image, cap dimensions and let Cloudinary
-          // auto-optimize quality/format (same pattern as post images).
-          transformation: [
-            {
-              width: 1280,
-              height: 1280,
-              crop: "limit",
-              quality: "auto",
-              fetch_format: "auto",
-            },
-          ],
-        });
-        imageUrl = result.secure_url;
+        for (const file of req.files) {
+          const b64 = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
+          const result = await cloudinary.uploader.upload(b64, {
+            folder: "tronites_messages",
+            // Server-side safety net: even if a client sends an
+            // uncompressed image, cap dimensions and let Cloudinary
+            // auto-optimize quality/format (same pattern as post images).
+            transformation: [
+              {
+                width: 1280,
+                height: 1280,
+                crop: "limit",
+                quality: "auto",
+                fetch_format: "auto",
+              },
+            ],
+          });
+          imageUrls.push(result.secure_url);
+        }
       } catch (uploadError) {
         console.error("Image upload to Cloudinary failed:", uploadError);
         return res.status(500).json({ message: "Image upload failed." });
@@ -77,7 +79,7 @@ export const sendMessage = async (req, res) => {
       sender: senderId,
       receiver: receiverId,
       text: text?.trim() || null,
-      image: imageUrl,
+      images: imageUrls,
       conversationId: getConversationId(senderId, receiverId),
     });
 

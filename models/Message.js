@@ -31,6 +31,15 @@ const messageSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    // Up to 4 images per message. New sends populate this array; the
+    // legacy single `image` field below is kept for backward
+    // compatibility with older messages that predate multi-image.
+    images: {
+      type: [String],
+      default: [],
+    },
+    // Deprecated/legacy: single-image messages created before the
+    // multi-image upgrade. New messages use `images` instead.
     image: {
       type: String,
       default: null,

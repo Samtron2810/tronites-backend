@@ -1,6 +1,6 @@
 import express from "express";
 import protect from "../middleware/authMiddleware.js";
-import upload from "../middleware/uploadMiddleware.js";
+import { uploadMultiple } from "../middleware/uploadMiddleware.js";
 import { validate, validateQuery } from "../utils/validators.js";
 import { sendMessageSchema, paginationSchema } from "../utils/validators.js";
 import { messageLimiter } from "../middleware/rateLimiter.js";
@@ -23,17 +23,12 @@ router.get(
 );
 router.get("/requests", protect, getMessageRequests);
 router.put("/requests/:userId", protect, respondToRequest);
-router.get(
-  "/:userId",
-  protect,
-  validateQuery(paginationSchema),
-  getMessages,
-);
+router.get("/:userId", protect, validateQuery(paginationSchema), getMessages);
 router.post(
   "/:userId",
   protect,
   messageLimiter,
-  upload.single("image"),
+  uploadMultiple.array("images", 4),
   validate(sendMessageSchema),
   sendMessage,
 );
