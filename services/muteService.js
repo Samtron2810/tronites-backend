@@ -23,3 +23,9 @@ export const muteUser = async (muterId, mutedId) => {
 export const unmuteUser = async (muterId, mutedId) => {
   await Mute.deleteOne({ muter: muterId, muted: mutedId });
 };
+
+// Every mute edge involving a user, in either direction — used for
+// account deletion so no Mute row is left referencing a purged user
+// (as either the muter or the one muted).
+export const removeAllMuteEdgesForUser = (userId) =>
+  Mute.deleteMany({ $or: [{ muter: userId }, { muted: userId }] });

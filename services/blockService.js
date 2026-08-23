@@ -39,3 +39,9 @@ export const getBlockedEitherWayIds = async (userId) => {
   }
   return ids;
 };
+
+// Every block edge involving a user, in either direction — used for
+// account deletion so no Block row is left referencing a purged user
+// (as either the blocker or the one blocked).
+export const removeAllBlockEdgesForUser = (userId) =>
+  Block.deleteMany({ $or: [{ blocker: userId }, { blocked: userId }] });

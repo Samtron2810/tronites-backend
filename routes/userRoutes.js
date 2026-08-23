@@ -2,7 +2,9 @@ import express from "express";
 
 import protect from "../middleware/authMiddleware.js";
 import upload from "../middleware/uploadMiddleware.js";
+import { accountDeletionLimiter } from "../middleware/rateLimiter.js";
 import { validate } from "../utils/validators.js";
+import { deleteAccountSchema } from "../utils/validators.js";
 import { updateBioSchema, setUsernameSchema, presenceVisibilitySchema } from "../utils/validators.js";
 
 import {
@@ -20,6 +22,8 @@ import {
   blockUser,
   unblockUser,
   getBlockStatus,
+  deleteMyAccount,
+  exportMyData,
 } from "../controllers/userController.js";
 import { getMuteStatus, muteUserHandler, unmuteUserHandler } from "../controllers/muteController.js";
 
@@ -52,5 +56,7 @@ router.put(
 );
 router.get("/followers/:id", protect, getFollowers);
 router.get("/following/:id", protect, getFollowing);
+router.get("/me/export", protect, exportMyData);
+router.delete("/me", protect, accountDeletionLimiter, validate(deleteAccountSchema), deleteMyAccount);
 
 export default router;

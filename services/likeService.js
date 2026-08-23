@@ -75,3 +75,7 @@ export const removeLikeEdge = async (userId, postId) => {
 // Delete every like on a post — used when a post is deleted, so orphaned
 // like edges don't accumulate.
 export const removeAllLikesForPost = (postId) => Like.deleteMany({ post: postId });
+
+// Every like a user has made, across all posts — used for account
+// deletion so no Like row is left referencing a purged user.
+export const removeAllLikesForUser = (userId) => Like.deleteMany({ user: userId });

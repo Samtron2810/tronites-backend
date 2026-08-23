@@ -98,17 +98,35 @@ const userSchema = new mongoose.Schema(
       enum: ["user", "moderator", "admin"],
       default: "user",
     },
+
+    // Soft-delete for account deletion (NDPR/GDPR "right to erasure").
+    // Set the instant a user confirms deletion — the account becomes
+    // immediately unusable (login rejected, profile/posts hidden from
+    // other users) but the row itself isn't hard-deleted yet, so a
+    // deletion within the grace window can still be reversed by
+    // contacting support. The scheduled purge job
+    // (jobs/purgeDeletedAccounts.js) hard-deletes the user and cascades
+    // through every collection referencing them once deletedAt is older
+    // than the grace period (see services/accountDeletionService.js).
+    deletedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true },
 );
 
 // Keep `name` derived from firstName/lastName on every save, so nothing
 // downstream (DTOs, text search, sockets) needs to know the split exists.
-userSchema.pre("validate", function (next) {
+//
+// Mongoose 9 removed callback-style middleware: sync hooks receive no
+// `next` argument (calling it throws "next is not a function") — see
+// models/Message.js for the async-hook equivalent of the new style.
+userSchema.pre("validate", function () {
   if (this.firstName || this.lastName) {
     this.name = `${this.firstName || ""} ${this.lastName || ""}`.trim();
   }
-  next();
 });
 
 // Indexes (email is already indexed via `unique: true` in the schema)

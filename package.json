@@ -2,7 +2,7 @@
   "name": "tronites-backend",
   "version": "1.0.0",
   "description": "Tronites — social media platform backend (Node/Express/MongoDB)",
-  "author": "Samtron2810",
+  "author": "",
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
@@ -10,7 +10,6 @@
     "test": "vitest run"
   },
   "keywords": [],
-  "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
@@ -28,7 +27,7 @@
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.6.2",
-    "multer": "^2.1.1",
+    "multer": "^2.2.0",
     "rate-limit-redis": "^6.0.1",
     "redis": "^6.0.0",
     "socket.io": "^4.8.3",

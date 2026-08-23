@@ -24,6 +24,16 @@ const protect = async (req, res, next) => {
       });
     }
 
+    // Soft-deleted accounts are rejected the same as if they didn't
+    // exist — see User.deletedAt. The row survives until the purge job
+    // hard-deletes it (grace window for reversal), but nothing should
+    // treat a pending-deletion account as usable in the meantime.
+    if (req.user.deletedAt) {
+      return res.status(401).json({
+        message: "This account has been deleted",
+      });
+    }
+
     // Session invalidation after a password change/reset. JWTs carry an
     // `iat` (issued-at) claim; if the password was changed after this
     // token was issued, the token represents a session from before the

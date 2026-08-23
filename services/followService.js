@@ -68,3 +68,9 @@ export const removeFollowEdge = async (followerId, followingId) => {
   const result = await Follow.deleteOne({ follower: followerId, following: followingId });
   return result.deletedCount > 0;
 };
+
+// Every follow edge involving a user, in either direction — used for
+// account deletion so no Follow row is left referencing a purged user
+// (as either the follower or the one being followed).
+export const removeAllFollowEdgesForUser = (userId) =>
+  Follow.deleteMany({ $or: [{ follower: userId }, { following: userId }] });

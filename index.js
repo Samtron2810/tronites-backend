@@ -36,6 +36,7 @@ import {
 import { connectRedis, isRedisReady, disconnectRedis } from "./utils/redis.js";
 import errorHandler from "./middleware/errorHandler.js";
 import { cleanupAbandonedVideoShells } from "./jobs/cleanupAbandonedVideoShells.js";
+import { purgeDeletedAccounts } from "./jobs/purgeDeletedAccounts.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -165,6 +166,15 @@ const startServer = async () => {
     CLEANUP_INTERVAL_MS,
   );
 
+  // Hard-deletes accounts whose 30-day soft-delete grace period has
+  // passed — see jobs/purgeDeletedAccounts.js. Same run-at-boot-then-
+  // hourly cadence as the video shell cleanup above; hourly is frequent
+  // enough that no account sits meaningfully longer than its grace
+  // period without also being a very cheap no-op sweep on every run
+  // where nothing is due (a single indexed User.find, no writes).
+  purgeDeletedAccounts();
+  const purgeInterval = setInterval(purgeDeletedAccounts, CLEANUP_INTERVAL_MS);
+
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
   // up a second, unrelated http.Server and leave Socket.IO unreachable).
@@ -186,6 +196,7 @@ const startServer = async () => {
 
     try {
       clearInterval(cleanupInterval);
+      clearInterval(purgeInterval);
 
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see

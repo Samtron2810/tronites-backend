@@ -37,6 +37,10 @@ export const removeBookmarkEdge = async (userId, postId) => {
 
 export const removeAllBookmarksForPost = (postId) => Bookmark.deleteMany({ post: postId });
 
+// Every bookmark a user has made, across all posts — used for account
+// deletion so no Bookmark row is left referencing a purged user.
+export const removeAllBookmarksForUser = (userId) => Bookmark.deleteMany({ user: userId });
+
 // Paginated list of a user's saved posts, newest-saved-first, with each
 // post populated the same way the feed populates posts.
 export const listBookmarkedPosts = async (userId, { skip = 0, limit = 12 } = {}) => {

@@ -32,6 +32,14 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
+// Reuses the same "just needs to be non-empty" shape as loginSchema —
+// the actual password correctness check happens against the stored hash
+// in deleteMyAccount, this only guards against a missing/empty field
+// before that comparison runs.
+export const deleteAccountSchema = z.object({
+  password: z.string().min(1, "Password is required"),
+});
+
 // generateChallengeId() (utils/otp.js) is crypto.randomBytes(24) encoded
 // as base64url — always exactly 32 characters from the URL-safe alphabet,
 // no padding. Matching that shape here instead of "any non-empty string"

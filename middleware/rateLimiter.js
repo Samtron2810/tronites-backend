@@ -197,3 +197,19 @@ export const messageLimiter = rateLimit({
   legacyHeaders: false,
   store: makeStore("rl:message:"),
 });
+
+// Account deletion limiter — accepts a password guess (confirmation
+// before an irreversible action), so it needs the same brute-force
+// protection as login. Kept as its own bucket rather than reusing
+// authLimiter so a burst of real login attempts and a burst of deletion
+// attempts from the same IP don't consume each other's budget.
+export const accountDeletionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: {
+    message: "Too many account deletion attempts, please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: makeStore("rl:deleteaccount:"),
+});

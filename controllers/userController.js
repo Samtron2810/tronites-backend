@@ -2,6 +2,7 @@ import User from "../models/User.js";
 import Post from "../models/Post.js";
 import Notification from "../models/Notification.js";
 import Block from "../models/Block.js";
+import bcrypt from "bcryptjs";
 import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache, invalidateFeedCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
@@ -20,6 +21,9 @@ import {
 } from "../services/followService.js";
 import { getLikedPostIds } from "../services/likeService.js";
 import { getBookmarkedPostIds } from "../services/bookmarkService.js";
+import { softDeleteAccount } from "../services/accountDeletionService.js";
+import { buildUserDataExport } from "../services/dataExportService.js";
+import { clearAuthCookies } from "../utils/tokens.js";
 
 // CHECK USERNAME AVAILABILITY (live check while typing)
 export const checkUsername = async (req, res) => {
@@ -666,5 +670,58 @@ export const getFollowing = async (req, res) => {
     res.status(500).json({
       message: error.message,
     });
+  }
+};
+
+// DELETE MY ACCOUNT (NDPR/GDPR right to erasure)
+//
+// Soft-deletes immediately (account becomes unusable — see
+// authMiddleware/loginUser's deletedAt checks) and logs the requester
+// out on this device. The actual hard-delete cascade is deferred to
+// jobs/purgeDeletedAccounts.js after a 30-day grace period — see
+// services/accountDeletionService.js for why that's a separate step.
+//
+// Requires the account password as confirmation, same reasoning as any
+// other irreversible action gated behind re-entering a credential: a
+// left-open session or a UI mis-click shouldn't be enough on its own to
+// trigger something this consequential.
+export const deleteMyAccount = async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    const user = await User.findById(req.user._id);
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(400).json({ message: "Incorrect password." });
+    }
+
+    await softDeleteAccount(user._id);
+    clearAuthCookies(res);
+
+    res.status(200).json({
+      message: "Your account has been deleted. This is reversible for 30 days — contact support if this wasn't you.",
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// EXPORT MY DATA (NDPR/GDPR data portability)
+//
+// Returns a single JSON document containing everything this endpoint's
+// module comment (services/dataExportService.js) defines as "your data"
+// — account fields, posts, comments, likes, bookmarks, social edges (as
+// ids, not resolved profiles), messages, notifications, and reports
+// filed. Not paginated or streamed: even an active user's total data
+// volume here is small relative to, say, video bytes (which aren't
+// included — media lives on Cloudinary and is referenced by URL, not
+// re-exported as binary data).
+export const exportMyData = async (req, res) => {
+  try {
+    const data = await buildUserDataExport(req.user);
+    res.status(200).json(data);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };

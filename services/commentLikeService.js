@@ -38,3 +38,8 @@ export const removeAllLikesForComment = (commentId) =>
 // parent comment is deleted along with its replies.
 export const removeAllLikesForComments = (commentIds) =>
   CommentLike.deleteMany({ comment: { $in: commentIds } });
+
+// Every comment-like a user has made — used for account deletion so no
+// CommentLike row is left referencing a purged user.
+export const removeAllCommentLikesForUser = (userId) =>
+  CommentLike.deleteMany({ user: userId });

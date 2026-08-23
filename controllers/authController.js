@@ -281,6 +281,18 @@ export const loginUser = async (req, res) => {
         .json({ message: "Invalid email/username or password" });
     }
 
+    // A soft-deleted account can't log back in during its grace window
+    // through the normal flow — this intentionally isn't the "reactivate
+    // my account" path (there isn't one yet), just a clear rejection
+    // instead of a confusing immediate 401 on the very next request via
+    // authMiddleware's own deletedAt check.
+    if (user.deletedAt) {
+      return res.status(403).json({
+        message: "This account has been deleted.",
+        code: "ACCOUNT_DELETED",
+      });
+    }
+
     await issueSession(res, user._id, {
       userAgent: req.headers["user-agent"] || "",
       ip: req.ip || "",
