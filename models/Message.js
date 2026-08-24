@@ -44,6 +44,24 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // A chat video message. Mirrors Post.video: the browser uploads the
+    // file directly to Cloudinary (signed via POST /messages/signature/video)
+    // and the ready asset is stored here. Because the eager transform runs
+    // synchronously inside the upload request, the URL is final by the time
+    // the message is created — there is no "processing" state in practice.
+    // Videos and images are mutually exclusive in a single message (a video
+    // message has no `images`/`image` and vice-versa, matching posts).
+    video: {
+      publicId: { type: String, default: null },
+      url: { type: String, default: null },
+      thumbnailUrl: { type: String, default: null },
+      durationSeconds: { type: Number, default: null },
+      status: {
+        type: String,
+        enum: ["processing", "ready", "failed"],
+        default: "ready",
+      },
+    },
     conversationId: {
       type: String,
       required: true,

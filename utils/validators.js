@@ -162,6 +162,29 @@ export const sendMessageSchema = z.object({
   text: z.string().trim().max(1000, "Message too long").optional().default(""),
 });
 
+// Signed browser upload: request a signature for a chat-video upload. No
+// body needed — the message is created separately after the upload completes
+// (see sendVideoMessageSchema), so this is just an empty-object check.
+export const messageVideoSignatureSchema = z.object({});
+
+// Create a video message from an already-uploaded Cloudinary asset (the
+// custom uploader flow — see messageController.sendVideoMessage). The
+// URL/publicId are re-validated against our cloud + folder in the controller;
+// this schema only enforces shape.
+export const sendVideoMessageSchema = z.object({
+  text: z
+    .string()
+    .trim()
+    .max(1000, "Message too long")
+    .optional()
+    .default(""),
+  video: z.object({
+    publicId: z.string().trim().min(1, "Missing video publicId").max(255),
+    url: z.string().url("Invalid video URL"),
+    durationSeconds: z.number().positive().max(600).nullable().optional(),
+  }),
+});
+
 // ─── User ───────────────────────────────────────────────────────────────────
 
 export const setUsernameSchema = z.object({

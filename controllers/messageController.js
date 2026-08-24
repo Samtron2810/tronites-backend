@@ -3,6 +3,12 @@ import User from "../models/User.js";
 import Conversation from "../models/Conversation.js";
 import cloudinary from "../utils/cloudinary.js";
 import { emitToUser } from "../socket/socket.js";
+
+// Chat-video captions: same 30-second cap as post videos (the Cloudinary
+// eager transform trims longer sources), so the signed params stay cheap to
+// replay and chat threads don't get multi-minute files.
+const MAX_MESSAGE_VIDEO_DURATION_SECONDS = 30;
+const MESSAGE_VIDEO_FOLDER = "tronites_message_videos";
 import { isBlockedEitherWay } from "../services/blockService.js";
 import {
   getConversationId,
@@ -124,6 +130,165 @@ export const sendMessage = async (req, res) => {
   }
 };
 
+// Signed browser upload: request a Cloudinary signature for a chat-video
+// upload. Mirrors postController.createVideoUploadSignature — the browser
+// uploads the video directly to Cloudinary (saving Express the 100MB+ memory
+// hit), and the synchronous eager transform makes the response already
+// contain the final trimmed/transcoded MP4, so no webhook round-trip is
+// needed. The message itself is created afterwards via sendVideoMessage.
+export const createMessageVideoUploadSignature = async (req, res) => {
+  try {
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = MESSAGE_VIDEO_FOLDER;
+    const eager = `so_0,du_${MAX_MESSAGE_VIDEO_DURATION_SECONDS},f_mp4,vc_h264,q_auto`;
+
+    // Params that must be signed — Cloudinary rejects the upload if the
+    // signature doesn't match these exact values. The frontend must send
+    // exactly these params (plus file/api_key/timestamp) and nothing else.
+    const paramsToSign = { timestamp, folder, eager };
+
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      process.env.CLOUDINARY_API_SECRET,
+    );
+
+    res.status(200).json({
+      signature,
+      timestamp,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      folder,
+      eager,
+    });
+  } catch (error) {
+    console.error("CREATE MESSAGE VIDEO SIGNATURE ERROR:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// SEND VIDEO MESSAGE — called by the custom uploader AFTER the browser has
+// uploaded the video directly to Cloudinary (signed via the endpoint above).
+// Because the upload response already contains the transformed asset
+// (synchronous eager), the message is created fully "ready" in one shot.
+// Shares the same permission/block/conversation handling as sendMessage —
+// only the media delivery differs.
+export const sendVideoMessage = async (req, res) => {
+  try {
+    const senderId = req.user._id;
+    const receiverId = req.params.userId;
+    const { text, video } = req.body;
+
+    if (senderId.toString() === receiverId.toString()) {
+      return res
+        .status(400)
+        .json({ message: "Cannot send a message to yourself." });
+    }
+
+    const receiver = await User.findById(receiverId).select("name profilePic");
+    if (!receiver) {
+      return res.status(404).json({ message: "Recipient not found." });
+    }
+
+    if (await isBlockedEitherWay(senderId, receiverId)) {
+      return res.status(403).json({
+        message: "You can't message this user.",
+        code: "BLOCKED",
+      });
+    }
+
+    const permission = await evaluateSendPermission(senderId, receiverId);
+    if (!permission.allowed) {
+      return res.status(403).json({
+        message: permission.reason,
+        code: permission.code,
+      });
+    }
+
+    // Validate the asset belongs to our Cloudinary account and folder —
+    // same arbitrary-URL-injection defense as postController.createVideoPost.
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const allowedPrefix = `https://res.cloudinary.com/${cloudName}/video/upload/`;
+    if (
+      typeof video?.url !== "string" ||
+      !video.url.startsWith(allowedPrefix) ||
+      typeof video.publicId !== "string" ||
+      !video.publicId.startsWith(`${MESSAGE_VIDEO_FOLDER}/`)
+    ) {
+      return res.status(400).json({ message: "Invalid video URL" });
+    }
+
+    // Thumbnail derivation: Cloudinary can generate a jpg frame from any
+    // timestamp via a delivery URL — construct one at the 1-second mark
+    // without a second upload/job. The eager MP4 URL carries its
+    // transformation segment (/upload/so_0,du_30,f_mp4,...), so that
+    // segment must be REPLACED with so_1,f_jpg (see createVideoPost).
+    const messageEagerSegment = `/upload/${`so_0,du_${MAX_MESSAGE_VIDEO_DURATION_SECONDS},f_mp4,vc_h264,q_auto`}/`;
+    let thumbnailUrl = video.url.replace(
+      messageEagerSegment,
+      "/upload/so_1,f_jpg/",
+    );
+    if (!thumbnailUrl.includes("so_1,f_jpg")) {
+      // Fallback: raw (non-eager) secure_url — insert after /upload/.
+      thumbnailUrl = video.url.replace("/upload/", "/upload/so_1,f_jpg/");
+    }
+    thumbnailUrl = thumbnailUrl.replace(/\.mp4$/, ".jpg");
+
+    const message = await Message.create({
+      sender: senderId,
+      receiver: receiverId,
+      text: text?.trim() || null,
+      video: {
+        publicId: video.publicId,
+        url: video.url,
+        thumbnailUrl,
+        durationSeconds: video.durationSeconds || null,
+        status: "ready",
+      },
+      conversationId: getConversationId(senderId, receiverId),
+    });
+
+    // Reflect the permission outcome in the Conversation record — identical
+    // handling to sendMessage.
+    if (permission.isNewRequest) {
+      await Conversation.create({
+        conversationId: permission.conversationId,
+        participants: [senderId, receiverId],
+        status: "pending",
+        initiator: senderId,
+      });
+    } else if (permission.implicitAccept) {
+      await Conversation.updateOne(
+        { conversationId: permission.conversationId },
+        { $set: { status: "accepted" } },
+      );
+    } else if (permission.isMutual && !permission.conversation) {
+      // Mutual followers messaging for the first time — record it as
+      // accepted so it's unambiguous if they later unfollow each other.
+      await Conversation.create({
+        conversationId: permission.conversationId,
+        participants: [senderId, receiverId],
+        status: "accepted",
+        initiator: senderId,
+      }).catch((err) => {
+        // Race: another request created it first — fine, ignore.
+        if (err.code !== 11000) throw err;
+      });
+    }
+
+    const populatedMessage = await message.populate([
+      { path: "sender", select: "_id name profilePic" },
+      { path: "receiver", select: "_id name profilePic" },
+    ]);
+
+    emitToUser(receiverId, "receiveMessage", populatedMessage);
+
+    res.status(201).json(populatedMessage);
+  } catch (error) {
+    console.error("SEND VIDEO MESSAGE ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const getConversations = async (req, res) => {
   try {
     const currentUserId = req.user._id;
@@ -150,7 +315,23 @@ export const getConversations = async (req, res) => {
       {
         $group: {
           _id: "$conversationId",
-          lastMessage: { $first: "$text" },
+          lastMessage: {
+            $first: {
+              $cond: [
+                { $eq: ["$text", null] },
+                {
+                  $cond: [
+                    {
+                      $ne: [{ $ifNull: ["$video.url", null] }, null],
+                    },
+                    "🎬 Video",
+                    { $cond: [{ $ne: ["$images", []] }, "📷 Photo(s)", ""] },
+                  ],
+                },
+                "$text",
+              ],
+            },
+          },
           lastMessageAt: { $first: "$createdAt" },
           otherUserId: {
             $first: {
@@ -366,6 +547,21 @@ export const deleteMessage = async (req, res) => {
       return res
         .status(403)
         .json({ message: "Not authorized to delete this message." });
+    }
+
+    // Delete the Cloudinary video asset, if any. Best-effort, matching the
+    // pattern postController.deletePost uses — an orphaned CDN asset is a
+    // cleanup task, not a reason to fail the delete. Message images are
+    // intentionally left alone here (consistent with the pre-existing
+    // behavior for legacy/multi-image messages).
+    if (message.video?.publicId) {
+      try {
+        await cloudinary.uploader.destroy(message.video.publicId, {
+          resource_type: "video",
+        });
+      } catch (err) {
+        console.log("Cloudinary message video delete failed:", err.message);
+      }
     }
 
     await Message.findByIdAndDelete(messageId);

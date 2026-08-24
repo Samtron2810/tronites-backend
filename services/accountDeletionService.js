@@ -137,6 +137,20 @@ export const hardDeleteAccount = async (userId) => {
         if (publicId) await destroyCloudinaryAsset(`tronites_messages/${publicId}`);
       }),
   );
+  // Chat videos live in their own folder with a proper publicId (uploaded
+  // directly to Cloudinary, not base64-through-Express like images), so
+  // cleanup is a straight destroy call — same as post videos.
+  const videoMessages = await Message.find({
+    $or: [{ sender: userId }, { receiver: userId }],
+    "video.publicId": { $ne: null },
+  }).select("video.publicId");
+  await Promise.all(
+    videoMessages.map(async (m) => {
+      if (m.video?.publicId) {
+        await destroyCloudinaryAsset(m.video.publicId, "video");
+      }
+    }),
+  );
   await Message.deleteMany({ $or: [{ sender: userId }, { receiver: userId }] });
   await Conversation.deleteMany({ participants: userId });
 
