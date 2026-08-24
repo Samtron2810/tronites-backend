@@ -221,7 +221,7 @@ export const verifyChallenge = async ({ challengeId, otp }) => {
       expiresAt: { $gt: new Date() },
     },
     { $inc: { attempts: 1 } },
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!reserved) {
@@ -252,7 +252,7 @@ export const verifyChallenge = async ({ challengeId, otp }) => {
   const consumed = await Otp.findOneAndUpdate(
     { _id: reserved._id, usedAt: null },
     { $set: { usedAt: new Date() } },
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!consumed) {

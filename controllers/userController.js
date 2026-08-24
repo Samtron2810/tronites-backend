@@ -60,7 +60,7 @@ export const setUsername = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.user._id,
       { username },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).select("name username bio profilePic email");
 
     res.status(200).json({ user: toPrivateSelfDTO(user) });
@@ -550,7 +550,7 @@ export const updateBio = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.user._id,
       { bio },
-      { new: true },
+      { returnDocument: "after" },
     ).select("bio");
 
     // Invalidate profile cache
@@ -570,7 +570,7 @@ export const updatePresenceVisibility = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.user._id,
       { presenceVisibility },
-      { new: true },
+      { returnDocument: "after" },
     ).select("presenceVisibility");
 
     res.status(200).json({ presenceVisibility: user.presenceVisibility });

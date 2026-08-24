@@ -43,7 +43,7 @@ export const createReport = async ({
         resolutionNote: "",
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 
   return existing;
@@ -184,7 +184,7 @@ export const resolveReport = async ({
         resolutionNote: note || "",
       },
     },
-    { new: true },
+    { returnDocument: "after" },
   );
 
   if (!updated) {
@@ -212,7 +212,7 @@ const removeTargetContent = async (report, moderatorId, reason) => {
     const removed = await Post.findOneAndUpdate(
       { _id: report.targetId, removedAt: null },
       { $set: patch },
-      { new: true },
+      { returnDocument: "after" },
     );
     if (!removed) return; // already removed, or hard-deleted in the meantime
 
@@ -232,7 +232,7 @@ const removeTargetContent = async (report, moderatorId, reason) => {
     const removed = await Comment.findOneAndUpdate(
       { _id: report.targetId, removedAt: null },
       { $set: patch },
-      { new: true },
+      { returnDocument: "after" },
     );
     if (!removed) return;
     // Same keys commentController invalidates when creating/deleting.

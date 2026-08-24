@@ -74,7 +74,7 @@ export const updateUserRole = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       targetId,
       { role },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).select("name username email profilePic role createdAt");
 
     if (!user) {
@@ -178,7 +178,7 @@ export const suspendUser = async (req, res) => {
           restrictionReason: req.body.reason || "",
         },
       },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).select(RESTRICTION_TARGET_SELECT);
 
     applyRestrictionSideEffects(target._id, {
@@ -227,7 +227,7 @@ export const banUser = async (req, res) => {
           restrictionReason: req.body.reason || "",
         },
       },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).select(RESTRICTION_TARGET_SELECT);
 
     applyRestrictionSideEffects(target._id, {
@@ -266,7 +266,7 @@ export const unrestrictUser = async (req, res) => {
       {
         $set: { banned: false, suspendedUntil: null, restrictionReason: "" },
       },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).select(RESTRICTION_TARGET_SELECT);
 
     res.status(200).json({ user: toAdminUserDTO(updated) });

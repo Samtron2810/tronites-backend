@@ -93,7 +93,7 @@ export const startVideoUploadWorker = () => {
         const post = await Post.findOneAndUpdate(
           { _id: postId },
           { $set: { "video.status": "failed" } },
-          { new: true },
+          { returnDocument: "after" },
         );
         if (!post) return;
 
