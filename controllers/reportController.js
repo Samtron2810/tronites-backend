@@ -2,7 +2,12 @@ import User from "../models/User.js";
 import Post from "../models/Post.js";
 import Comment from "../models/Comment.js";
 import Message from "../models/Message.js";
-import { createReport, listReports, resolveReport } from "../services/reportService.js";
+import {
+  createReport,
+  listReports,
+  resolveReport,
+  getReportContext,
+} from "../services/reportService.js";
 
 // Maps a report's targetType to the model that owns the object and the
 // field on it that identifies its author — needed to resolve
@@ -68,16 +73,32 @@ export const listReportsHandler = async (req, res) => {
 };
 
 // RESOLVE REPORT — mark actioned or dismissed (moderator/admin only).
+// removeContent (optional) additionally soft-removes the reported
+// post/comment/message — see reportService.resolveReport.
 export const resolveReportHandler = async (req, res) => {
   try {
-    const { status, note } = req.body;
+    const { status, note, removeContent } = req.body;
     const report = await resolveReport({
       reportId: req.params.id,
       moderatorId: req.user._id,
       status,
       note,
+      removeContent,
     });
     res.status(200).json({ report });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// REPORT CONTEXT — full flagged item for the in-queue preview modal
+// (moderator/admin only, see routes). Kept separate from listReports so
+// the queue stays light; content is fetched only when a moderator opens
+// a specific report.
+export const getReportContextHandler = async (req, res) => {
+  try {
+    const context = await getReportContext(req.params.id);
+    res.status(200).json(context);
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
   }

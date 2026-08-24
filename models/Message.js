@@ -71,6 +71,25 @@ const messageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    // Moderator soft-takedown (mirrors Post.removedAt). Removed messages
+    // drop out of getMessages threads on the next read; both participants
+    // are affected equally (moderation is not a per-recipient hide).
+    removedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    removedAt: {
+      type: Date,
+      default: null,
+    },
+    removalReason: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 500,
+    },
   },
   {
     timestamps: true,

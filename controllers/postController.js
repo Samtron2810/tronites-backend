@@ -528,6 +528,7 @@ export const getFeedPosts = async (req, res) => {
 
         const filter = {
           user: { $in: feedUsers },
+          removedAt: null, // moderator soft-takedown — see reportService
           ...(cursor ? { _id: { $lt: cursor } } : {}),
         };
 
@@ -598,6 +599,7 @@ export const getPostsByHashtag = async (req, res) => {
       async () => {
         const filter = {
           hashtags: tag,
+          removedAt: null, // moderator soft-takedown — see reportService
           ...(cursor ? { _id: { $lt: cursor } } : {}),
         };
 
@@ -675,6 +677,7 @@ export const searchPosts = async (req, res) => {
     const blockedIds = await getBlockedEitherWayIds(req.user._id);
     const filter = {
       $text: { $search: query },
+      removedAt: null, // moderator soft-takedown — see reportService
       ...(blockedIds.size ? { user: { $nin: [...blockedIds] } } : {}),
     };
 

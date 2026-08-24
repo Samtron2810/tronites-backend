@@ -260,6 +260,11 @@ export const createReportSchema = z.object({
 export const resolveReportSchema = z.object({
   status: z.enum(["actioned", "dismissed"]),
   note: z.string().trim().max(500).optional().default(""),
+  // Phase 1: resolving as "actioned" may also soft-remove the reported
+  // post/comment/message. Guarded again in reportService (only valid
+  // alongside status:"actioned") so a dismissed report can't take
+  // content down.
+  removeContent: z.boolean().optional().default(false),
 });
 
 export const presenceVisibilitySchema = z.object({

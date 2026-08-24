@@ -38,6 +38,25 @@ const commentSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+
+    // Moderator soft-takedown (mirrors Post.removedAt — see
+    // services/reportService.js). Removed comments drop out of the
+    // post's comment list and reply threads on the next read.
+    removedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    removedAt: {
+      type: Date,
+      default: null,
+    },
+    removalReason: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 500,
+    },
   },
   { timestamps: true },
 );

@@ -476,9 +476,12 @@ export const getMessages = async (req, res) => {
     // Fetch newest-first so pagination (skip/limit) grabs the most recent
     // page of the thread, then reverse to oldest-first for chat display.
     // Avoids loading the entire message history for long-running chats.
-    const totalMessages = await Message.countDocuments({ conversationId });
+    const totalMessages = await Message.countDocuments({
+      conversationId,
+      removedAt: null, // moderator soft-takedown — see reportService
+    });
 
-    const recentMessages = await Message.find({ conversationId })
+    const recentMessages = await Message.find({ conversationId, removedAt: null })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)

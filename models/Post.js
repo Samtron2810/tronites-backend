@@ -73,6 +73,29 @@ const postSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    // Moderator soft-takedown (Phase 1 — see services/reportService.js).
+    // The post stays in the database for audit/reversal, but every
+    // user-facing read filters on removedAt: null, so it disappears from
+    // feeds/profiles/hashtag/search exactly like a hard delete would —
+    // without destroying the author's media or the report trail.
+    // removedBy/removalReason are moderator-only facts and only ever
+    // surface through the requireModerator-gated /reports endpoints.
+    removedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    removedAt: {
+      type: Date,
+      default: null,
+    },
+    removalReason: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 500,
+    },
   },
   { timestamps: true },
 );

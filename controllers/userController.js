@@ -374,11 +374,11 @@ export const getUserProfile = async (req, res) => {
       postsCacheKey,
       async () => {
         const [posts, totalPosts] = await Promise.all([
-          Post.find({ user: req.params.id })
+          Post.find({ user: req.params.id, removedAt: null })
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit),
-          Post.countDocuments({ user: req.params.id }),
+          Post.countDocuments({ user: req.params.id, removedAt: null }),
         ]);
 
         return {

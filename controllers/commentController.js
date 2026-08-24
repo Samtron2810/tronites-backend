@@ -343,6 +343,7 @@ export const getComments = async (req, res) => {
         return await Comment.find({
           post: req.params.id,
           parentComment: null,
+          removedAt: null, // moderator soft-takedown — see reportService
         })
           .populate("user", "name username profilePic")
           .sort({ createdAt: -1 });
@@ -384,7 +385,10 @@ export const getReplies = async (req, res) => {
     const replies = await getOrSetCache(
       cacheKey,
       async () => {
-        return await Comment.find({ parentComment: req.params.id })
+        return await Comment.find({
+          parentComment: req.params.id,
+          removedAt: null, // moderator soft-takedown — see reportService
+        })
           .populate("user", "name username profilePic")
           .sort({ createdAt: 1 });
       },
