@@ -99,6 +99,29 @@ const userSchema = new mongoose.Schema(
       default: "user",
     },
 
+    // Phase 2 account restrictions (see adminController.suspendUser /
+    // banUser / unrestrictUser). checked on EVERY authenticated request
+    // by authMiddleware — so unlike deletedAt (which only blocks new
+    // logins plus its authMiddleware branch), a restriction lands on the
+    // user's very next API call even mid-session. suspendedUntil null =
+    // not suspended; banned true is permanent pending manual reversal.
+    // restrictionReason is moderator-facing context, never exposed
+    // outside admin/moderator-gated responses.
+    suspendedUntil: {
+      type: Date,
+      default: null,
+    },
+    banned: {
+      type: Boolean,
+      default: false,
+    },
+    restrictionReason: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 500,
+    },
+
     // Soft-delete for account deletion (NDPR/GDPR "right to erasure").
     // Set the instant a user confirms deletion — the account becomes
     // immediately unusable (login rejected, profile/posts hidden from

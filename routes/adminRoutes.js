@@ -2,15 +2,25 @@ import express from "express";
 
 import protect from "../middleware/authMiddleware.js";
 import requireAdmin from "../middleware/requireAdmin.js";
+import requireModerator from "../middleware/requireModerator.js";
 import { validate } from "../utils/validators.js";
-import { updateRoleSchema } from "../utils/validators.js";
+import {
+  updateRoleSchema,
+  suspendUserSchema,
+  banUserSchema,
+} from "../utils/validators.js";
 import {
   listUsersForAdmin,
   updateUserRole,
+  suspendUser,
+  banUser,
+  unrestrictUser,
 } from "../controllers/adminController.js";
 
 const router = express.Router();
 
+// Role management — admin only (see requireAdmin: granting/revoking
+// moderator status must never be reachable by moderators themselves).
 router.get("/users", protect, requireAdmin, listUsersForAdmin);
 router.put(
   "/users/:id/role",
@@ -19,5 +29,26 @@ router.put(
   validate(updateRoleSchema),
   updateUserRole,
 );
+
+// Account restrictions (Phase 2). Suspension and its reversal are
+// moderator-level actions; banning is the higher-stakes step and stays
+// admin-only. Further target guards (no self-action, admins exempt,
+// moderator-vs-moderator block) live in the controller so both routes
+// share one rulebook.
+router.put(
+  "/users/:id/suspend",
+  protect,
+  requireModerator,
+  validate(suspendUserSchema),
+  suspendUser,
+);
+router.put(
+  "/users/:id/ban",
+  protect,
+  requireAdmin,
+  validate(banUserSchema),
+  banUser,
+);
+router.put("/users/:id/unrestrict", protect, requireModerator, unrestrictUser);
 
 export default router;

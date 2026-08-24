@@ -176,6 +176,24 @@ export const emitToFollowersOf = (authorId, event, payload) => {
   io.to(`followers_of_${authorId.toString()}`).emit(event, payload);
 };
 
+// Force-drop every live socket for ONE user across ALL server instances
+// (room-based, so the Redis adapter reaches sockets on other nodes too).
+// Used by Phase 2 restrictions: after a suspend/ban the controller emits
+// "accountRestricted" first, then calls this — the short delay lets the
+// warning frame flush before the connection dies. Without this, a
+// restricted user's open tabs would sit half-alive: socket alive, every
+// REST call 403ing underneath it.
+export const disconnectUser = (userId, delayMs = 400) => {
+  if (!userId) return;
+  setTimeout(() => {
+    try {
+      io.in(`user_${userId.toString()}`).disconnectSockets(true);
+    } catch (err) {
+      console.error("disconnectUser failed:", err.message);
+    }
+  }, delayMs);
+};
+
 // Called after follow/unfollow so a currently-connected socket's room
 // membership stays in sync without requiring a reconnect.
 export const joinFollowersRoom = (socketOrUserId, followingId) => {

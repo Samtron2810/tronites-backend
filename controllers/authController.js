@@ -293,6 +293,29 @@ export const loginUser = async (req, res) => {
       });
     }
 
+    // Phase 2 restrictions — same codes authMiddleware uses mid-session,
+    // so a suspended/banned user gets the same specific screen whether
+    // they were blocked at login or on their next API call.
+    if (user.banned) {
+      return res.status(403).json({
+        message: "Your account has been banned.",
+        code: "ACCOUNT_BANNED",
+      });
+    }
+    if (
+      user.suspendedUntil &&
+      new Date(user.suspendedUntil) > new Date()
+    ) {
+      return res.status(403).json({
+        message: `Your account is suspended until ${new Date(
+          user.suspendedUntil,
+        ).toLocaleString()}.`,
+        code: "ACCOUNT_SUSPENDED",
+        suspendedUntil: user.suspendedUntil,
+      });
+    }
+    // An expired suspension doesn't block login (mirrors authMiddleware).
+
     await issueSession(res, user._id, {
       userAgent: req.headers["user-agent"] || "",
       ip: req.ip || "",
@@ -316,6 +339,43 @@ export const refreshAccessToken = async (req, res) => {
     if (!result) {
       clearAuthCookies(res);
       return res.status(401).json({ message: "Session expired, please log in again" });
+    }
+
+    // A banned or actively-suspended account must not keep minting access
+    // tokens from a live refresh cookie — protect() would reject every
+    // request anyway, but letting rotation continue would leave pointless
+    // Session rows and fresh cookies on a dead account. Kill all sessions
+    // (the presented one was ALREADY rotated inside refreshSession, so
+    // revoking everything is the only way to also kill that fresh row)
+    // and clear both cookies.
+    const refreshedUser = await User.findById(result.userId).select(
+      "banned suspendedUntil deletedAt",
+    );
+    if (
+      refreshedUser &&
+      (refreshedUser.deletedAt ||
+        refreshedUser.banned ||
+        (refreshedUser.suspendedUntil &&
+          new Date(refreshedUser.suspendedUntil) > new Date()))
+    ) {
+      const code = refreshedUser.deletedAt
+        ? "ACCOUNT_DELETED"
+        : refreshedUser.banned
+          ? "ACCOUNT_BANNED"
+          : "ACCOUNT_SUSPENDED";
+      await revokeAllSessions(result.userId);
+      clearAuthCookies(res);
+      return res.status(403).json({
+        message:
+          code === "ACCOUNT_BANNED"
+            ? "Your account has been banned."
+            : code === "ACCOUNT_SUSPENDED"
+              ? `Your account is suspended until ${new Date(
+                  refreshedUser.suspendedUntil,
+                ).toLocaleString()}.`
+              : "This account has been deleted.",
+        code,
+      });
     }
 
     res.status(200).json({ message: "Refreshed" });

@@ -277,6 +277,22 @@ export const updateRoleSchema = z.object({
   role: z.enum(["user", "moderator", "admin"]),
 });
 
+// Phase 2 account restrictions. `until` arrives as an ISO-ish string from
+// the datetime picker — parsed to a real Date here so controllers receive
+// what Mongoose expects; "must be in the future" is enforced in the
+// controller against server time (client clocks lie).
+export const suspendUserSchema = z.object({
+  until: z
+    .string()
+    .refine((v) => !Number.isNaN(Date.parse(v)), "Invalid suspension date")
+    .transform((v) => new Date(v)),
+  reason: z.string().trim().max(500).optional().default(""),
+});
+
+export const banUserSchema = z.object({
+  reason: z.string().trim().max(500).optional().default(""),
+});
+
 // ─── Middleware factory ──────────────────────────────────────────────────────
 
 export const validate = (schema) => (req, res, next) => {

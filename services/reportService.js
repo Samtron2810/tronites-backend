@@ -70,7 +70,10 @@ export const listReports = async ({ status = "open", page = 1, limit = 25 } = {}
       .skip(skip)
       .limit(limit)
       .populate("reporter", "name username profilePic")
-      .populate("targetOwner", "name username profilePic")
+      .populate(
+        "targetOwner",
+        "name username profilePic banned suspendedUntil restrictionReason",
+      )
       .lean(),
     Report.countDocuments(filter),
   ]);

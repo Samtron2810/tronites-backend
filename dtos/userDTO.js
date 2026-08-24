@@ -42,12 +42,12 @@ export const toPrivateSelfDTO = (user) => {
   };
 };
 
-// Public fields plus role — for an admin viewing/managing arbitrary
-// users' roles. Distinct from toPrivateSelfDTO (which is only ever
-// returned to the account owner themselves): this is returned to an
-// admin about *other* users, gated entirely by the requireAdmin
-// middleware at the route level, not by identity-matching like
-// toPrivateSelfDTO's callers do.
+// Public fields plus role AND restriction status — for an admin viewing/
+// managing arbitrary users. Restriction fields are the admin-panel's
+// working data (status badges, restore actions); they're gated by
+// requireAdmin at every route that returns this DTO and never appear in
+// toPublicUserDTO/toPrivateSelfDTO. `suspendedUntil` is raw — the client
+// derives "currently suspended" by comparing against its own clock.
 export const toAdminUserDTO = (user) => {
   if (!user) return null;
   const u = typeof user.toObject === "function" ? user.toObject() : user;
@@ -57,5 +57,8 @@ export const toAdminUserDTO = (user) => {
     email: u.email,
     role: u.role,
     createdAt: u.createdAt,
+    banned: Boolean(u.banned),
+    suspendedUntil: u.suspendedUntil || null,
+    restrictionReason: u.restrictionReason || "",
   };
 };
