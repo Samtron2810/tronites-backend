@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import User from "../models/User.js";
+import Notification from "../models/Notification.js";
 import AuditLog, { AUDIT_ACTIONS } from "../models/AuditLog.js";
 import { toAdminUserDTO } from "../dtos/userDTO.js";
 import { emitToUser, disconnectUser } from "../socket/socket.js";
@@ -117,6 +118,10 @@ export const updateUserRole = async (req, res) => {
 
 const RESTRICTION_TARGET_SELECT =
   "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason";
+
+// Phase 4 -- crossing this many strikes makes the FRONTEND suggest a
+// suspension; the backend never auto-suspends (human in the loop).
+const STRIKE_THRESHOLD = 3;
 
 // Shared target guards. Returns an error message string, or null if the
 // action may proceed.
@@ -334,9 +339,9 @@ export const unrestrictUser = async (req, res) => {
 
 // --- Audit log (Phase 3) -----------------------------------------------------
 
-// GET /admin/audit — requireAdmin. Paginated, filterable read over the
+// GET /admin/audit ï¿½ requireAdmin. Paginated, filterable read over the
 // append-only AuditLog collection. Query params:
-//   limit=50 (1–100)  offset=0  sort=-createdAt|createdAt
+//   limit=50 (1ï¿½100)  offset=0  sort=-createdAt|createdAt
 //   action=user_suspended,user_banned   (CSV; unknown values ignored)
 //   targetType=user|post|comment|message|report
 //   actor=<userId>
@@ -387,6 +392,107 @@ export const listAuditLogs = async (req, res) => {
       limit,
       offset,
       hasMore: offset + logs.length < total,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Phase 4 -- formal warnings/strikes. POST /admin/users/:id/warn --
+// requireModerator. Appends a strike, notifies the user in-app (reason
+// included; neither the reporter NOR the issuing moderator is identified
+// in what the user sees), writes user_warned to the Phase 3 audit trail,
+// and reports whether STRIKE_THRESHOLD was crossed so the UI can prompt
+// the moderator to consider a suspension. Deliberately NO auto-suspend:
+// a human decides what repeated warnings mean.
+export const warnUser = async (req, res) => {
+  try {
+    const target = await User.findById(req.params.id).select(
+      "_id name username role strikes banned deletedAt"
+    );
+    if (!target) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    // Same rulebook as suspend/ban/unrestrict: nobody warns themselves,
+    // admins are never warnable, moderators can't warn other moderators.
+    // Warning-specific states on top: already-banned and pending-deletion
+    // accounts can't meaningfully receive warnings.
+    if (target._id.toString() === req.user._id.toString()) {
+      return res.status(403).json({ message: "You can't warn your own account." });
+    }
+    if (target.role === "admin") {
+      return res.status(403).json({ message: "Admin accounts can't be warned." });
+    }
+    if (req.user.role !== "admin" && target.role === "moderator") {
+      return res.status(403).json({ message: "Moderators can't warn other moderators." });
+    }
+    if (target.banned) {
+      return res.status(400).json({ message: "This account is already permanently banned." });
+    }
+    if (target.deletedAt) {
+      return res.status(400).json({ message: "This account is pending deletion." });
+    }
+
+    const reportId =
+      req.body.reportId && mongoose.isValidObjectId(req.body.reportId)
+        ? new mongoose.Types.ObjectId(req.body.reportId)
+        : null;
+
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      {
+        $push: {
+          strikes: {
+            reason: req.body.reason,
+            moderator: req.user._id,
+            ...(reportId ? { reportId } : {}),
+            createdAt: new Date(),
+          },
+        },
+      },
+      { returnDocument: "after", runValidators: true }
+    ).select(RESTRICTION_TARGET_SELECT + " strikes");
+
+    const strikeCount = updated.strikes.length;
+    const strikeThresholdReached = strikeCount >= STRIKE_THRESHOLD;
+
+    logAudit({
+      action: "user_warned",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: { name: target.name, username: target.username, role: target.role },
+      },
+      detail: { reason: req.body.reason, reportId: reportId || null, strikeCount },
+    });
+
+    // In-app notification, best effort. sender stays set (the schema
+    // requires it) but the notifications page never renders it for
+    // moderator_warning -- the user sees "Moderation team" plus the
+    // reason, nothing more.
+    try {
+      const newNotif = await Notification.create({
+        recipient: target._id,
+        sender: req.user._id,
+        type: "moderator_warning",
+        message: req.body.reason,
+      });
+      const populatedNotif = await newNotif.populate(
+        "sender",
+        "name username profilePic"
+      );
+      emitToUser(target._id, "newNotification", populatedNotif);
+    } catch (notifError) {
+      console.error("Warning notification failed:", notifError.message);
+    }
+
+    res.status(200).json({
+      strikeCount,
+      strikeThresholdReached,
+      user: toAdminUserDTO(updated),
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

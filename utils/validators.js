@@ -293,6 +293,16 @@ export const banUserSchema = z.object({
   reason: z.string().trim().max(500).optional().default(""),
 });
 
+// Phase 4 warnings/strikes. reason is REQUIRED — the warned user sees it
+// verbatim in their notification. reportId optionally ties the strike to
+// the queue item that prompted it; shape-checked in the controller with
+// mongoose.isValidObjectId so a garbage id is ignored cleanly rather than
+// throwing a cast error mid-write.
+export const warnUserSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+  reportId: z.string().optional(),
+});
+
 // ─── Middleware factory ──────────────────────────────────────────────────────
 
 export const validate = (schema) => (req, res, next) => {

@@ -122,6 +122,33 @@ const userSchema = new mongoose.Schema(
       maxlength: 500,
     },
 
+    // Phase 4 — formal warnings ("strikes"). Each entry is one warning
+    // issued by a moderator/admin via POST /admin/users/:id/warn. Like
+    // the restriction fields above, this is a moderator-only fact: it
+    // never appears in toPublicUserDTO/toPrivateSelfDTO — only its COUNT
+    // surfaces, through toAdminUserDTO.strikesCount for the admin panel.
+    // Crossing STRIKE_THRESHOLD (adminController) makes the FRONTEND
+    // prompt the moderator to consider a suspension; the backend never
+    // auto-suspends — a human decides what repeated warnings mean.
+    strikes: [
+      {
+        reason: { type: String, default: "", trim: true, maxlength: 500 },
+        moderator: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          default: null,
+        },
+        // Optional back-reference to the queue item that prompted this
+        // warning, for audit-trail cross-checking.
+        reportId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Report",
+          default: null,
+        },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+
     // Soft-delete for account deletion (NDPR/GDPR "right to erasure").
     // Set the instant a user confirms deletion — the account becomes
     // immediately unusable (login rejected, profile/posts hidden from

@@ -8,6 +8,7 @@ import {
   updateRoleSchema,
   suspendUserSchema,
   banUserSchema,
+  warnUserSchema,
 } from "../utils/validators.js";
 import {
   listUsersForAdmin,
@@ -15,6 +16,7 @@ import {
   suspendUser,
   banUser,
   unrestrictUser,
+  warnUser,
   listAuditLogs,
 } from "../controllers/adminController.js";
 
@@ -50,6 +52,17 @@ router.put(
   validate(banUserSchema),
   banUser,
 );
+// Phase 4 -- formal warning (strike). Moderator-level like suspension;
+// the response flags when the strike threshold is crossed so the UI can
+// prompt the moderator toward the suspend flow.
+router.post(
+  "/users/:id/warn",
+  protect,
+  requireModerator,
+  validate(warnUserSchema),
+  warnUser,
+);
+
 router.put("/users/:id/unrestrict", protect, requireModerator, unrestrictUser);
 
 // Audit trail (Phase 3). Read access is deliberately stricter than the

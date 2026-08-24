@@ -60,5 +60,8 @@ export const toAdminUserDTO = (user) => {
     banned: Boolean(u.banned),
     suspendedUntil: u.suspendedUntil || null,
     restrictionReason: u.restrictionReason || "",
+    // Phase 4 — count only, never the strike entries themselves (their
+    // reasons are between the moderation team and the audit log).
+    strikesCount: Array.isArray(u.strikes) ? u.strikes.length : 0,
   };
 };

@@ -16,7 +16,19 @@ const notificationSchema = new mongoose.Schema(
 
     type: {
       type: String,
-      enum: ["like", "comment", "follow", "mention", "reply", "commentLike"],
+      enum: [
+        "like",
+        "comment",
+        "follow",
+        "mention",
+        "reply",
+        "commentLike",
+        // Phase 4 — formal moderator warning. Rendered specially by the
+        // notifications page: reason text from `message`, sender identity
+        // never displayed (the warned user sees "Moderation team", not
+        // which moderator issued it).
+        "moderator_warning",
+      ],
       required: true,
     },
 
@@ -30,6 +42,14 @@ const notificationSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Comment",
       default: null,
+    },
+
+    // Free-text payload for notifications with no post/comment context —
+    // Phase 4 moderator warnings carry the warning reason here.
+    message: {
+      type: String,
+      default: "",
+      maxlength: 500,
     },
 
     read: {
