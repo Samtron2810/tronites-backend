@@ -33,11 +33,14 @@ export const toPrivateSelfDTO = (user) => {
   return {
     ...toPublicUserDTO(u),
     email: u.email,
-    // Needed client-side only to decide whether to show the moderation
-    // queue entry point in the user menu. Never included in
+    // Gates the moderation queue entry point in the user menu. Never included in
     // toPublicUserDTO — other users' roles are nobody else's business,
     // and showing it publicly would let anyone enumerate moderators.
     role: u.role,
+    // Phase 5 — same authorization-flag rationale as role: the client
+    // needs its OWN permissions to decide which moderation UI to offer
+    // (queue access, audit-log link). Never public.
+    permissions: Array.isArray(u.permissions) ? u.permissions : [],
     presenceVisibility: u.presenceVisibility,
   };
 };
@@ -60,8 +63,10 @@ export const toAdminUserDTO = (user) => {
     banned: Boolean(u.banned),
     suspendedUntil: u.suspendedUntil || null,
     restrictionReason: u.restrictionReason || "",
-    // Phase 4 — count only, never the strike entries themselves (their
+    // Count only, never the strike entries themselves (their
     // reasons are between the moderation team and the audit log).
     strikesCount: Array.isArray(u.strikes) ? u.strikes.length : 0,
+    // Phase 5 — admin rows need the live permission set for the editor.
+    permissions: Array.isArray(u.permissions) ? u.permissions : [],
   };
 };

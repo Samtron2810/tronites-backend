@@ -22,6 +22,7 @@ export const AUDIT_ACTIONS = [
   "user_role_changed",
   "report_resolved",
   "user_warned",
+  "user_permissions_changed",
 ];
 
 const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];

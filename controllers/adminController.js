@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import User from "../models/User.js";
+import User, { DEFAULT_MODERATOR_PERMISSIONS } from "../models/User.js";
 import Notification from "../models/Notification.js";
 import AuditLog, { AUDIT_ACTIONS } from "../models/AuditLog.js";
 import { toAdminUserDTO } from "../dtos/userDTO.js";
@@ -75,11 +75,31 @@ export const updateUserRole = async (req, res) => {
       }
     }
 
-    const user = await User.findByIdAndUpdate(
-      targetId,
-      { role },
-      { returnDocument: "after", runValidators: true },
-    ).select("name username email profilePic role createdAt");
+    // Phase 5 -- keep permissions coherent across role transitions:
+    // promoting to moderator seeds the default set ONLY when no explicit
+    // array exists yet (re-granting must not clobber an admin-curated
+    // set); demoting to a plain user clears it entirely. Admin targets
+    // keep whatever is stored -- their gate short-circuits anyway.
+    const preUpdate = await User.findById(targetId).select("permissions");
+    if (!preUpdate) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const updateOps = { role };
+    if (
+      role === "moderator" &&
+      !(preUpdate.permissions && preUpdate.permissions.length)
+    ) {
+      updateOps.$set = { permissions: [...DEFAULT_MODERATOR_PERMISSIONS] };
+    }
+    if (role === "user") {
+      updateOps.$set = { permissions: [] };
+    }
+
+    const user = await User.findByIdAndUpdate(targetId, updateOps, {
+      returnDocument: "after",
+      runValidators: true,
+    }).select("name username email profilePic role createdAt permissions");
 
     if (!user) {
       return res.status(404).json({ message: "User not found." });
@@ -494,6 +514,67 @@ export const warnUser = async (req, res) => {
       strikeThresholdReached,
       user: toAdminUserDTO(updated),
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ─── Granular permissions (Phase 5) ──────────────────────────────────────────
+
+// PUT /admin/users/:id/permissions -- requireAdmin. Whole-array
+// replacement of a MODERATOR's explicit permission set (see
+// middleware/requirePermission.js for resolution semantics: non-empty
+// array is authoritative; empty falls back to defaults). Admins are
+// rejected -- their access is implicit and cannot be tuned; plain users
+// are rejected too -- grant capabilities by promoting first, never by
+// handing permissions to an account every route already rejects.
+export const updateUserPermissions = async (req, res) => {
+  try {
+    const target = await User.findById(req.params.id).select(
+      "_id name username email profilePic role permissions createdAt"
+    );
+    if (!target) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    if (target.role !== "moderator") {
+      return res.status(400).json({
+        message:
+          target.role === "admin"
+            ? "Admins hold every permission implicitly."
+            : "Permissions apply to moderators -- promote this account first.",
+      });
+    }
+
+    const previousPermissions = Array.isArray(target.permissions)
+      ? target.permissions
+      : [];
+
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: { permissions: req.body.permissions } },
+      { returnDocument: "after", runValidators: true },
+    ).select("name username email profilePic role createdAt permissions banned suspendedUntil restrictionReason strikes");
+
+    logAudit({
+      action: "user_permissions_changed",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: {
+          name: target.name,
+          username: target.username,
+          role: target.role,
+        },
+      },
+      detail: {
+        permissions: req.body.permissions,
+        previousPermissions,
+      },
+    });
+
+    res.status(200).json({ user: toAdminUserDTO(updated) });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

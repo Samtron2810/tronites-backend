@@ -1,5 +1,30 @@
 import mongoose from "mongoose";
 
+// Phase 5 — every permission the system knows about. Single source of
+// truth for the model enum; middleware and controllers derive behavior
+// from these names.
+export const PERMISSIONS = [
+  "manage_reports",
+  "manage_users",
+  "manage_content",
+  "view_audit_log",
+  "manage_roles",
+];
+
+// What a moderator could do BEFORE granular permissions existed (Phases
+// 2–4 shipped suspend/unrestrict/warn to the coarse requireModerator
+// gate). Applied whenever a moderator's explicit permissions array is
+// empty — both as the seed on promotion and as the runtime fallback in
+// requirePermission — so existing accounts never lose capabilities in the
+// migration. Note this intentionally exceeds the plan-doc's original
+// two-permission example: Phase 2 gave moderators suspension, and taking
+// that away silently would be a regression, not a cleanup.
+export const DEFAULT_MODERATOR_PERMISSIONS = [
+  "manage_reports",
+  "manage_users",
+  "manage_content",
+];
+
 const userSchema = new mongoose.Schema(
   {
     firstName: {
@@ -97,6 +122,28 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ["user", "moderator", "admin"],
       default: "user",
+    },
+
+    // Phase 5 — granular moderation permissions (meaningful only for the
+    // "moderator" role; admins implicitly hold every permission via the
+    // short-circuit in middleware/requirePermission.js, and plain users
+    // hold none). An explicit non-empty array is authoritative — that's
+    // what lets an admin REVOKE a capability a moderator would otherwise
+    // have by default. An EMPTY array on a moderator falls back to
+    // DEFAULT_MODERATOR_PERMISSIONS at gate time, so pre-granular rows
+    // keep working unchanged. Kept in sync with the zod enum in
+    // utils/validators.js (updatePermissionsSchema) — same duplication
+    // tradeoff as AUDIT_ACTIONS.
+    permissions: {
+      type: [String],
+      enum: [
+        "manage_reports",
+        "manage_users",
+        "manage_content",
+        "view_audit_log",
+        "manage_roles",
+      ],
+      default: [],
     },
 
     // Phase 2 account restrictions (see adminController.suspendUser /

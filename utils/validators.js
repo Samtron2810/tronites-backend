@@ -303,6 +303,25 @@ export const warnUserSchema = z.object({
   reportId: z.string().optional(),
 });
 
+// Phase 5 — granular permission editing. Whole-array replacement (not
+// add/remove deltas): simpler client, and the confirm modal always sends
+// the full intended set. Enum mirrors models/User.js PERMISSIONS — keep
+// both in sync. manage_roles is accepted here for forward-compat but no
+// runtime gate consumes it yet (role routes stay requireAdmin).
+export const updatePermissionsSchema = z.object({
+  permissions: z
+    .array(
+      z.enum([
+        "manage_reports",
+        "manage_users",
+        "manage_content",
+        "view_audit_log",
+        "manage_roles",
+      ]),
+    )
+    .max(5),
+});
+
 // ─── Middleware factory ──────────────────────────────────────────────────────
 
 export const validate = (schema) => (req, res, next) => {

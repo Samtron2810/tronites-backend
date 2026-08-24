@@ -3,12 +3,14 @@ import express from "express";
 import protect from "../middleware/authMiddleware.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireModerator from "../middleware/requireModerator.js";
+import requirePermission from "../middleware/requirePermission.js";
 import { validate } from "../utils/validators.js";
 import {
   updateRoleSchema,
   suspendUserSchema,
   banUserSchema,
   warnUserSchema,
+  updatePermissionsSchema,
 } from "../utils/validators.js";
 import {
   listUsersForAdmin,
@@ -17,6 +19,7 @@ import {
   banUser,
   unrestrictUser,
   warnUser,
+  updateUserPermissions,
   listAuditLogs,
 } from "../controllers/adminController.js";
 
@@ -38,10 +41,14 @@ router.put(
 // admin-only. Further target guards (no self-action, admins exempt,
 // moderator-vs-moderator block) live in the controller so both routes
 // share one rulebook.
+// Phase 5: coarse requireModerator stays as the shape guard, then
+// manage_users decides. Default moderators hold it via
+// DEFAULT_MODERATOR_PERMISSIONS -- a refinement, not a behavior change.
 router.put(
   "/users/:id/suspend",
   protect,
   requireModerator,
+  requirePermission("manage_users"),
   validate(suspendUserSchema),
   suspendUser,
 );
@@ -63,11 +70,27 @@ router.post(
   warnUser,
 );
 
-router.put("/users/:id/unrestrict", protect, requireModerator, unrestrictUser);
+router.put(
+  "/users/:id/unrestrict",
+  protect,
+  requireModerator,
+  requirePermission("manage_users"),
+  unrestrictUser,
+);
 
-// Audit trail (Phase 3). Read access is deliberately stricter than the
-// write side: moderators and admins both generate entries, but only
-// admins get to review everyone's actions.
-router.get("/audit", protect, requireAdmin, listAuditLogs);
+// Audit trail (Phase 3), granular since Phase 5: admins always pass the
+// permission gate; moderators can be granted view_audit_log explicitly
+// (the checkbox in Manage roles). Plain users fail both checks.
+router.get("/audit", protect, requirePermission("view_audit_log"), listAuditLogs);
+
+// Phase 5 -- set a moderator's explicit permission array (admin only,
+// whole-array replacement). See updateUserPermissions for the guards.
+router.put(
+  "/users/:id/permissions",
+  protect,
+  requireAdmin,
+  validate(updatePermissionsSchema),
+  updateUserPermissions,
+);
 
 export default router;
