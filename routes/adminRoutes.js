@@ -15,6 +15,7 @@ import {
   suspendUser,
   banUser,
   unrestrictUser,
+  listAuditLogs,
 } from "../controllers/adminController.js";
 
 const router = express.Router();
@@ -50,5 +51,10 @@ router.put(
   banUser,
 );
 router.put("/users/:id/unrestrict", protect, requireModerator, unrestrictUser);
+
+// Audit trail (Phase 3). Read access is deliberately stricter than the
+// write side: moderators and admins both generate entries, but only
+// admins get to review everyone's actions.
+router.get("/audit", protect, requireAdmin, listAuditLogs);
 
 export default router;

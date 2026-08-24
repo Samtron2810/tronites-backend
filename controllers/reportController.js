@@ -8,6 +8,7 @@ import {
   resolveReport,
   getReportContext,
 } from "../services/reportService.js";
+import { logAudit } from "../utils/auditLogger.js";
 
 // Maps a report's targetType to the model that owns the object and the
 // field on it that identifies its author — needed to resolve
@@ -85,6 +86,25 @@ export const resolveReportHandler = async (req, res) => {
       note,
       removeContent,
     });
+
+    // Phase 3 — resolutions (and their optional takedown) are part of
+    // the moderation trail; snapshot what was resolved against what.
+    logAudit({
+      action: "report_resolved",
+      actor: req.user,
+      req,
+      target: {
+        type: "report",
+        ref: report._id,
+        snapshot: {
+          targetType: report.targetType,
+          targetId: report.targetId,
+          removeContent: Boolean(removeContent),
+        },
+      },
+      detail: { status, note: note || "" },
+    });
+
     res.status(200).json({ report });
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });

@@ -1,8 +1,11 @@
+import mongoose from "mongoose";
 import User from "../models/User.js";
+import AuditLog, { AUDIT_ACTIONS } from "../models/AuditLog.js";
 import { toAdminUserDTO } from "../dtos/userDTO.js";
 import { emitToUser, disconnectUser } from "../socket/socket.js";
 import { revokeAllSessions } from "../utils/tokens.js";
 import { invalidateCache, invalidateFeedCache } from "../utils/redis.js";
+import { logAudit } from "../utils/auditLogger.js";
 
 // LIST/SEARCH USERS (admin only) â€” paginated, optional name/username/
 // email search and role filter, for the admin panel's user picker.
@@ -80,6 +83,19 @@ export const updateUserRole = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
+
+    // Phase 3 â€” role changes are exactly what an audit trail exists for.
+    logAudit({
+      action: "user_role_changed",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: user._id,
+        snapshot: { name: user.name, username: user.username, role: user.role },
+      },
+      detail: { toRole: role },
+    });
 
     res.status(200).json({ user: toAdminUserDTO(user) });
   } catch (error) {
@@ -188,6 +204,18 @@ export const suspendUser = async (req, res) => {
       message: `Your account is suspended until ${until.toLocaleString()}.`,
     });
 
+    logAudit({
+      action: "user_suspended",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: { name: target.name, username: target.username, role: target.role },
+      },
+      detail: { reason: req.body.reason || "", suspendedUntil: until },
+    });
+
     res.status(200).json({ user: toAdminUserDTO(updated) });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -237,6 +265,18 @@ export const banUser = async (req, res) => {
       message: "Your account has been banned.",
     });
 
+    logAudit({
+      action: "user_banned",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: { name: target.name, username: target.username, role: target.role },
+      },
+      detail: { reason: req.body.reason || "" },
+    });
+
     res.status(200).json({ user: toAdminUserDTO(updated) });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -269,7 +309,85 @@ export const unrestrictUser = async (req, res) => {
       { returnDocument: "after", runValidators: true },
     ).select(RESTRICTION_TARGET_SELECT);
 
+    // Record WHAT was lifted â€” reviewing reversals later needs to know
+    // whether it was an early suspension end, an unban, or both.
+    logAudit({
+      action: "user_unrestricted",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: { name: target.name, username: target.username, role: target.role },
+      },
+      detail: {
+        clearedBan: !!target.banned,
+        clearedSuspensionUntil: target.suspendedUntil || null,
+      },
+    });
+
     res.status(200).json({ user: toAdminUserDTO(updated) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// --- Audit log (Phase 3) -----------------------------------------------------
+
+// GET /admin/audit — requireAdmin. Paginated, filterable read over the
+// append-only AuditLog collection. Query params:
+//   limit=50 (1–100)  offset=0  sort=-createdAt|createdAt
+//   action=user_suspended,user_banned   (CSV; unknown values ignored)
+//   targetType=user|post|comment|message|report
+//   actor=<userId>
+export const listAuditLogs = async (req, res) => {
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 50, 1),
+      100,
+    );
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const filter = {};
+
+    if (req.query.action) {
+      const actions = String(req.query.action)
+        .split(",")
+        .map((a) => a.trim())
+        .filter((a) => AUDIT_ACTIONS.includes(a));
+      if (actions.length) filter.action = { $in: actions };
+    }
+
+    if (
+      ["user", "post", "comment", "message", "report"].includes(
+        req.query.targetType,
+      )
+    ) {
+      filter["target.type"] = req.query.targetType;
+    }
+
+    if (req.query.actor && mongoose.isValidObjectId(req.query.actor)) {
+      filter["actor._id"] = new mongoose.Types.ObjectId(req.query.actor);
+    }
+
+    const sortDirection = req.query.sort === "createdAt" ? 1 : -1;
+
+    const [logs, total] = await Promise.all([
+      AuditLog.find(filter)
+        .sort({ createdAt: sortDirection })
+        .skip(offset)
+        .limit(limit)
+        .lean(),
+      AuditLog.countDocuments(filter),
+    ]);
+
+    res.status(200).json({
+      logs,
+      total,
+      limit,
+      offset,
+      hasMore: offset + logs.length < total,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
