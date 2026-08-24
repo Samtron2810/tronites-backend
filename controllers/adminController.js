@@ -12,11 +12,21 @@ import { logAudit } from "../utils/auditLogger.js";
 // email search and role filter, for the admin panel's user picker.
 export const listUsersForAdmin = async (req, res) => {
   try {
+    // Phase 6 -- sortBy=reportCount and/or minReportCount=N switch to an
+    // aggregation that joins per-owner report totals (Report's
+    // {targetOwner:1} index keeps the lookup cheap) so the panel can
+    // surface "most reported" accounts. Plain requests keep the fast
+    // find() path -- whose select now also carries strikes/permissions
+    // so strike badges and the permission editor reflect reality.
     const query = String(req.query.q || "").trim();
     const roleFilter = req.query.role; // "user" | "moderator" | "admin" | undefined
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
     const skip = (page - 1) * limit;
+
+    const sortByReportCount = req.query.sortBy === "reportCount";
+    const minReportCount = parseInt(req.query.minReportCount, 10) || 0;
+    const needsReportsJoin = sortByReportCount || minReportCount > 0;
 
     const filter = {};
     if (query.length >= 2) {
@@ -30,23 +40,72 @@ export const listUsersForAdmin = async (req, res) => {
       filter.role = roleFilter;
     }
 
-    const [users, totalUsers] = await Promise.all([
-      User.find(filter)
-        .select(
-          "name username email profilePic role createdAt banned suspendedUntil restrictionReason",
-        )
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      User.countDocuments(filter),
+    if (!needsReportsJoin) {
+      const [users, totalUsers] = await Promise.all([
+        User.find(filter)
+          .select(
+            "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason strikes permissions",
+          )
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        User.countDocuments(filter),
+      ]);
+
+      return res.status(200).json({
+        users: users.map(toAdminUserDTO),
+        currentPage: page,
+        totalPages: Math.ceil(totalUsers / limit),
+        hasMore: skip + users.length < totalUsers,
+      });
+    }
+
+    // Aggregation path -- $lookup attaches every candidate's report
+    // total; minReportCount filters AFTER the join so pages are filled
+    // with qualifying accounts instead of trimmed to nothing. $facet
+    // gets filtered total + page in one round trip.
+    const reportCountFilter =
+      minReportCount > 0
+        ? [{ $match: { reportCount: { $gte: minReportCount } } }]
+        : [];
+    const sortStage = sortByReportCount
+      ? { reportCount: -1, createdAt: -1 }
+      : { createdAt: -1 };
+
+    const [agg] = await User.aggregate([
+      { $match: filter },
+      {
+        $lookup: {
+          from: "reports",
+          localField: "_id",
+          foreignField: "targetOwner",
+          as: "_reports",
+        },
+      },
+      { $addFields: { reportCount: { $size: "$_reports" } } },
+      { $project: { _reports: 0 } },
+      {
+        $facet: {
+          data: [
+            ...reportCountFilter,
+            { $sort: sortStage },
+            { $skip: skip },
+            { $limit: limit },
+          ],
+          total: [...reportCountFilter, { $count: "value" }],
+        },
+      },
     ]);
 
+    const docs = agg?.data ?? [];
+    const totalUsers = agg?.total?.[0]?.value ?? 0;
+
     res.status(200).json({
-      users: users.map(toAdminUserDTO),
+      users: docs.map(toAdminUserDTO),
       currentPage: page,
       totalPages: Math.ceil(totalUsers / limit),
-      hasMore: skip + users.length < totalUsers,
+      hasMore: skip + docs.length < totalUsers,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -578,4 +637,138 @@ export const updateUserPermissions = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
+};
+
+// POST /admin/users/bulk -- requireAdmin. Applies one restriction action
+// across up to 100 accounts, mirroring the exact guard/update/side-effect/
+// audit sequence of the single-user endpoints. Partial-success semantics:
+// each id gets its own result row and HTTP stays 200 even when some fail
+// (self/admin targets, already-banned accounts), while every successful
+// write logs its own audit entry -- the trail answers "who restricted
+// THIS account" per user, never as one batched blob. Deliberately omits
+// the plan doc's bulk "role" action: mass role changes are a privilege-
+// escalation foot-gun with no consumer.
+export const bulkUpdateUsers = async (req, res) => {
+  const { userIds, action, until, reason } = req.body;
+
+  // Dedupe preserving order; invalid ObjectIds are dropped here so one
+  // garbage id cannot poison the batch (zod already capped size).
+  const seen = new Set();
+  const ids = [];
+  for (const raw of userIds) {
+    if (!mongoose.isValidObjectId(raw)) continue;
+    const key = new mongoose.Types.ObjectId(raw).toString();
+    if (!seen.has(key)) {
+      seen.add(key);
+      ids.push(key);
+    }
+  }
+  if (!ids.length) {
+    return res.status(400).json({ message: "No valid user ids supplied." });
+  }
+
+  const results = [];
+  let succeeded = 0;
+
+  for (const id of ids) {
+    try {
+      const target = await User.findById(id).select(
+        "_id name username role banned suspendedUntil deletedAt"
+      );
+      if (!target) {
+        results.push({ userId: id, ok: false, error: "User not found." });
+        continue;
+      }
+
+      const guardError = restrictionGuardError(req.user, target);
+      if (guardError) {
+        results.push({ userId: id, ok: false, error: guardError });
+        continue;
+      }
+      // Parity with banUser's early-out; suspend/unrestrict stay
+      // idempotent by design, exactly like their single-user versions.
+      if (action === "ban" && target.banned) {
+        results.push({
+          userId: id,
+          ok: false,
+          error: "Already permanently banned.",
+        });
+        continue;
+      }
+
+      let setOps;
+      let sideEffects = null;
+      let auditAction;
+      if (action === "suspend") {
+        setOps = { suspendedUntil: until, restrictionReason: reason || "" };
+        sideEffects = {
+          code: "ACCOUNT_SUSPENDED",
+          reason: reason || "",
+          suspendedUntil: until,
+          message: `Your account is suspended until ${until.toLocaleString()}.`,
+        };
+        auditAction = "user_suspended";
+      } else if (action === "ban") {
+        setOps = {
+          banned: true,
+          suspendedUntil: null,
+          restrictionReason: reason || "",
+        };
+        sideEffects = {
+          code: "ACCOUNT_BANNED",
+          reason: reason || "",
+          suspendedUntil: null,
+          message: "Your account has been banned.",
+        };
+        auditAction = "user_banned";
+      } else {
+        setOps = { banned: false, suspendedUntil: null, restrictionReason: "" };
+        auditAction = "user_unrestricted";
+      }
+
+      const updated = await User.findByIdAndUpdate(
+        id,
+        { $set: setOps },
+        { returnDocument: "after", runValidators: true },
+      ).select(RESTRICTION_TARGET_SELECT);
+
+      if (sideEffects) applyRestrictionSideEffects(target._id, sideEffects);
+
+      logAudit({
+        action: auditAction,
+        actor: req.user,
+        req,
+        target: {
+          type: "user",
+          ref: target._id,
+          snapshot: {
+            name: target.name,
+            username: target.username,
+            role: target.role,
+          },
+        },
+        detail:
+          action === "suspend"
+            ? { reason: reason || "", suspendedUntil: until, bulk: true }
+            : action === "ban"
+              ? { reason: reason || "", bulk: true }
+              : {
+                  clearedBan: !!target.banned,
+                  clearedSuspensionUntil: target.suspendedUntil || null,
+                  bulk: true,
+                },
+      });
+
+      succeeded += 1;
+      results.push({ userId: id, ok: true });
+    } catch (e) {
+      results.push({ userId: id, ok: false, error: e.message });
+    }
+  }
+
+  res.status(200).json({
+    results,
+    succeeded,
+    failed: results.length - succeeded,
+  });
 };

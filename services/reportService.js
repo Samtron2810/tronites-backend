@@ -66,7 +66,11 @@ export const listReports = async ({ status = "open", page = 1, limit = 25 } = {}
 
   const [reports, total] = await Promise.all([
     Report.find(filter)
-      .sort({ status: 1, createdAt: 1 })
+      // Priority ASC puts "high" lexicographically before "normal" — an
+      // accident of the alphabet, not an obvious convention, so don't
+      // "fix" this to -1 (that would sink urgent reports). If a third
+      // priority level ever appears, replace this with an explicit rank.
+      .sort({ status: 1, priority: 1, createdAt: 1 })
       .skip(skip)
       .limit(limit)
       .populate("reporter", "name username profilePic")

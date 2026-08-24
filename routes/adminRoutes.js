@@ -11,6 +11,7 @@ import {
   banUserSchema,
   warnUserSchema,
   updatePermissionsSchema,
+  bulkUsersSchema,
 } from "../utils/validators.js";
 import {
   listUsersForAdmin,
@@ -20,6 +21,7 @@ import {
   unrestrictUser,
   warnUser,
   updateUserPermissions,
+  bulkUpdateUsers,
   listAuditLogs,
 } from "../controllers/adminController.js";
 
@@ -91,6 +93,17 @@ router.put(
   requireAdmin,
   validate(updatePermissionsSchema),
   updateUserPermissions,
+);
+
+// Phase 6 — bulk restriction from the admin panel's selection bar.
+// Admin-only (mass actions are exactly what granular permissions must
+// never leak); per-user results come back so partial failures surface.
+router.post(
+  "/users/bulk",
+  protect,
+  requireAdmin,
+  validate(bulkUsersSchema),
+  bulkUpdateUsers,
 );
 
 export default router;

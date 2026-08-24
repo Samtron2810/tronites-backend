@@ -322,6 +322,33 @@ export const updatePermissionsSchema = z.object({
     .max(5),
 });
 
+// Phase 6 — bulk restriction of accounts from the admin panel's selection
+// bar. Hard cap of 100 ids keeps one call from becoming an unbounded
+// write storm; per-user results come back so partial failures (self or
+// admin targets, already-banned accounts) are visible rather than
+// silently swallowed. until/reason follow suspendUserSchema conventions
+// but are optional here since unrestrict sends neither.
+export const bulkUsersSchema = z
+  .object({
+    userIds: z.array(z.string()).min(1).max(100),
+    action: z.enum(["suspend", "ban", "unrestrict"]),
+    until: z
+      .string()
+      .refine((v) => !Number.isNaN(Date.parse(v)), "Invalid suspension date")
+      .transform((v) => new Date(v))
+      .optional(),
+    reason: z.string().trim().max(500).optional().default(""),
+  })
+  .superRefine((val, ctx) => {
+    if (val.action === "suspend" && !val.until) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["until"],
+        message: "Bulk suspend requires an 'until' date",
+      });
+    }
+  });
+
 // ─── Middleware factory ──────────────────────────────────────────────────────
 
 export const validate = (schema) => (req, res, next) => {

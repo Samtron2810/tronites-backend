@@ -64,6 +64,16 @@ const reportSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Phase 6 — queue urgency. Raised automatically by the hourly
+    // flagRepeatOffenders job when an owner crosses the repeat-offender
+    // threshold, so a pile-up surfaces at the top of the queue instead of
+    // waiting for someone to notice the pile-up itself.
+    priority: {
+      type: String,
+      enum: ["normal", "high"],
+      default: "normal",
+    },
+
     status: {
       type: String,
       enum: ["open", "actioned", "dismissed"],

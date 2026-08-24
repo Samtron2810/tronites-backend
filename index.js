@@ -37,6 +37,7 @@ import { connectRedis, isRedisReady, disconnectRedis } from "./utils/redis.js";
 import errorHandler from "./middleware/errorHandler.js";
 import { cleanupAbandonedVideoShells } from "./jobs/cleanupAbandonedVideoShells.js";
 import { purgeDeletedAccounts } from "./jobs/purgeDeletedAccounts.js";
+import { flagRepeatOffenders } from "./jobs/flagRepeatOffenders.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -175,6 +176,18 @@ const startServer = async () => {
   purgeDeletedAccounts();
   const purgeInterval = setInterval(purgeDeletedAccounts, CLEANUP_INTERVAL_MS);
 
+  // Phase 6 — raises a reported account's open reports to high priority
+  // once they cross REPEAT_OFFENDER_THRESHOLD within 24h, so pile-ups
+  // surface at the top of the moderation queue proactively — see
+  // jobs/flagRepeatOffenders.js. Same boot-then-hourly cadence as the
+  // two sweeps above; the sweep itself is idempotent (only
+  // priority:"normal" rows match), so hourly is cheap and safe.
+  flagRepeatOffenders();
+  const offenderInterval = setInterval(
+    flagRepeatOffenders,
+    CLEANUP_INTERVAL_MS,
+  );
+
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
   // up a second, unrelated http.Server and leave Socket.IO unreachable).
@@ -197,6 +210,7 @@ const startServer = async () => {
     try {
       clearInterval(cleanupInterval);
       clearInterval(purgeInterval);
+      clearInterval(offenderInterval);
 
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see
