@@ -594,15 +594,17 @@ export const updateName = async (req, res) => {
   try {
     const { firstName, lastName } = req.body;
 
-    const current = await User.findById(req.user._id).select(
-      "nameChangedAt",
-    );
+    const user = await User.findById(req.user._id);
 
-    if (current.nameChangedAt) {
-      const elapsed = Date.now() - new Date(current.nameChangedAt).getTime();
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.nameChangedAt) {
+      const elapsed = Date.now() - new Date(user.nameChangedAt).getTime();
       if (elapsed < NAME_COOLDOWN_MS) {
         const nextAllowed = new Date(
-          new Date(current.nameChangedAt).getTime() + NAME_COOLDOWN_MS,
+          new Date(user.nameChangedAt).getTime() + NAME_COOLDOWN_MS,
         );
         return res.status(429).json({
           message: "You can only change your name once every 3 days",
@@ -611,11 +613,15 @@ export const updateName = async (req, res) => {
       }
     }
 
-    const user = await User.findByIdAndUpdate(
-      req.user._id,
-      { firstName, lastName, nameChangedAt: new Date() },
-      { returnDocument: "after", runValidators: true },
-    ).select("name username bio profilePic email usernameChangedAt nameChangedAt role permissions presenceVisibility");
+    // Use the document's .save() (with runValidators on) instead of
+    // findByIdAndUpdate so the schema's pre("validate") hook re-derives
+    // `name` from firstName/lastName. findByIdAndUpdate skips document
+    // hooks — leaving `name` stale at its old value and returning it to
+    // the client, so the UI would show the old name right after saving.
+    user.firstName = firstName;
+    user.lastName = lastName;
+    user.nameChangedAt = new Date();
+    await user.save();
 
     // `name` is denormalized into search index and any place that reads
     // a cached profile — same invalidation as updateBio below.
