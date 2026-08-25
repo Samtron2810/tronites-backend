@@ -342,6 +342,9 @@ export const getConversations = async (req, res) => {
               ],
             },
           },
+          // Who sent the newest message — so the client can show a
+          // "You:" prefix when the preview was written by the user.
+          lastMessageSenderId: { $first: "$sender" },
           unreadCount: {
             $sum: {
               $cond: [
@@ -420,6 +423,11 @@ export const getConversations = async (req, res) => {
                 lastMessage: 1,
                 lastMessageAt: 1,
                 unreadCount: 1,
+                // True when the newest message was written by the current
+                // user, so the conversation list can show a "You:" prefix.
+                lastMessageFromMe: {
+                  $eq: ["$lastMessageSenderId", currentUserId],
+                },
                 requestStatus: {
                   $ifNull: ["$conversationMeta.status", "accepted"],
                 },
