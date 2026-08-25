@@ -213,3 +213,20 @@ export const accountDeletionLimiter = rateLimit({
   legacyHeaders: false,
   store: makeStore("rl:deleteaccount:"),
 });
+
+// Report limiter — 15 reports per hour. Reports were previously only
+// covered by the generic apiLimiter (100 writes/15min shared with every
+// other write action), which is loose enough to let one account file
+// dozens of reports against a single target, or flood the moderation
+// queue. This is deliberately tighter and its own bucket: legitimate use
+// is "I saw a handful of bad things today", not "I file 100 reports".
+export const reportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 15,
+  message: {
+    message: "Too many reports submitted, please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: makeStore("rl:report:"),
+});
