@@ -579,6 +579,122 @@ export const getFeedPosts = async (req, res) => {
   }
 };
 
+// GET TRENDING FEED POSTS
+//
+// Reddit "hot"-style ranking: score = (likes*2 + comments*3) decayed by
+// post age, so a post's rank falls off over time instead of older
+// high-engagement posts permanently dominating the top. Gravity of 1.8
+// and the 2h origin offset are tuned so a fresh post with a handful of
+// early likes can outrank a day-old post with dozens, without a brand
+// new zero-engagement post always winning on recency alone.
+//
+// Score isn't stored on the Post doc — it's cheap to compute at read
+// time from the two counters already denormalized there (likesCount,
+// commentsCount), and keeping it uncomputed avoids a write-amplifying
+// background job to keep a stored score fresh as engagement changes.
+// Same reasoning as searchPosts: a $meta-projected/computed score can't
+// be combined with $lt in the query stage, so pagination is a capped
+// in-memory candidate window ranked and sliced by (score, _id), not a
+// true DB-level cursor. Global (not follow-scoped) by design — trending
+// surfaces content across the whole app, mirroring Twitter/Instagram's
+// "Trending"/"Explore" rather than the chronological following feed.
+const TRENDING_GRAVITY = 1.8;
+const TRENDING_ORIGIN_HOURS = 2;
+const MAX_TRENDING_CANDIDATES = 500;
+// Only rank posts from the last N days — older posts are excluded
+// outright rather than merely decayed near-zero, so the candidate scan
+// stays bounded regardless of how large the total post collection grows.
+const TRENDING_WINDOW_DAYS = 7;
+
+const computeTrendingScore = (post) => {
+  const ageHours =
+    (Date.now() - post.createdAt.getTime()) / (1000 * 60 * 60);
+  const engagement = post.likesCount * 2 + post.commentsCount * 3;
+  return engagement / Math.pow(ageHours + TRENDING_ORIGIN_HOURS, TRENDING_GRAVITY);
+};
+
+export const getTrendingPosts = async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
+    const cursorScore =
+      req.query.afterScore !== undefined
+        ? parseFloat(req.query.afterScore)
+        : null;
+    const cursorId = req.query.afterId || null;
+    const hasCursor =
+      cursorScore !== null && cursorId && !Number.isNaN(cursorScore);
+
+    // Same reasoning as searchPosts: block list changes which posts are
+    // even eligible, so it's a query filter, not a post-hoc flag — not
+    // cacheable/shareable across viewers as a result.
+    const [blockedIds, mutedIds] = await Promise.all([
+      getBlockedEitherWayIds(req.user._id),
+      getMutedIds(req.user._id),
+    ]);
+    const excludedUserIds = new Set([...blockedIds, ...mutedIds]);
+
+    const since = new Date(
+      Date.now() - TRENDING_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    );
+
+    const filter = {
+      removedAt: null, // moderator soft-takedown — see reportService
+      createdAt: { $gte: since },
+      ...(excludedUserIds.size
+        ? { user: { $nin: [...excludedUserIds] } }
+        : {}),
+    };
+
+    const candidates = await Post.find(filter)
+      .populate("user", "name username profilePic")
+      .sort({ createdAt: -1 })
+      .limit(MAX_TRENDING_CANDIDATES);
+
+    const ranked = candidates
+      .map((post) => ({ post, score: computeTrendingScore(post) }))
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return b.post._id.toString().localeCompare(a.post._id.toString());
+      });
+
+    const filtered = hasCursor
+      ? ranked.filter(({ post, score }) => {
+          if (score < cursorScore) return true;
+          if (score === cursorScore) return post._id.toString() < cursorId;
+          return false;
+        })
+      : ranked;
+
+    const hasMore = filtered.length > limit;
+    const page = hasMore ? filtered.slice(0, limit) : filtered;
+
+    const postIds = page.map(({ post }) => post._id);
+    const [likedPostIds, bookmarkedPostIds] = await Promise.all([
+      getLikedPostIds(req.user._id, postIds),
+      getBookmarkedPostIds(req.user._id, postIds),
+    ]);
+
+    const formattedPosts = page.map(({ post }) => ({
+      ...post._doc,
+      isLiked: likedPostIds.has(post._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(post._id.toString()),
+    }));
+
+    res.status(200).json({
+      posts: formattedPosts,
+      hasMore,
+      nextCursor: hasMore
+        ? {
+            afterScore: page[page.length - 1].score,
+            afterId: page[page.length - 1].post._id,
+          }
+        : null,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // GET POSTS BY HASHTAG
 export const getPostsByHashtag = async (req, res) => {
   try {

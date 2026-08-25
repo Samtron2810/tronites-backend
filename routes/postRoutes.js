@@ -7,6 +7,7 @@ import {
   createVideoPost,
   editPost,
   getFeedPosts,
+  getTrendingPosts,
   searchPosts,
   likePost,
   toggleBookmark,
@@ -78,6 +79,7 @@ router.put(
 );
 
 router.get("/feed", protect, validateQuery(paginationSchema), getFeedPosts);
+router.get("/trending", protect, getTrendingPosts);
 router.get("/search", protect, searchPosts);
 router.get(
   "/hashtag/:tag",
