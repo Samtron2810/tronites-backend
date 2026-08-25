@@ -68,6 +68,26 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Set on every successful username change EXCEPT the initial
+    // post-signup selection (that one is onboarding, not a "change" —
+    // see setUsername controller). Cooldown is enforced by comparing
+    // against this timestamp, not by counting changes, so it self-clears
+    // with time and needs no reset job.
+    usernameChangedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // Same pattern for firstName/lastName edits. Shorter cooldown than
+    // username (3d vs 30d) — this guards against rapid identity-flip
+    // abuse (e.g. renaming right after harassment to dodge
+    // recognition/reports), not link stability, so it doesn't need to be
+    // as strict.
+    nameChangedAt: {
+      type: Date,
+      default: null,
+    },
+
     email: {
       type: String,
       required: true,

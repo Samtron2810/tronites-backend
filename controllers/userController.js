@@ -48,6 +48,8 @@ export const checkUsername = async (req, res) => {
 };
 
 // SET USERNAME (one-time onboarding step post-signup, or later change)
+const USERNAME_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
 export const setUsername = async (req, res) => {
   try {
     const { username } = req.body;
@@ -57,11 +59,49 @@ export const setUsername = async (req, res) => {
       return res.status(409).json({ message: "Username is already taken" });
     }
 
+    // Load current state to distinguish "first-ever selection"
+    // (post-signup onboarding, no cooldown) from "changing an existing
+    // username" (cooldown applies). req.user from `protect` may be
+    // stale/partial depending on the auth middleware's select — refetch
+    // explicitly rather than trust it here.
+    const current = await User.findById(req.user._id).select(
+      "username usernameChangedAt",
+    );
+
+    if (current.username) {
+      const lastChanged = current.usernameChangedAt;
+      if (lastChanged) {
+        const elapsed = Date.now() - new Date(lastChanged).getTime();
+        if (elapsed < USERNAME_COOLDOWN_MS) {
+          const nextAllowed = new Date(
+            new Date(lastChanged).getTime() + USERNAME_COOLDOWN_MS,
+          );
+          return res.status(429).json({
+            message: "You can only change your username once every 30 days",
+            nextAllowedAt: nextAllowed,
+          });
+        }
+      }
+
+      if (username === current.username) {
+        return res.status(400).json({
+          message: "That's already your username",
+        });
+      }
+    }
+
     const user = await User.findByIdAndUpdate(
       req.user._id,
-      { username },
+      {
+        username,
+        // Only stamp the cooldown clock on an actual change, not the
+        // initial onboarding selection — otherwise a brand-new user
+        // would be locked out of changing their mind for 30 days right
+        // after signup.
+        ...(current.username ? { usernameChangedAt: new Date() } : {}),
+      },
       { returnDocument: "after", runValidators: true },
-    ).select("name username bio profilePic email");
+    ).select("name username bio profilePic email usernameChangedAt nameChangedAt role permissions presenceVisibility");
 
     res.status(200).json({ user: toPrivateSelfDTO(user) });
   } catch (error) {
@@ -543,6 +583,50 @@ export const updateProfilePicture = async (req, res) => {
 };
 
 //UPDATE BIO API
+const NAME_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+
+// UPDATE NAME — firstName/lastName, rate-limited separately from
+// username. Shorter cooldown (3d vs username's 30d) because this guards
+// against rapid identity-flip abuse (renaming to dodge recognition right
+// after being reported/blocked), not link/mention stability — nothing
+// else keys off `name` the way it does off `username`.
+export const updateName = async (req, res) => {
+  try {
+    const { firstName, lastName } = req.body;
+
+    const current = await User.findById(req.user._id).select(
+      "nameChangedAt",
+    );
+
+    if (current.nameChangedAt) {
+      const elapsed = Date.now() - new Date(current.nameChangedAt).getTime();
+      if (elapsed < NAME_COOLDOWN_MS) {
+        const nextAllowed = new Date(
+          new Date(current.nameChangedAt).getTime() + NAME_COOLDOWN_MS,
+        );
+        return res.status(429).json({
+          message: "You can only change your name once every 3 days",
+          nextAllowedAt: nextAllowed,
+        });
+      }
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { firstName, lastName, nameChangedAt: new Date() },
+      { returnDocument: "after", runValidators: true },
+    ).select("name username bio profilePic email usernameChangedAt nameChangedAt role permissions presenceVisibility");
+
+    // `name` is denormalized into search index and any place that reads
+    // a cached profile — same invalidation as updateBio below.
+    invalidateCache(`profile:${req.user._id}:*`);
+
+    res.status(200).json({ user: toPrivateSelfDTO(user) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const updateBio = async (req, res) => {
   try {
     const bio = req.body.bio?.trim() || "";

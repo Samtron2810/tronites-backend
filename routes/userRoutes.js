@@ -5,13 +5,14 @@ import upload from "../middleware/uploadMiddleware.js";
 import { accountDeletionLimiter } from "../middleware/rateLimiter.js";
 import { validate } from "../utils/validators.js";
 import { deleteAccountSchema } from "../utils/validators.js";
-import { updateBioSchema, setUsernameSchema, presenceVisibilitySchema } from "../utils/validators.js";
+import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema } from "../utils/validators.js";
 
 import {
   followUser,
   getUserProfile,
   searchUsers,
   updateProfilePicture,
+  updateName,
   updateBio,
   updatePresenceVisibility,
   getFollowers,
@@ -48,6 +49,7 @@ router.put(
   updateProfilePicture,
 );
 router.put("/bio", protect, validate(updateBioSchema), updateBio);
+router.put("/name", protect, validate(updateNameSchema), updateName);
 router.put(
   "/presence-visibility",
   protect,

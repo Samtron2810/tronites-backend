@@ -200,6 +200,23 @@ export const setUsernameSchema = z.object({
     ),
 });
 
+// Reuses NAME_PATTERN declared above (shared with signup's
+// firstName/lastName split validators).
+export const updateNameSchema = z.object({
+  firstName: z
+    .string()
+    .trim()
+    .min(1, "First name is required")
+    .max(30, "First name must be at most 30 characters")
+    .regex(NAME_PATTERN, "First name can only contain letters"),
+  lastName: z
+    .string()
+    .trim()
+    .min(1, "Last name is required")
+    .max(30, "Last name must be at most 30 characters")
+    .regex(NAME_PATTERN, "Last name can only contain letters"),
+});
+
 export const updateBioSchema = z.object({
   bio: z
     .string()
@@ -322,15 +339,18 @@ export const updatePermissionsSchema = z.object({
     .max(5),
 });
 
-// Phase 6 — bulk restriction of accounts from the admin panel's selection
-// bar. Hard cap of 100 ids keeps one call from becoming an unbounded
-// write storm; per-user results come back so partial failures (self or
-// admin targets, already-banned accounts) are visible rather than
-// silently swallowed. until/reason follow suspendUserSchema conventions
-// but are optional here since unrestrict sends neither.
+// Phase 6 -- bulk restriction from the admin panel selection bar. Mirrors
+// the single-user suspend/ban/unrestrict contract: one batch of userIds,
+// action in suspend|ban|unrestrict (no role escalation), `until` required
+// only for suspend, and an optional shared reason. ids are trimmed non-empty
+// strings here; the controller drops malformed ObjectIds so one bad id can
+// not poison the whole batch, and the controller expects the size cap.
 export const bulkUsersSchema = z
   .object({
-    userIds: z.array(z.string()).min(1).max(100),
+    userIds: z
+      .array(z.string().trim().min(1))
+      .min(1, "Select at least one user")
+      .max(100, "Bulk action is capped at 100 users"),
     action: z.enum(["suspend", "ban", "unrestrict"]),
     until: z
       .string()
@@ -339,12 +359,12 @@ export const bulkUsersSchema = z
       .optional(),
     reason: z.string().trim().max(500).optional().default(""),
   })
-  .superRefine((val, ctx) => {
-    if (val.action === "suspend" && !val.until) {
+  .superRefine((data, ctx) => {
+    if (data.action === "suspend" && !data.until) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["until"],
-        message: "Bulk suspend requires an 'until' date",
+        message: "Suspension requires a date",
       });
     }
   });

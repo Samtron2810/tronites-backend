@@ -42,6 +42,12 @@ export const toPrivateSelfDTO = (user) => {
     // (queue access, audit-log link). Never public.
     permissions: Array.isArray(u.permissions) ? u.permissions : [],
     presenceVisibility: u.presenceVisibility,
+    // Raw timestamps, not a computed "canChangeAt" — client derives
+    // remaining cooldown against its own clock, same pattern as
+    // suspendedUntil in toAdminUserDTO. Never in toPublicUserDTO: when
+    // another user last renamed is nobody else's business.
+    usernameChangedAt: u.usernameChangedAt || null,
+    nameChangedAt: u.nameChangedAt || null,
   };
 };
 
