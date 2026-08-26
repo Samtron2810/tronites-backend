@@ -21,6 +21,10 @@ import {
 } from "../services/followService.js";
 import { getLikedPostIds } from "../services/likeService.js";
 import { getBookmarkedPostIds } from "../services/bookmarkService.js";
+import {
+  PUBLIC_ONLY_FILTER,
+  FOLLOWERS_VISIBLE_FILTER,
+} from "../services/postVisibilityService.js";
 import { softDeleteAccount } from "../services/accountDeletionService.js";
 import { buildUserDataExport } from "../services/dataExportService.js";
 import { clearAuthCookies } from "../utils/tokens.js";
@@ -402,23 +406,56 @@ export const getUserProfile = async (req, res) => {
       });
     }
 
-    const postsCacheKey = `profile-posts:${req.params.id}:${page}:${limit}`;
+    // Which tier can the viewer see? Self -> everything; a follower ->
+    // public + followers-only; anyone else -> public only. This drives
+    // both the posts query filter and the cache key below. isFollowing
+    // is index-backed and cheap (see followService), so it's safe to
+    // compute on every request rather than sharing a tier with the
+    // userResult cache.
+    const viewerIsFollowing = isSelf
+      ? false
+      : await isFollowing(req.user._id, req.params.id);
 
-    // This cache entry is shared across every viewer of this profile
-    // (keyed only by profile owner + page/limit), so it must never store
-    // viewer-specific data. isLiked depends on who's asking, so it's
-    // computed fresh per-request below, after the shared cache read —
-    // not inside the cached fetchFn, where it would leak one viewer's
-    // like-state into another viewer's cached response.
+    const postsVisibilityFilter = isSelf
+      ? {}
+      : viewerIsFollowing
+        ? FOLLOWERS_VISIBLE_FILTER
+        : PUBLIC_ONLY_FILTER;
+
+    // Cache key must vary by the viewer's relationship tier — a
+    // stranger, a follower, and the owner herself each see a different
+    // subset of the same profile (public / public+followers / all), so
+    // sharing one entry across them would leak private posts. Keeping
+    // the `profile-posts:` + ownerId prefix means the existing
+    // `profile-posts:<owner>:*` invalidations (post create/edit/delete,
+    // moderation takedown, account deletion) still clear every tier.
+    const postsCacheKey = `profile-posts:${req.params.id}:${
+      isSelf ? "self" : viewerIsFollowing ? "follows" : "other"
+    }:${page}:${limit}`;
+
+    // This cache entry is shared across every viewer in the SAME tier
+    // (keyed by profile owner + tier + page/limit), so it must never
+    // store viewer-specific data. isLiked depends on who's asking, so
+    // it's computed fresh per-request below, after the shared cache
+    // read — not inside the cached fetchFn, where it would leak one
+    // viewer's like-state into another viewer's cached response.
     const postsResult = await getOrSetCache(
       postsCacheKey,
       async () => {
         const [posts, totalPosts] = await Promise.all([
-          Post.find({ user: req.params.id, removedAt: null })
+          Post.find({
+            user: req.params.id,
+            removedAt: null,
+            ...postsVisibilityFilter,
+          })
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit),
-          Post.countDocuments({ user: req.params.id, removedAt: null }),
+          Post.countDocuments({
+            user: req.params.id,
+            removedAt: null,
+            ...postsVisibilityFilter,
+          }),
         ]);
 
         return {

@@ -12,6 +12,12 @@ import {
 } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { listFollowingIds } from "../services/followService.js";
+import {
+  canViewPost,
+  PUBLIC_ONLY_FILTER,
+  feedVisibilityFilter,
+  POST_PRIVACY,
+} from "../services/postVisibilityService.js";
 import { getMutedIds, hasMuted } from "../services/muteService.js";
 import {
   getBlockedEitherWayIds,
@@ -40,7 +46,7 @@ import {
 // older client still posting that way.
 export const createPost = async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, privacy } = req.body;
     // New path: images come as an array of Cloudinary URLs in the body.
     const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
     // Legacy path: multer files (upload.array). req.file: legacy single.
@@ -104,6 +110,7 @@ export const createPost = async (req, res) => {
     const post = await Post.create({
       user: req.user._id,
       text,
+      privacy,
       images: imageUrls,
       hashtags: extractHashtags(text),
     });
@@ -163,8 +170,13 @@ export const createPost = async (req, res) => {
     // Real-time post feed update for followers — single room emit instead
     // of looping through every follower individually. Followers join this
     // room automatically on socket connect (see socket/socket.js).
+    // only-me posts never emit — a follower's live feed shouldn't prepend
+    // a post their DB feed query would never have returned in the first
+    // place.
     try {
-      emitToFollowersOf(req.user._id, "newPost", populatedPost);
+      if (post.privacy !== POST_PRIVACY.ONLY_ME) {
+        emitToFollowersOf(req.user._id, "newPost", populatedPost);
+      }
     } catch (socketError) {
       console.error("Real-time feed emission error:", socketError);
     }
@@ -269,7 +281,7 @@ export const createVideoUploadSignature = async (req, res) => {
 // and therefore no way for a post to get stuck or be orphaned.
 export const createVideoPost = async (req, res) => {
   try {
-    const { text, video } = req.body;
+    const { text, video, privacy } = req.body;
     const { publicId, url, durationSeconds } = video;
 
     // Validate the asset belongs to our Cloudinary account and folder —
@@ -303,6 +315,7 @@ export const createVideoPost = async (req, res) => {
     const post = await Post.create({
       user: req.user._id,
       text,
+      privacy,
       hashtags: extractHashtags(text),
       video: {
         publicId,
@@ -357,9 +370,12 @@ export const createVideoPost = async (req, res) => {
     const populatedPost = await post.populate("user", "name profilePic");
     res.status(201).json(populatedPost);
 
-    // Real-time post feed update for followers.
+    // Real-time post feed update for followers. only-me posts never emit —
+    // same reasoning as createPost above.
     try {
-      emitToFollowersOf(req.user._id, "newPost", populatedPost);
+      if (post.privacy !== POST_PRIVACY.ONLY_ME) {
+        emitToFollowersOf(req.user._id, "newPost", populatedPost);
+      }
     } catch (socketError) {
       console.error("Real-time feed emission error:", socketError);
     }
@@ -547,6 +563,7 @@ export const getFeedPosts = async (req, res) => {
         const filter = {
           user: { $in: feedUsers },
           removedAt: null, // moderator soft-takedown — see reportService
+          ...feedVisibilityFilter(req.user._id),
           ...(cursor ? { _id: { $lt: cursor } } : {}),
         };
 
@@ -658,6 +675,9 @@ export const getTrendingPosts = async (req, res) => {
     const filter = {
       removedAt: null, // moderator soft-takedown — see reportService
       createdAt: { $gte: since },
+      // Trending is a global discovery surface — only public posts
+      // qualify (the shared cache must stay viewer-independent).
+      ...PUBLIC_ONLY_FILTER,
       ...(excludedUserIds.size
         ? { user: { $nin: [...excludedUserIds] } }
         : {}),
@@ -734,6 +754,9 @@ export const getPostsByHashtag = async (req, res) => {
         const filter = {
           hashtags: tag,
           removedAt: null, // moderator soft-takedown — see reportService
+          // Hashtag browsing is a global discovery surface — public
+          // posts only (shared cache stays viewer-independent).
+          ...PUBLIC_ONLY_FILTER,
           ...(cursor ? { _id: { $lt: cursor } } : {}),
         };
 
@@ -812,6 +835,9 @@ export const searchPosts = async (req, res) => {
     const filter = {
       $text: { $search: query },
       removedAt: null, // moderator soft-takedown — see reportService
+      // Content search is a global discovery surface — public posts
+      // only (and results can't vary by the searcher's follow graph).
+      ...PUBLIC_ONLY_FILTER,
       ...(blockedIds.size ? { user: { $nin: [...blockedIds] } } : {}),
     };
 
@@ -890,6 +916,13 @@ export const likePost = async (req, res) => {
       return res
         .status(403)
         .json({ message: "You can't interact with this post." });
+    }
+
+    // Privacy gate — a hidden post (only-me, or followers-only to a
+    // non-follower) is indistinguishable from a missing one at this layer,
+    // so direct-ID access can't probe for private posts.
+    if (!(await canViewPost(userId, post))) {
+      return res.status(404).json({ message: "Post not found" });
     }
 
     // Read-then-act, same as the follow/unfollow toggle — but the actual
@@ -998,7 +1031,7 @@ export const likePost = async (req, res) => {
 // TOGGLE BOOKMARK (save/unsave)
 export const toggleBookmark = async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id).select("_id user");
+    const post = await Post.findById(req.params.id).select("_id user privacy");
     if (!post) {
       return res.status(404).json({ message: "Post not found" });
     }
@@ -1012,6 +1045,12 @@ export const toggleBookmark = async (req, res) => {
       return res
         .status(403)
         .json({ message: "You can't interact with this post." });
+    }
+
+    // Privacy gate — same rationale as likePost: hidden posts look
+    // missing to outsiders.
+    if (!(await canViewPost(userId, post))) {
+      return res.status(404).json({ message: "Post not found" });
     }
 
     // Read-then-act, race safety comes from the unique {user, post}

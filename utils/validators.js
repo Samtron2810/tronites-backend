@@ -85,6 +85,11 @@ export const resetPasswordSchema = z.object({
 
 // ─── Post ───────────────────────────────────────────────────────────────────
 
+// Post audience — kept in sync with the Post model enum and
+// services/postVisibilityService.js (stylistically mirrors the manually
+// synced POST_EDIT_COOLDOWN_MS constants used elsewhere).
+const POST_PRIVACY_VALUES = ["public", "followers", "only-me"];
+
 export const createPostSchema = z.object({
   text: z
     .string()
@@ -98,6 +103,9 @@ export const createPostSchema = z.object({
     .max(4, "Max 4 images per post")
     .optional()
     .default([]),
+  // Post audience — who can see this post. Optional; absent defaults
+  // to "public" server-side.
+  privacy: z.enum(POST_PRIVACY_VALUES).optional().default("public"),
 });
 
 // Signed browser upload: request a signature for image uploads.
@@ -126,6 +134,8 @@ export const createVideoPostSchema = z.object({
     url: z.string().url("Invalid video URL"),
     durationSeconds: z.number().positive().max(600).nullable().optional(),
   }),
+  // Post audience — same as createPostSchema.
+  privacy: z.enum(POST_PRIVACY_VALUES).optional().default("public"),
 });
 
 // Edit is text-only (images are fixed after posting). Empty text is

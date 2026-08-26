@@ -21,6 +21,21 @@ const postSchema = new mongoose.Schema(
       default: [],
     },
 
+    // Post audience — who can see this post, chosen at creation time.
+    // Deliberately not editable after posting (matches the "images are
+    // fixed after posting" policy).
+    //   public    -> everyone
+    //   followers -> the author + the author's followers
+    //   only-me   -> the author only
+    // Legacy posts created before this field existed have it missing;
+    // every read path treats missing exactly like "public" (see
+    // services/postVisibilityService.js).
+    privacy: {
+      type: String,
+      enum: ["public", "followers", "only-me"],
+      default: "public",
+    },
+
     // Carousel images (max 4).
     images: {
       type: [String],

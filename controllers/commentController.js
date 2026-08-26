@@ -6,6 +6,7 @@ import { io, emitToUser } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache } from "../utils/redis.js";
 import { extractMentions } from "../utils/textParser.js";
 import { isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockService.js";
+import { canViewPost } from "../services/postVisibilityService.js";
 import { hasMuted } from "../services/muteService.js";
 import {
   getLikedCommentIds,
@@ -33,6 +34,13 @@ export const addComment = async (req, res) => {
       (await isBlockedEitherWay(req.user._id, post.user))
     ) {
       return res.status(403).json({ message: "You can't comment on this post." });
+    }
+
+    // Privacy gate — a hidden post (only-me, or followers-only to a
+    // non-follower) is indistinguishable from a missing one here, so
+    // direct-ID access can't probe for private posts or comment on them.
+    if (!(await canViewPost(req.user._id, post))) {
+      return res.status(404).json({ message: "Post not found" });
     }
 
     let parentComment = null;
@@ -335,6 +343,15 @@ export const deleteComment = async (req, res) => {
 // GET TOP-LEVEL COMMENTS for a post (replies fetched separately, on demand)
 export const getComments = async (req, res) => {
   try {
+    // Privacy gate — the comments of a hidden post are as private as the
+    // post itself. The cached comment list is shared across viewers, so
+    // the gate runs before the cache read, keyed on the post, not the
+    // cached payload.
+    const post = await Post.findById(req.params.id).select("user privacy").lean();
+    if (!post || !(await canViewPost(req.user._id, post))) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
     const cacheKey = `comments:${req.params.id}`;
 
     const comments = await getOrSetCache(
@@ -380,6 +397,22 @@ export const getComments = async (req, res) => {
 // GET REPLIES for a top-level comment
 export const getReplies = async (req, res) => {
   try {
+    // Privacy gate — replies belong to a post, so a hidden post hides its
+    // replies too. Resolve the post via the parent comment (the param is
+    // the comment id, not the post id).
+    const parentComment = await Comment.findById(req.params.id)
+      .select("post")
+      .lean();
+    if (!parentComment) {
+      return res.status(404).json({ message: "Comment not found" });
+    }
+    const post = await Post.findById(parentComment.post)
+      .select("user privacy")
+      .lean();
+    if (!(await canViewPost(req.user._id, post))) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
     const cacheKey = `replies:${req.params.id}`;
 
     const replies = await getOrSetCache(
