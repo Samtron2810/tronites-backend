@@ -659,6 +659,21 @@ export const getTrendingPosts = async (req, res) => {
     const hasCursor =
       cursorScore !== null && cursorId && !Number.isNaN(cursorScore);
 
+    // Post IDs the caller has already seen (delivered on earlier pages).
+    // Trending scores decay with age between requests, so a post that was
+    // on page 1 can drop below the page-1 cursor by the time page 2 is
+    // fetched and get re-served. The client sends us the IDs it already
+    // has; we hard-exclude them before slicing so nothing can ever be
+    // delivered twice, regardless of how much the ranking shifts. Capped
+    // defensively so a pathological client can't blow up the query.
+    const rawExcludeIds = String(req.query.excludeIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const excludeIds = new Set(
+      rawExcludeIds.length <= 200 ? rawExcludeIds : rawExcludeIds.slice(0, 200),
+    );
+
     // Same reasoning as searchPosts: block list changes which posts are
     // even eligible, so it's a query filter, not a post-hoc flag — not
     // cacheable/shareable across viewers as a result.
@@ -693,7 +708,8 @@ export const getTrendingPosts = async (req, res) => {
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
         return b.post._id.toString().localeCompare(a.post._id.toString());
-      });
+      })
+      .filter(({ post }) => !excludeIds.has(post._id.toString()));
 
     const filtered = hasCursor
       ? ranked.filter(({ post, score }) => {
