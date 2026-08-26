@@ -370,6 +370,11 @@ export const createVideoPost = async (req, res) => {
 };
 
 // EDIT POST (text-only — images are fixed after posting)
+// 1-hour cooldown between post edits, gated from the 2nd edit onward —
+// editedAt starts null so the first edit is always allowed with no
+// special-casing needed.
+const POST_EDIT_COOLDOWN_MS = 60 * 60 * 1000;
+
 export const editPost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -380,6 +385,19 @@ export const editPost = async (req, res) => {
 
     if (post.user.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "Not authorized" });
+    }
+
+    if (post.editedAt) {
+      const elapsed = Date.now() - post.editedAt.getTime();
+      if (elapsed < POST_EDIT_COOLDOWN_MS) {
+        const nextAllowed = new Date(
+          post.editedAt.getTime() + POST_EDIT_COOLDOWN_MS,
+        );
+        return res.status(429).json({
+          message: "You can only edit a post once every hour",
+          nextAllowedAt: nextAllowed,
+        });
+      }
     }
 
     const { text } = req.body;
