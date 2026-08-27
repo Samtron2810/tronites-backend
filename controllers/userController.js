@@ -589,12 +589,18 @@ export const updateProfilePicture = async (req, res) => {
 
     // Same reasoning as post images: enqueue instead of calling
     // Cloudinary directly, so this request doesn't block the event loop
-    // for the full upload duration.
+    // for the full upload duration. transformation is passed here (unlike
+    // the previous version) since avatars render small (~24-96px)
+    // everywhere in the app -- no reason to store/serve a raw,
+    // full-resolution upload. c_fill + g_face crops to a square framed on
+    // the detected face rather than a naive center-crop; g_face falls
+    // back to center automatically if no face is detected.
     let result;
     try {
       result = await uploadImageAndWait("profile-image", {
         base64Data: b64,
         folder: "tronites_profiles",
+        transformation: "w_400,h_400,c_fill,g_face,q_auto,f_auto",
       });
     } catch (uploadError) {
       return res.status(uploadError.httpStatus || 502).json({
