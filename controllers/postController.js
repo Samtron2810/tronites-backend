@@ -749,6 +749,82 @@ export const getTrendingPosts = async (req, res) => {
   }
 };
 
+// GET TRENDING HASHTAGS
+//
+// Aggregates over the last 24h, ranking tags by distinct-author count
+// (not raw post count) — a single user spamming the same tag 50 times
+// shouldn't out-rank a tag genuinely used by 10 different people. Only
+// public posts count (same PUBLIC_ONLY_FILTER as trending posts/search
+// — this is a shared, viewer-independent surface, so it can't leak
+// followers/only-me content into a global ranking). Cached briefly in
+// Redis since the aggregation re-scans the last 24h of posts on a miss.
+const TRENDING_HASHTAGS_WINDOW_HOURS = 24;
+const TRENDING_HASHTAGS_CACHE_TTL_SECONDS = 300; // 5 min
+
+export const getTrendingHashtags = async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
+    const cacheKey = `trending-hashtags:${limit}`;
+
+    const result = await getOrSetCache(
+      cacheKey,
+      async () => {
+        const since = new Date(
+          Date.now() - TRENDING_HASHTAGS_WINDOW_HOURS * 60 * 60 * 1000,
+        );
+
+        const rows = await Post.aggregate([
+          {
+            $match: {
+              removedAt: null,
+              createdAt: { $gte: since },
+              hashtags: { $exists: true, $ne: [] },
+              ...PUBLIC_ONLY_FILTER,
+            },
+          },
+          // One row per (post, tag) pair — a post using the same tag
+          // isn't possible since extractHashtags dedupes at parse time,
+          // but $unwind is what lets us count per-tag below regardless.
+          { $unwind: "$hashtags" },
+          {
+            $group: {
+              _id: { tag: "$hashtags", user: "$user" },
+              postCount: { $sum: 1 },
+            },
+          },
+          // Collapse to one row per tag: distinct authors is the group
+          // count here (each _id.user contributes exactly one row from
+          // the previous stage), postCount sums back to total posts.
+          {
+            $group: {
+              _id: "$_id.tag",
+              authorCount: { $sum: 1 },
+              postCount: { $sum: "$postCount" },
+            },
+          },
+          { $sort: { authorCount: -1, postCount: -1, _id: 1 } },
+          { $limit: limit },
+          {
+            $project: {
+              _id: 0,
+              tag: "$_id",
+              authorCount: 1,
+              postCount: 1,
+            },
+          },
+        ]);
+
+        return rows;
+      },
+      TRENDING_HASHTAGS_CACHE_TTL_SECONDS,
+    );
+
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // GET POSTS BY HASHTAG
 export const getPostsByHashtag = async (req, res) => {
   try {
