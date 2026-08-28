@@ -50,11 +50,15 @@ const generateRefreshToken = () => crypto.randomBytes(48).toString("base64url");
 // design — nothing revokes it early, so it has to expire fast on its
 // own) plus a random 30d refresh token, stored server-side only as its
 // hash. Sets both cookies. Used at login/register.
+// Returns the created Session doc (previously void) so callers that
+// need to distinguish "this exact session" from others for the same
+// user — e.g. the new-device alert excluding its own just-created row —
+// don't have to re-query by tokenHash.
 export const issueSession = async (res, userId, { userAgent = "", ip = "" } = {}) => {
   const accessToken = signAccessToken(userId);
   const refreshToken = generateRefreshToken();
 
-  await Session.create({
+  const session = await Session.create({
     user: userId,
     tokenHash: hashRefreshToken(refreshToken),
     userAgent,
@@ -70,6 +74,8 @@ export const issueSession = async (res, userId, { userAgent = "", ip = "" } = {}
     ...baseCookieOptions(),
     maxAge: REFRESH_TOKEN_TTL_MS,
   });
+
+  return session;
 };
 
 // Rotates a refresh token: verifies the presented token against its
@@ -134,6 +140,25 @@ export const revokeSession = async (presentedToken) => {
 export const revokeAllSessions = async (userId) => {
   await Session.deleteMany({ user: userId });
 };
+
+// "Log out other devices" — same as revokeAllSessions but keeps the
+// caller's own session alive. presentedToken is the current request's
+// refresh cookie; hashed the same way it's stored so we can exclude it
+// with a single deleteMany rather than delete-all + reissue.
+export const revokeAllSessionsExcept = async (userId, presentedToken) => {
+  const keepHash = presentedToken ? hashRefreshToken(presentedToken) : null;
+  const filter = { user: userId };
+  if (keepHash) filter.tokenHash = { $ne: keepHash };
+  const result = await Session.deleteMany(filter);
+  return result.deletedCount || 0;
+};
+
+// Used by the sessions list endpoint to flag which row is "this device"
+// — hash the presented refresh cookie the same way it's stored and
+// compare against each session's tokenHash. Not security-sensitive
+// (display-only), so no timing-safe comparison needed here.
+export const hashPresentedRefreshToken = (presentedToken) =>
+  presentedToken ? hashRefreshToken(presentedToken) : null;
 
 export const clearAuthCookies = (res) => {
   res.cookie(ACCESS_COOKIE_NAME, "", { ...baseCookieOptions(), expires: new Date(0) });

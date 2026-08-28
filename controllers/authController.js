@@ -17,6 +17,7 @@ import {
 } from "../services/otpService.js";
 import { generateChallengeId } from "../utils/otp.js";
 import { passwordResetEmailTemplate } from "../utils/emailTemplate.js";
+import { maybeSendNewDeviceAlert } from "../utils/newDeviceAlert.js";
 
 // REGISTER
 // SEND OTP (used for registration)
@@ -316,9 +317,18 @@ export const loginUser = async (req, res) => {
     }
     // An expired suspension doesn't block login (mirrors authMiddleware).
 
-    await issueSession(res, user._id, {
-      userAgent: req.headers["user-agent"] || "",
-      ip: req.ip || "",
+    const userAgent = req.headers["user-agent"] || "";
+    const ip = req.ip || "";
+    const session = await issueSession(res, user._id, { userAgent, ip });
+
+    // Fire-and-forget: never let an email hiccup block or fail the
+    // login response itself.
+    maybeSendNewDeviceAlert({
+      userId: user._id,
+      email: user.email,
+      userAgent,
+      ip,
+      excludeSessionId: session._id,
     });
 
     res.status(200).json(toPrivateSelfDTO(user));

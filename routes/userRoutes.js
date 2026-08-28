@@ -27,6 +27,11 @@ import {
   exportMyData,
 } from "../controllers/userController.js";
 import { getMuteStatus, muteUserHandler, unmuteUserHandler } from "../controllers/muteController.js";
+import {
+  listSessions,
+  revokeSessionById,
+  revokeOtherSessions,
+} from "../controllers/sessionController.js";
 
 const router = express.Router();
 
@@ -59,6 +64,9 @@ router.put(
 router.get("/followers/:id", protect, getFollowers);
 router.get("/following/:id", protect, getFollowing);
 router.get("/me/export", protect, exportMyData);
+router.get("/me/sessions", protect, listSessions);
+router.delete("/me/sessions/:id", protect, revokeSessionById);
+router.delete("/me/sessions", protect, revokeOtherSessions);
 router.delete("/me", protect, accountDeletionLimiter, validate(deleteAccountSchema), deleteMyAccount);
 
 export default router;
