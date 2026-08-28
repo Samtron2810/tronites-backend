@@ -10,6 +10,7 @@ import cloudinary from "../utils/cloudinary.js";
 import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
 import { removeAllLikesForPost, removeAllLikesForUser } from "./likeService.js";
 import { removeAllBookmarksForPost, removeAllBookmarksForUser } from "./bookmarkService.js";
+import { removeAllRepostsForPost, removeAllRepostsForUser } from "./repostService.js";
 import { removeAllCommentLikesForUser } from "./commentLikeService.js";
 import { removeAllFollowEdgesForUser } from "./followService.js";
 import { removeAllMuteEdgesForUser } from "./muteService.js";
@@ -91,6 +92,7 @@ export const hardDeleteAccount = async (userId) => {
     await Comment.deleteMany({ post: { $in: postIds } });
     await Promise.all(postIds.map((id) => removeAllLikesForPost(id)));
     await Promise.all(postIds.map((id) => removeAllBookmarksForPost(id)));
+    await Promise.all(postIds.map((id) => removeAllRepostsForPost(id)));
     await Post.deleteMany({ _id: { $in: postIds } });
   }
 
@@ -107,6 +109,7 @@ export const hardDeleteAccount = async (userId) => {
   await removeAllLikesForUser(userId);
   await removeAllBookmarksForUser(userId);
   await removeAllCommentLikesForUser(userId);
+  await removeAllRepostsForUser(userId);
   await removeAllFollowEdgesForUser(userId);
   await removeAllMuteEdgesForUser(userId);
   await removeAllBlockEdgesForUser(userId);

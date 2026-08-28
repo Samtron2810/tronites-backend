@@ -53,6 +53,19 @@ export const feedVisibilityFilter = (viewerId) => ({
   ],
 });
 
+// Can this post be reposted/quoted at all, by anyone other than its
+// own author? Reposting is inherently a "send this to MY followers"
+// action — a followers-only or only-me post reposted verbatim would
+// leak it to an audience the original author never chose (the
+// reposter's followers, who may not follow the original author and so
+// were never granted visibility in the first place). Public posts are
+// the only ones eligible; this is independent of whether the specific
+// viewer could currently see the post via canViewPost below.
+export const isRepostable = (post) => {
+  const privacy = post.privacy || POST_PRIVACY.PUBLIC;
+  return privacy === POST_PRIVACY.PUBLIC;
+};
+
 // Can `viewerId` see `post` directly? Used as defense-in-depth on
 // direct-ID actions (like / comment / bookmark) where a post could
 // theoretically be reachable even if no listing surface shows it. The

@@ -152,6 +152,18 @@ export const editPostSchema = z.object({
     .default(""),
 });
 
+// Quote post — the quoter's own caption. Can be empty (a bare "look at
+// this" quote with no added commentary is a normal Twitter/X pattern),
+// same as an image-only post being allowed empty text.
+export const createQuoteSchema = z.object({
+  text: z
+    .string()
+    .trim()
+    .max(280, "Quote text must be at most 280 characters")
+    .optional()
+    .default(""),
+});
+
 // ─── Comment ────────────────────────────────────────────────────────────────
 
 export const createCommentSchema = z.object({

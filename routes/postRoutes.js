@@ -12,6 +12,8 @@ import {
   searchPosts,
   likePost,
   toggleBookmark,
+  toggleRepost,
+  createQuotePost,
   getBookmarkedPosts,
   deletePost,
   getPostsByHashtag,
@@ -23,6 +25,7 @@ import {
   createVideoSignatureSchema,
   createVideoPostSchema,
   editPostSchema,
+  createQuoteSchema,
   paginationSchema,
 } from "../utils/validators.js";
 import { postLimiter, editPostLimiter } from "../middleware/rateLimiter.js";
@@ -64,6 +67,19 @@ router.post(
 
 router.put("/like/:id", protect, likePost);
 router.put("/bookmark/:id", protect, toggleBookmark);
+// Toggle repost (create/undo) — same PUT-as-toggle convention as
+// like/bookmark above, not a separate POST+DELETE pair.
+router.put("/repost/:id", protect, postLimiter, toggleRepost);
+// Quote is POST, not PUT — unlike repost/like/bookmark it's not a
+// simple on/off toggle, it creates a genuinely new authored item each
+// time (mirrors POST /posts for a normal post).
+router.post(
+  "/quote/:id",
+  protect,
+  postLimiter,
+  validate(createQuoteSchema),
+  createQuotePost,
+);
 router.get(
   "/bookmarks",
   protect,

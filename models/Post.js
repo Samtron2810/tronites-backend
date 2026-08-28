@@ -77,6 +77,16 @@ const postSchema = new mongoose.Schema(
       default: 0,
     },
 
+    // Denormalized count of Repost edges (plain reposts + quotes
+    // combined) pointing at this post — same reasoning/pattern as
+    // likesCount/commentsCount: cheap to read on every feed render,
+    // kept in sync via $inc at the point of repost/unrepost rather
+    // than a live Repost.countDocuments() per post.
+    repostsCount: {
+      type: Number,
+      default: 0,
+    },
+
     // Text-only edit support. Images are fixed after posting — editing
     // is intentionally scoped to text (+ hashtag/mention re-parse) for
     // now, not image replacement.

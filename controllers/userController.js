@@ -21,6 +21,7 @@ import {
 } from "../services/followService.js";
 import { getLikedPostIds } from "../services/likeService.js";
 import { getBookmarkedPostIds } from "../services/bookmarkService.js";
+import { getRepostedPostIds } from "../services/repostService.js";
 import {
   PUBLIC_ONLY_FILTER,
   FOLLOWERS_VISIBLE_FILTER,
@@ -470,14 +471,16 @@ export const getUserProfile = async (req, res) => {
     );
 
     const postIds = postsResult.posts.map((p) => p._id);
-    const [likedPostIds, bookmarkedPostIds] = await Promise.all([
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
       getLikedPostIds(req.user._id, postIds),
       getBookmarkedPostIds(req.user._id, postIds),
+      getRepostedPostIds(req.user._id, postIds),
     ]);
     const postsWithLikeState = postsResult.posts.map((post) => ({
       ...(post._doc || post),
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
+      isReposted: repostedPostIds.has(post._id.toString()),
     }));
 
     res.status(200).json({

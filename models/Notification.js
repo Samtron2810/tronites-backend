@@ -23,6 +23,16 @@ const notificationSchema = new mongoose.Schema(
         "mention",
         "reply",
         "commentLike",
+        // 1.1 — repost/quote notification. Same row shape for both:
+        // `post` always points at the ORIGINAL post, never the quote
+        // (a quote has no Post document of its own — see
+        // models/Repost.js — so there's nothing else it could point
+        // at). The recipient's notifications page can't currently tell
+        // a plain repost from a quote apart from this type alone; that
+        // distinction isn't needed for the notification text itself
+        // ("X reposted your post" reads fine for both), only for
+        // whether the frontend deep-links to the quote's own text.
+        "repost",
         // Phase 4 — formal moderator warning. Rendered specially by the
         // notifications page: reason text from `message`, sender identity
         // never displayed (the warned user sees "Moderation team", not
