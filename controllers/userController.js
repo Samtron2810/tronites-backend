@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import Post from "../models/Post.js";
+import Repost from "../models/Repost.js";
 import Notification from "../models/Notification.js";
 import Block from "../models/Block.js";
 import bcrypt from "bcryptjs";
@@ -440,48 +441,161 @@ export const getUserProfile = async (req, res) => {
     // it's computed fresh per-request below, after the shared cache
     // read — not inside the cached fetchFn, where it would leak one
     // viewer's like-state into another viewer's cached response.
+    //
+    // Two sources are merged into one profile timeline, same idea as
+    // getFeedPosts's merge (see that function's comment for the full
+    // reasoning) but offset-paginated instead of cursor-based, to match
+    // this endpoint's existing page/limit contract:
+    //   1. Posts authored by this profile owner (tiered by
+    //      postsVisibilityFilter — a follower sees followers-only posts
+    //      too, a stranger only sees public ones).
+    //   2. Repost/quote edges BY this profile owner. These are NOT
+    //      gated by postsVisibilityFilter — a repost/quote can only
+    //      ever wrap a PUBLIC original (see isRepostable), so there's
+    //      nothing here for postsVisibilityFilter to restrict; every
+    //      viewer who can see this profile at all can see its reposts.
     const postsResult = await getOrSetCache(
       postsCacheKey,
       async () => {
-        const [posts, totalPosts] = await Promise.all([
-          Post.find({
-            user: req.params.id,
-            removedAt: null,
-            ...postsVisibilityFilter,
-          })
+        const postFilter = {
+          user: req.params.id,
+          removedAt: null,
+          ...postsVisibilityFilter,
+        };
+        const repostFilter = { user: req.params.id };
+
+        // Both sources are fetched in full (up to a defensive cap) and
+        // merged/deduped/paginated in memory below, rather than each
+        // being independently skip()/limit()'d — a true offset into
+        // "post #47 across BOTH collections combined" can't be pushed
+        // down as two independent single-collection skips, since which
+        // collection contributes which rows at that offset depends on
+        // their interleaved chronological order. MAX_PROFILE_ITEMS
+        // bounds worst-case work for prolific accounts, same reasoning
+        // as MAX_TRENDING_CANDIDATES/MAX_SEARCH_CANDIDATES elsewhere in
+        // this file — a profile with more than this many combined
+        // posts+reposts+quotes will have its oldest items silently
+        // excluded from pagination rather than the query blowing up.
+        const MAX_PROFILE_ITEMS = 1000;
+
+        const [authoredPosts, repostEdges] = await Promise.all([
+          Post.find(postFilter)
             .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit),
-          Post.countDocuments({
-            user: req.params.id,
-            removedAt: null,
-            ...postsVisibilityFilter,
-          }),
+            .limit(MAX_PROFILE_ITEMS),
+          Repost.find(repostFilter)
+            .populate({
+              path: "post",
+              match: { removedAt: null, ...PUBLIC_ONLY_FILTER },
+              populate: { path: "user", select: "name username profilePic" },
+            })
+            .sort({ createdAt: -1 })
+            .limit(MAX_PROFILE_ITEMS),
         ]);
 
+        // Drop edges whose original didn't survive the populate match
+        // (removed by a moderator, or privatized since the repost/quote
+        // was made) — same reasoning as getFeedPosts.
+        const validRepostEdges = repostEdges.filter((r) => r.post);
+
+        const items = [
+          ...authoredPosts.map((post) => ({
+            dedupeKey: post._id.toString(),
+            sortAt: post.createdAt,
+            isQuote: false,
+            quoterText: null,
+            quoterHashtags: null,
+            reposterOrQuoter: null,
+            post,
+          })),
+          ...validRepostEdges.map((r) => ({
+            dedupeKey: r.isQuote ? `quote:${r._id}` : r.post._id.toString(),
+            sortAt: r.createdAt,
+            isQuote: r.isQuote,
+            quoterText: r.isQuote ? r.text : null,
+            quoterHashtags: r.isQuote ? r.hashtags : null,
+            reposterOrQuoter: r.user,
+            post: r.post,
+          })),
+        ].sort((a, b) => b.sortAt - a.sortAt);
+
+        // Dedup: a plain repost of your OWN post would otherwise show
+        // twice (once as the authored post, once as the repost edge) —
+        // collapse to the more recent occurrence, same rule as
+        // getFeedPosts. Quotes are keyed separately (their own
+        // dedupeKey) since a quote is a distinct timeline entry, not a
+        // second view of the same original.
+        const seenKeys = new Set();
+        const deduped = [];
+        for (const item of items) {
+          if (seenKeys.has(item.dedupeKey)) continue;
+          seenKeys.add(item.dedupeKey);
+          deduped.push(item);
+        }
+
+        const totalPosts = deduped.length;
+        const page_ = deduped.slice(skip, skip + limit);
+
         return {
-          posts,
+          items: page_,
           totalPosts,
           currentPage: page,
           totalPages: Math.ceil(totalPosts / limit),
-          hasMore: skip + posts.length < totalPosts,
+          hasMore: skip + page_.length < totalPosts,
         };
       },
       180,
     );
 
-    const postIds = postsResult.posts.map((p) => p._id);
+    const postIds = postsResult.items.map((item) => item.post._id);
     const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
       getLikedPostIds(req.user._id, postIds),
       getBookmarkedPostIds(req.user._id, postIds),
       getRepostedPostIds(req.user._id, postIds),
     ]);
-    const postsWithLikeState = postsResult.posts.map((post) => ({
-      ...(post._doc || post),
-      isLiked: likedPostIds.has(post._id.toString()),
-      isBookmarked: bookmarkedPostIds.has(post._id.toString()),
-      isReposted: repostedPostIds.has(post._id.toString()),
-    }));
+
+    const postsWithLikeState = postsResult.items.map((item) => {
+      const originalFormatted = {
+        ...(item.post._doc || item.post),
+        isLiked: likedPostIds.has(item.post._id.toString()),
+        isBookmarked: bookmarkedPostIds.has(item.post._id.toString()),
+        isReposted: repostedPostIds.has(item.post._id.toString()),
+      };
+
+      if (item.isQuote) {
+        // Same synthetic-id/shape convention as getFeedPosts and
+        // createQuotePost, so a quote renders identically wherever it
+        // appears (profile, feed) and PostCard needs no per-surface
+        // branching.
+        return {
+          _id: `quote:${item.dedupeKey.replace("quote:", "")}`,
+          isQuotePost: true,
+          user: item.reposterOrQuoter,
+          text: item.quoterText,
+          hashtags: item.quoterHashtags,
+          createdAt: item.sortAt,
+          quoteOf: originalFormatted,
+          repostedBy: null,
+        };
+      }
+
+      return {
+        ...originalFormatted,
+        // On a profile page, "repostedBy" is redundant with "whose
+        // profile am I on" for a plain repost — the header ("🔁
+        // Reposted") doesn't need to name the owner again the way the
+        // follow-feed's cross-author header does. Still set it (rather
+        // than always null) so PostCard's existing repost-header
+        // rendering works unmodified; the frontend can choose to
+        // suppress the name on this surface if desired.
+        repostedBy: item.reposterOrQuoter
+          ? {
+              _id: item.reposterOrQuoter._id,
+              name: item.reposterOrQuoter.name,
+              username: item.reposterOrQuoter.username,
+            }
+          : null,
+      };
+    });
 
     res.status(200).json({
       ...userResult,
