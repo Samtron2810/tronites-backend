@@ -1,64 +1,42 @@
 import mongoose from "mongoose";
 
-// Amplification edge — one row per (user, post), same pattern as
-// Like/Bookmark/Follow. Covers BOTH mechanics from the roadmap (1.1):
-//   - Plain repost: isQuote: false, no text of its own — a thin
-//     pointer that says "user reposted post" and nothing more.
-//   - Quote post: isQuote: true, carries its own text/hashtags — a
-//     real, independently-authored post that embeds the original.
-// Kept as ONE collection (not two) because both share the same
-// uniqueness rule (a user can only repost-or-quote a given post once —
-// unrepost/un-quote deletes the edge, same as unlike), the same feed
-// dedup logic, and the same cascade-delete story on original-post
-// removal. Splitting them would just duplicate all of that.
+// Pure amplification edge — one row per (user, post), same pattern as
+// Like/Bookmark/Follow. A repost is ALWAYS a thin pointer with no
+// content of its own: "user reposted post" and nothing more.
+//
+// Quotes are NOT modeled here (see the old isQuote/text/hashtags
+// fields this used to carry). A quote is a real Post document with
+// `quoteOf` set (see models/Post.js) — it has its own text, likes,
+// comments, bookmarks, and can itself be reposted via a normal Repost
+// edge pointing at the quote's Post id. This edge collection only
+// ever needs to know WHO reposted WHICH post (original or quote), so
+// toggleRepost works identically for both without branching.
 const repostSchema = new mongoose.Schema(
   {
-    // Who reposted/quoted.
+    // Who reposted.
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
     },
-    // The original post being amplified. Deliberately NOT `repostOf`
-    // on the Post model itself (the roadmap's suggested shape) —
-    // keeping this as its own edge collection means a repost never
-    // needs its own Post document, which keeps the feed dedup and
-    // "unrepost" cascade as simple index-backed deletes instead of a
-    // second post lifecycle to maintain.
+    // The post being reposted — may be an ordinary post OR a quote
+    // post (both are just Post documents now).
     post: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Post",
       required: true,
     },
-    isQuote: {
-      type: Boolean,
-      default: false,
-    },
-    // Only populated when isQuote is true. A quote's own caption —
-    // same 280-char/hashtag-parse rules as a normal post, enforced in
-    // the controller/validator, not here.
-    text: {
-      type: String,
-      default: "",
-      maxlength: 280,
-    },
-    hashtags: {
-      type: [String],
-      default: [],
-    },
   },
   { timestamps: true },
 );
 
-// One repost/quote per (user, post) — reposting again is a no-op,
-// quoting again would need to unrepost the plain one first (mirrors
-// how you can't like a post twice). Enforced here, not just in the
-// controller, for the same race-safety reason as Like's index.
+// One repost per (user, post) — reposting again is a no-op. Enforced
+// here, not just in the controller, for race-safety (see
+// createRepostEdge).
 repostSchema.index({ user: 1, post: 1 }, { unique: true });
 // Fast "who reposted this" + reposts-count support.
 repostSchema.index({ post: 1, createdAt: -1 });
-// Fast "this user's reposts" (feed blending, profile "reposts" tab if
-// added later).
+// Fast "this user's reposts" (feed blending, profile timeline).
 repostSchema.index({ user: 1, createdAt: -1 });
 
 const Repost = mongoose.model("Repost", repostSchema);

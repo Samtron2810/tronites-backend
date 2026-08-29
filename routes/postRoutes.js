@@ -15,6 +15,7 @@ import {
   toggleRepost,
   createQuotePost,
   getBookmarkedPosts,
+  getPostById,
   deletePost,
   getPostsByHashtag,
 } from "../controllers/postController.js";
@@ -105,6 +106,12 @@ router.get(
   validateQuery(paginationSchema),
   getPostsByHashtag,
 );
+
+// Single-post fetch by id — kept below every other literal GET route
+// above (feed/trending/trending-hashtags/search/hashtag/bookmarks) so
+// Express never mistakes one of those literal segments for an :id
+// param. See getPostById's comment for why the frontend needs this.
+router.get("/:id", protect, getPostById);
 
 router.delete("/:id", protect, deletePost);
 

@@ -45,7 +45,6 @@ import {
   getRepostedPostIds,
   getRepostCounts,
   createRepostEdge,
-  createQuoteEdge,
   removeRepostEdge,
   removeAllRepostsForPost,
 } from "../services/repostService.js";
@@ -592,11 +591,13 @@ export const getFeedPosts = async (req, res) => {
 
         const cursorDate = cursor ? new Date(cursor) : null;
 
-        // ── Source 1: authored posts (own text/image/video posts AND
-        // quote posts — both live in the Post collection). Over-fetch
-        // by `limit` on BOTH sources so the in-memory merge below still
-        // has enough of each to fill a full page even in the (typical)
-        // case where one source dominates.
+        // ── Source 1: authored posts — ordinary posts AND quote posts
+        // both live in the Post collection now (a quote is a real Post
+        // with `quoteOf` set), so one query covers both; `quoteOf` is
+        // populated below so a quote's embedded original renders
+        // without a second round trip. Over-fetch by `limit` on BOTH
+        // sources so the in-memory merge below still has enough of
+        // each to fill a full page even when one source dominates.
         const postFilter = {
           user: { $in: feedUsers },
           removedAt: null, // moderator soft-takedown — see reportService
@@ -605,19 +606,22 @@ export const getFeedPosts = async (req, res) => {
         };
         const postCandidates = await Post.find(postFilter)
           .populate("user", "name username profilePic")
+          .populate({
+            path: "quoteOf",
+            populate: { path: "user", select: "name username profilePic" },
+          })
           .sort({ createdAt: -1 })
           .limit(limit + 1);
 
-        // ── Source 2: repost/quote edges by feedUsers (both kinds —
-        // split into rendering shape after the query, not before, so
-        // one query covers both). Reposting/quoting your OWN post is
-        // excluded from the plain-repost case (see below) but ALLOWED
-        // for quotes, since a quote is genuinely new authored content
-        // (you can meaningfully quote your own post to add commentary)
-        // — only a bare repost of your own content is a no-op action.
-        // The original must still be public + not removed — a
-        // repost/quote of a since-privatized or moderator-removed post
-        // shouldn't resurrect it into anyone's feed.
+        // ── Source 2: repost edges by feedUsers — always a thin
+        // pointer at a post (ordinary or quote), never carries its own
+        // content anymore. Reposting your OWN post/quote is excluded
+        // (a no-op action, nothing new to show); quoting your own post
+        // is unaffected since a quote is a distinct authored Post
+        // that already comes through Source 1. The pointed-at post
+        // must still be public + not removed — a repost of a
+        // since-privatized or moderator-removed post shouldn't
+        // resurrect it into anyone's feed.
         const repostFilter = {
           user: { $in: feedUsers },
           ...(cursorDate ? { createdAt: { $lt: cursorDate } } : {}),
@@ -627,45 +631,40 @@ export const getFeedPosts = async (req, res) => {
           .populate({
             path: "post",
             match: { removedAt: null, ...PUBLIC_ONLY_FILTER },
-            populate: { path: "user", select: "name username profilePic" },
+            populate: [
+              { path: "user", select: "name username profilePic" },
+              {
+                path: "quoteOf",
+                populate: { path: "user", select: "name username profilePic" },
+              },
+            ],
           })
           .sort({ createdAt: -1 })
           .limit(limit + 1);
 
-        // Drop edges whose original didn't survive the populate match
-        // (removed/privatized since), and drop PLAIN self-reposts (see
-        // comment above — quotes of your own post still pass through).
+        // Drop edges whose target didn't survive the populate match
+        // (removed/privatized since), and drop self-reposts.
         const validRepostEdges = repostCandidates.filter(
-          (r) =>
-            r.post &&
-            (r.isQuote || r.post.user._id.toString() !== r.user._id.toString()),
+          (r) => r.post && r.post.user._id.toString() !== r.user._id.toString(),
         );
 
         // ── Merge: normalize both sources into one shape with a
         // common `sortAt` field, sort desc, slice to a page. Dedup
-        // rule: if the SAME original post appears more than once in
-        // this window (e.g. reposted by two people you follow, or
-        // both authored-and-reposted), keep only the most recent
-        // occurrence by sortAt — a quote is keyed separately from a
-        // plain repost/original since it's its own distinct item, not
-        // a duplicate view of the same one.
+        // rule: if the SAME post appears more than once in this
+        // window (e.g. reposted by two people you follow, or both
+        // authored-and-reposted), keep only the most recent occurrence
+        // by sortAt.
         const items = [
           ...postCandidates.map((post) => ({
             dedupeKey: post._id.toString(),
             sortAt: post.createdAt,
-            isQuote: false,
-            quoterText: null,
-            quoterHashtags: null,
-            reposterOrQuoter: null,
+            reposter: null,
             post,
           })),
           ...validRepostEdges.map((r) => ({
-            dedupeKey: r.isQuote ? `quote:${r._id}` : r.post._id.toString(),
+            dedupeKey: r.post._id.toString(),
             sortAt: r.createdAt,
-            isQuote: r.isQuote,
-            quoterText: r.isQuote ? r.text : null,
-            quoterHashtags: r.isQuote ? r.hashtags : null,
-            reposterOrQuoter: r.user,
+            reposter: r.user,
             post: r.post,
           })),
         ].sort((a, b) => b.sortAt - a.sortAt);
@@ -681,56 +680,50 @@ export const getFeedPosts = async (req, res) => {
         const hasMore = deduped.length > limit;
         const page = hasMore ? deduped.slice(0, limit) : deduped;
 
-        // Bulk-check like/bookmark/repost state for every underlying
-        // ORIGINAL post shown (whether reached directly, via a plain
-        // repost, or embedded in a quote) — one query each instead of
-        // an in-memory scan per item. Quotes themselves aren't
-        // likeable/bookmarkable in this pass (no Post doc backs them);
-        // that's a deliberate v1 scope cut — see frontend notes.
+        // Bulk-check like/bookmark/repost state for every post shown
+        // AND every embedded original (quoteOf) — one query each
+        // instead of an in-memory scan per item. A quote and the post
+        // it embeds are independent Post documents, each with their
+        // own like/bookmark/repost state.
         const postIds = page.map((item) => item.post._id);
+        const quoteOfIds = page
+          .filter((item) => item.post.quoteOf)
+          .map((item) => item.post.quoteOf._id);
+        const allIds = [...postIds, ...quoteOfIds];
         const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
-          getLikedPostIds(req.user._id, postIds),
-          getBookmarkedPostIds(req.user._id, postIds),
-          getRepostedPostIds(req.user._id, postIds),
+          getLikedPostIds(req.user._id, allIds),
+          getBookmarkedPostIds(req.user._id, allIds),
+          getRepostedPostIds(req.user._id, allIds),
         ]);
 
-        const formattedPosts = page.map((item) => {
-          const originalFormatted = {
-            ...item.post._doc,
-            isLiked: likedPostIds.has(item.post._id.toString()),
-            isBookmarked: bookmarkedPostIds.has(item.post._id.toString()),
-            isReposted: repostedPostIds.has(item.post._id.toString()),
-          };
-
-          if (item.isQuote) {
-            // A quote is its own feed item — synthetic id so the
-            // frontend has a stable React key distinct from the
-            // original post's id, since both can appear on screen at
-            // once (the quote card + its embedded original preview).
-            return {
-              _id: `quote:${item.dedupeKey.replace("quote:", "")}`,
-              isQuotePost: true,
-              user: item.reposterOrQuoter,
-              text: item.quoterText,
-              hashtags: item.quoterHashtags,
-              createdAt: item.sortAt,
-              quoteOf: originalFormatted,
-              repostedBy: null,
-            };
-          }
-
-          return {
-            ...originalFormatted,
-            repostedBy:
-              item.reposterOrQuoter && !item.isQuote
-                ? {
-                    _id: item.reposterOrQuoter._id,
-                    name: item.reposterOrQuoter.name,
-                    username: item.reposterOrQuoter.username,
-                  }
-                : null,
-          };
+        const formatPost = (post) => ({
+          ...post._doc,
+          isLiked: likedPostIds.has(post._id.toString()),
+          isBookmarked: bookmarkedPostIds.has(post._id.toString()),
+          isReposted: repostedPostIds.has(post._id.toString()),
+          isQuotePost: Boolean(post.quoteOf),
+          quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
         });
+
+        // The embedded original never itself carries a nested
+        // quoteOf (one level of embedding only), so no recursion here.
+        const formatQuoteOf = (quoteOfDoc) => ({
+          ...quoteOfDoc._doc,
+          isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+          isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+          isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+        });
+
+        const formattedPosts = page.map((item) => ({
+          ...formatPost(item.post),
+          repostedBy: item.reposter
+            ? {
+                _id: item.reposter._id,
+                name: item.reposter.name,
+                username: item.reposter.username,
+              }
+            : null,
+        }));
 
         return {
           posts: formattedPosts,
@@ -843,6 +836,10 @@ export const getTrendingPosts = async (req, res) => {
 
     const candidates = await Post.find(filter)
       .populate("user", "name username profilePic")
+      .populate({
+        path: "quoteOf",
+        populate: { path: "user", select: "name username profilePic" },
+      })
       .sort({ createdAt: -1 })
       .limit(MAX_TRENDING_CANDIDATES);
 
@@ -866,17 +863,30 @@ export const getTrendingPosts = async (req, res) => {
     const page = hasMore ? filtered.slice(0, limit) : filtered;
 
     const postIds = page.map(({ post }) => post._id);
+    const quoteOfIds = page
+      .filter(({ post }) => post.quoteOf)
+      .map(({ post }) => post.quoteOf._id);
+    const allIds = [...postIds, ...quoteOfIds];
     const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
-      getLikedPostIds(req.user._id, postIds),
-      getBookmarkedPostIds(req.user._id, postIds),
-      getRepostedPostIds(req.user._id, postIds),
+      getLikedPostIds(req.user._id, allIds),
+      getBookmarkedPostIds(req.user._id, allIds),
+      getRepostedPostIds(req.user._id, allIds),
     ]);
+
+    const formatQuoteOf = (quoteOfDoc) => ({
+      ...quoteOfDoc._doc,
+      isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+      isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+    });
 
     const formattedPosts = page.map(({ post }) => ({
       ...post._doc,
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
+      isQuotePost: Boolean(post.quoteOf),
+      quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
     }));
 
     res.status(200).json({
@@ -999,6 +1009,10 @@ export const getPostsByHashtag = async (req, res) => {
 
         const posts = await Post.find(filter)
           .populate("user", "name username profilePic")
+          .populate({
+            path: "quoteOf",
+            populate: { path: "user", select: "name username profilePic" },
+          })
           .sort({ _id: -1 })
           .limit(limit + 1);
 
@@ -1015,17 +1029,30 @@ export const getPostsByHashtag = async (req, res) => {
     );
 
     const postIds = result.posts.map((p) => p._id);
+    const quoteOfIds = result.posts
+      .filter((p) => p.quoteOf)
+      .map((p) => p.quoteOf._id);
+    const allIds = [...postIds, ...quoteOfIds];
     const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
-      getLikedPostIds(req.user._id, postIds),
-      getBookmarkedPostIds(req.user._id, postIds),
-      getRepostedPostIds(req.user._id, postIds),
+      getLikedPostIds(req.user._id, allIds),
+      getBookmarkedPostIds(req.user._id, allIds),
+      getRepostedPostIds(req.user._id, allIds),
     ]);
+
+    const formatQuoteOf = (quoteOfDoc) => ({
+      ...(quoteOfDoc._doc || quoteOfDoc),
+      isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+      isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+    });
 
     const formattedPosts = result.posts.map((post) => ({
       ...(post._doc || post),
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
+      isQuotePost: Boolean(post.quoteOf),
+      quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
     }));
 
     res.status(200).json({ ...result, posts: formattedPosts });
@@ -1092,6 +1119,10 @@ export const searchPosts = async (req, res) => {
     const MAX_SEARCH_CANDIDATES = 500;
     const candidates = await Post.find(filter, { score: { $meta: "textScore" } })
       .populate("user", "name username profilePic")
+      .populate({
+        path: "quoteOf",
+        populate: { path: "user", select: "name username profilePic" },
+      })
       .sort({ score: { $meta: "textScore" }, _id: -1 })
       .limit(MAX_SEARCH_CANDIDATES);
 
@@ -1108,17 +1139,28 @@ export const searchPosts = async (req, res) => {
     const posts = hasMore ? filtered.slice(0, limit) : filtered;
 
     const postIds = posts.map((p) => p._id);
+    const quoteOfIds = posts.filter((p) => p.quoteOf).map((p) => p.quoteOf._id);
+    const allIds = [...postIds, ...quoteOfIds];
     const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
-      getLikedPostIds(req.user._id, postIds),
-      getBookmarkedPostIds(req.user._id, postIds),
-      getRepostedPostIds(req.user._id, postIds),
+      getLikedPostIds(req.user._id, allIds),
+      getBookmarkedPostIds(req.user._id, allIds),
+      getRepostedPostIds(req.user._id, allIds),
     ]);
+
+    const formatQuoteOf = (quoteOfDoc) => ({
+      ...quoteOfDoc._doc,
+      isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+      isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+    });
 
     const formattedPosts = posts.map((post) => ({
       ...post._doc,
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
+      isQuotePost: Boolean(post.quoteOf),
+      quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
     }));
 
     res.status(200).json({
@@ -1323,20 +1365,29 @@ export const getBookmarkedPosts = async (req, res) => {
       limit,
     });
 
-    const likedPostIds = await getLikedPostIds(
-      req.user._id,
-      posts.map((p) => p._id),
-    );
-    const repostedPostIds = await getRepostedPostIds(
-      req.user._id,
-      posts.map((p) => p._id),
-    );
+    const quoteOfIds = posts.filter((p) => p.quoteOf).map((p) => p.quoteOf._id);
+    const allIds = [...posts.map((p) => p._id), ...quoteOfIds];
+
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+      getLikedPostIds(req.user._id, allIds),
+      getBookmarkedPostIds(req.user._id, allIds),
+      getRepostedPostIds(req.user._id, allIds),
+    ]);
+
+    const formatQuoteOf = (quoteOfDoc) => ({
+      ...quoteOfDoc._doc,
+      isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+      isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+    });
 
     const formattedPosts = posts.map((post) => ({
       ...post._doc,
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: true,
       isReposted: repostedPostIds.has(post._id.toString()),
+      isQuotePost: Boolean(post.quoteOf),
+      quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
     }));
 
     res.status(200).json({
@@ -1357,7 +1408,11 @@ export const getBookmarkedPosts = async (req, res) => {
 // Repost collection's unique {user, post} index) but with an extra
 // gate: only PUBLIC posts are repostable at all (see isRepostable's
 // comment) — reposting a followers-only/only-me post would leak it to
-// an audience the original author never granted visibility to.
+// an audience the original author never granted visibility to. Works
+// identically whether `post` is an ordinary post or a quote post
+// (quotes are real Posts and are always public — see createQuotePost)
+// — reposting a quote reposts the quote itself, not the post it
+// embeds.
 export const toggleRepost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -1463,11 +1518,13 @@ export const toggleRepost = async (req, res) => {
   }
 };
 
-// CREATE QUOTE POST — a real, independently-authored post that embeds
-// the original via `quoteOf`. Unlike a plain repost (a thin Repost
-// edge with no post of its own), a quote needs its own Post document
-// since it carries its own text/hashtags/likes/comments — someone can
-// like or reply to a quote independently of the original.
+// CREATE QUOTE POST — a real, independently-authored Post that embeds
+// the original via `quoteOf`. A quote is a genuine Post document (not
+// a synthetic Repost edge), so it automatically gets its own likes,
+// comments, bookmarks, and reposts through every existing post-scoped
+// route — no special-casing needed anywhere else. Quoting a quote is
+// rejected: only one level of embedding is allowed, so the embed
+// target is always a "real" original, never another quote wrapper.
 export const createQuotePost = async (req, res) => {
   try {
     const original = await Post.findById(req.params.id);
@@ -1494,29 +1551,28 @@ export const createQuotePost = async (req, res) => {
       return res.status(403).json({ message: "This post can't be quoted." });
     }
 
-    if (await hasReposted(userId, original._id)) {
-      return res.status(409).json({
-        message: "You've already reposted or quoted this post. Undo that first.",
-      });
+    // One level of embedding only — quoting a quote isn't allowed.
+    if (original.quoteOf) {
+      return res
+        .status(403)
+        .json({ message: "You can't quote a quote. Quote the original post instead." });
     }
 
     const { text } = req.body;
     const hashtags = extractHashtags(text);
 
-    const quoteEdge = await createQuoteEdge(userId, original._id, {
+    const quotePost = await Post.create({
+      user: userId,
       text,
       hashtags,
+      privacy: POST_PRIVACY.PUBLIC, // a quote is always public — see createQuoteSchema
+      quoteOf: original._id,
     });
-    if (!quoteEdge) {
-      return res.status(409).json({
-        message: "You've already reposted or quoted this post. Undo that first.",
-      });
-    }
 
     original.repostsCount += 1;
     await original.updateOne({ $inc: { repostsCount: 1 } });
 
-    const populatedQuote = await quoteEdge.populate("user", "name username profilePic");
+    const populatedQuote = await quotePost.populate("user", "name username profilePic");
     const populatedOriginal = await original.populate("user", "name username profilePic");
 
     // Notify the original author (skip self-quotes, blocked, muted —
@@ -1561,7 +1617,7 @@ export const createQuotePost = async (req, res) => {
                 recipient: mentionedUser._id,
                 sender: userId,
                 type: "mention",
-                post: original._id,
+                post: quotePost._id,
               });
               const populatedNotif = await newNotif.populate(
                 "sender",
@@ -1579,17 +1635,11 @@ export const createQuotePost = async (req, res) => {
     invalidateCache(`profile-posts:${userId}:*`);
 
     const responseBody = {
-      // Synthetic id — same "quote:<repostEdgeId>" scheme getFeedPosts
-      // uses, so a freshly-created quote slots into the following
-      // feed's optimistic prepend (Home.jsx's newPost handler) with an
-      // id that matches what a page refresh would later return, rather
-      // than briefly having two different ids for the same item.
-      _id: `quote:${quoteEdge._id}`,
+      ...populatedQuote._doc,
       isQuotePost: true,
-      user: populatedQuote.user,
-      text: quoteEdge.text,
-      hashtags: quoteEdge.hashtags,
-      createdAt: quoteEdge.createdAt,
+      isLiked: false,
+      isBookmarked: false,
+      isReposted: false,
       quoteOf: {
         ...populatedOriginal._doc,
         isLiked: false,
@@ -1610,6 +1660,70 @@ export const createQuotePost = async (req, res) => {
     }
   } catch (error) {
     console.error("CREATE QUOTE POST ERROR:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET SINGLE POST BY ID — used by the frontend to open a post's own
+// detail modal from an indirect reference (currently: clicking the
+// embedded original inside a quote card/modal, where the quote only
+// carries a possibly-stale snapshot of the original at quote time).
+// Same visibility rules as every other direct-ID route: block check +
+// canViewPost, so this can't be used to probe for hidden posts.
+export const getPostById = async (req, res) => {
+  try {
+    const post = await Post.findOne({
+      _id: req.params.id,
+      removedAt: null,
+    })
+      .populate("user", "name username profilePic")
+      .populate({
+        path: "quoteOf",
+        populate: { path: "user", select: "name username profilePic" },
+      });
+
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    const userId = req.user._id;
+
+    if (
+      post.user._id.toString() !== userId.toString() &&
+      (await isBlockedEitherWay(userId, post.user._id))
+    ) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    if (!(await canViewPost(userId, post))) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    const idsToCheck = [post._id, ...(post.quoteOf ? [post.quoteOf._id] : [])];
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+      getLikedPostIds(userId, idsToCheck),
+      getBookmarkedPostIds(userId, idsToCheck),
+      getRepostedPostIds(userId, idsToCheck),
+    ]);
+
+    const formatted = {
+      ...post._doc,
+      isLiked: likedPostIds.has(post._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(post._id.toString()),
+      isReposted: repostedPostIds.has(post._id.toString()),
+      isQuotePost: Boolean(post.quoteOf),
+      quoteOf: post.quoteOf
+        ? {
+            ...post.quoteOf._doc,
+            isLiked: likedPostIds.has(post.quoteOf._id.toString()),
+            isBookmarked: bookmarkedPostIds.has(post.quoteOf._id.toString()),
+            isReposted: repostedPostIds.has(post.quoteOf._id.toString()),
+          }
+        : null,
+    };
+
+    res.status(200).json(formatted);
+  } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
@@ -1659,16 +1773,21 @@ export const deletePost = async (req, res) => {
     // Delete related comments
     await Comment.deleteMany({ post: post._id });
 
-    // Delete related likes/bookmarks/reposts (incl. quote text) —
-    // otherwise these edges would stay orphaned, referencing a post
-    // that no longer exists. A quote's own text disappears with it,
-    // same as a comment thread would if the platform supported
-    // deleting the parent independently of replies — the quote only
-    // has meaning attached to the original it was quoting.
+    // Delete related likes/bookmarks/reposts for THIS post — otherwise
+    // these edges would stay orphaned, referencing a post that no
+    // longer exists.
     await removeAllLikesForPost(post._id);
     await removeAllBookmarksForPost(post._id);
     await removeAllRepostsForPost(post._id);
 
+    // Quotes of this post are NOT cascade-deleted — a quote is a real,
+    // independently-authored Post with its own likes/comments/
+    // bookmarks/reposts (see models/Post.js's quoteOf), so it has
+    // meaning independent of the original the same way a reply keeps
+    // meaning after its parent is gone. Any quote's `quoteOf` populate
+    // will simply come back empty once this post is gone;
+    // QuotedPostPreview already renders that as "This post is no
+    // longer available." — no cascade needed here.
     await post.deleteOne();
 
     // Invalidate feed cache

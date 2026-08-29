@@ -14,6 +14,23 @@ const postSchema = new mongoose.Schema(
       maxlength: 280,
     },
 
+    // Quote post support — set only when this Post IS a quote. A quote
+    // is a real, independently-authored Post (own text/hashtags/likes/
+    // comments/bookmarks/reposts) that additionally embeds another
+    // post. Unlike the original 1.1 design (quotes as synthetic
+    // `Repost{isQuote:true}` edges with no Post doc), quoteOf makes a
+    // quote a first-class Post so every existing post-scoped action
+    // (like/comment/bookmark/repost, direct-ID routes, feed/profile/
+    // hashtag/search listings) works on it automatically with zero
+    // special-casing. Never set on the post being quoted — one level
+    // of embedding only, enforced in the controller (quoting a quote
+    // is rejected there, not modeled here).
+    quoteOf: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Post",
+      default: null,
+    },
+
     // Parsed from `text` at creation time (lowercased, no # prefix).
     // Indexed for hashtag search/browse.
     hashtags: {
