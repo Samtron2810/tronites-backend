@@ -34,6 +34,16 @@ import {
   removeAllLikesForPost,
 } from "../services/likeService.js";
 import {
+  getUserReaction,
+  getReactionSummary,
+  getReactionSummaries,
+  getUserReactions,
+  setReaction,
+  removeReaction,
+  removeAllReactionsForTarget,
+  REACTION_EMOJIS,
+} from "../services/reactionService.js";
+import {
   getBookmarkedPostIds,
   createBookmarkEdge,
   removeBookmarkEdge,
@@ -690,10 +700,12 @@ export const getFeedPosts = async (req, res) => {
           .filter((item) => item.post.quoteOf)
           .map((item) => item.post.quoteOf._id);
         const allIds = [...postIds, ...quoteOfIds];
-        const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+        const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
           getLikedPostIds(req.user._id, allIds),
           getBookmarkedPostIds(req.user._id, allIds),
           getRepostedPostIds(req.user._id, allIds),
+          getReactionSummaries("post", allIds),
+          getUserReactions(req.user._id, "post", allIds),
         ]);
 
         const formatPost = (post) => ({
@@ -703,6 +715,8 @@ export const getFeedPosts = async (req, res) => {
           isReposted: repostedPostIds.has(post._id.toString()),
           isQuotePost: Boolean(post.quoteOf),
           quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
+          reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+          myReaction: myReactions.get(post._id.toString()) || null,
         });
 
         // The embedded original never itself carries a nested
@@ -712,6 +726,8 @@ export const getFeedPosts = async (req, res) => {
           isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
           isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
           isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+          reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+          myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
         });
 
         const formattedPosts = page.map((item) => ({
@@ -867,10 +883,12 @@ export const getTrendingPosts = async (req, res) => {
       .filter(({ post }) => post.quoteOf)
       .map(({ post }) => post.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
+      getReactionSummaries('post', allIds),
+      getUserReactions(req.user._id, 'post', allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -878,6 +896,8 @@ export const getTrendingPosts = async (req, res) => {
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
     });
 
     const formattedPosts = page.map(({ post }) => ({
@@ -887,6 +907,8 @@ export const getTrendingPosts = async (req, res) => {
       isReposted: repostedPostIds.has(post._id.toString()),
       isQuotePost: Boolean(post.quoteOf),
       quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
+      reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+      myReaction: myReactions.get(post._id.toString()) || null,
     }));
 
     res.status(200).json({
@@ -1033,10 +1055,12 @@ export const getPostsByHashtag = async (req, res) => {
       .filter((p) => p.quoteOf)
       .map((p) => p.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
+      getReactionSummaries('post', allIds),
+      getUserReactions(req.user._id, 'post', allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -1044,6 +1068,8 @@ export const getPostsByHashtag = async (req, res) => {
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
     });
 
     const formattedPosts = result.posts.map((post) => ({
@@ -1053,6 +1079,8 @@ export const getPostsByHashtag = async (req, res) => {
       isReposted: repostedPostIds.has(post._id.toString()),
       isQuotePost: Boolean(post.quoteOf),
       quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
+      reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+      myReaction: myReactions.get(post._id.toString()) || null,
     }));
 
     res.status(200).json({ ...result, posts: formattedPosts });
@@ -1141,10 +1169,12 @@ export const searchPosts = async (req, res) => {
     const postIds = posts.map((p) => p._id);
     const quoteOfIds = posts.filter((p) => p.quoteOf).map((p) => p.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
+      getReactionSummaries('post', allIds),
+      getUserReactions(req.user._id, 'post', allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -1152,6 +1182,8 @@ export const searchPosts = async (req, res) => {
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
     });
 
     const formattedPosts = posts.map((post) => ({
@@ -1161,6 +1193,8 @@ export const searchPosts = async (req, res) => {
       isReposted: repostedPostIds.has(post._id.toString()),
       isQuotePost: Boolean(post.quoteOf),
       quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
+      reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+      myReaction: myReactions.get(post._id.toString()) || null,
     }));
 
     res.status(200).json({
@@ -1311,6 +1345,96 @@ export const likePost = async (req, res) => {
   }
 };
 
+// REACT TO POST — set/change/remove an emoji reaction. Separate from
+// likePost (kept as-is, since a "like" is still the fast single-tap
+// action) — this is the long-press/hover reaction bar. Sending the same
+// emoji the user already has toggles it off; sending a different emoji
+// switches it; body.emoji omitted/null removes it outright.
+export const reactToPost = async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    const userId = req.user._id;
+    const { emoji } = req.body;
+
+    if (
+      post.user.toString() !== userId.toString() &&
+      (await isBlockedEitherWay(userId, post.user))
+    ) {
+      return res
+        .status(403)
+        .json({ message: "You can't interact with this post." });
+    }
+
+    if (!(await canViewPost(userId, post))) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    if (emoji && !REACTION_EMOJIS.includes(emoji)) {
+      return res.status(400).json({ message: "Invalid reaction emoji" });
+    }
+
+    const current = await getUserReaction(userId, "post", post._id);
+    let myReaction;
+
+    if (!emoji || current === emoji) {
+      // Same emoji tapped again, or an explicit clear -> remove.
+      await removeReaction(userId, "post", post._id);
+      myReaction = null;
+    } else {
+      await setReaction(userId, "post", post._id, emoji);
+      myReaction = emoji;
+
+      // Notify only on a genuinely new reaction (not a switch from one
+      // emoji to another) — mirrors likePost's "don't notify yourself /
+      // a muted-you author" gate, but only fires when there was no
+      // previous reaction to avoid re-notifying on every emoji change.
+      if (
+        !current &&
+        post.user.toString() !== userId.toString() &&
+        !(await hasMuted(post.user, userId))
+      ) {
+        try {
+          const newNotif = await Notification.create({
+            recipient: post.user,
+            sender: userId,
+            type: "reaction",
+            post: post._id,
+            message: emoji,
+          });
+          const populatedNotif = await newNotif.populate(
+            "sender",
+            "name profilePic",
+          );
+          emitToUser(post.user, "newNotification", populatedNotif);
+        } catch (socketError) {
+          console.error("Reaction notification error:", socketError);
+        }
+      }
+    }
+
+    const summary = await getReactionSummary("post", post._id);
+
+    try {
+      io.to(`post_${post._id}`).emit("reactionUpdate", {
+        postId: post._id,
+        summary,
+        userId: userId.toString(),
+        emoji: myReaction,
+      });
+    } catch (socketError) {
+      console.error("Reaction emission error:", socketError);
+    }
+
+    res.status(200).json({ summary, myReaction });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // TOGGLE BOOKMARK (save/unsave)
 export const toggleBookmark = async (req, res) => {
   try {
@@ -1368,10 +1492,12 @@ export const getBookmarkedPosts = async (req, res) => {
     const quoteOfIds = posts.filter((p) => p.quoteOf).map((p) => p.quoteOf._id);
     const allIds = [...posts.map((p) => p._id), ...quoteOfIds];
 
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
+      getReactionSummaries('post', allIds),
+      getUserReactions(req.user._id, 'post', allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -1379,6 +1505,8 @@ export const getBookmarkedPosts = async (req, res) => {
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
     });
 
     const formattedPosts = posts.map((post) => ({
@@ -1388,6 +1516,8 @@ export const getBookmarkedPosts = async (req, res) => {
       isReposted: repostedPostIds.has(post._id.toString()),
       isQuotePost: Boolean(post.quoteOf),
       quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
+      reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+      myReaction: myReactions.get(post._id.toString()) || null,
     }));
 
     res.status(200).json({
@@ -1700,10 +1830,12 @@ export const getPostById = async (req, res) => {
     }
 
     const idsToCheck = [post._id, ...(post.quoteOf ? [post.quoteOf._id] : [])];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
       getLikedPostIds(userId, idsToCheck),
       getBookmarkedPostIds(userId, idsToCheck),
       getRepostedPostIds(userId, idsToCheck),
+      getReactionSummaries("post", idsToCheck),
+      getUserReactions(userId, "post", idsToCheck),
     ]);
 
     const formatted = {
@@ -1712,12 +1844,16 @@ export const getPostById = async (req, res) => {
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
       isQuotePost: Boolean(post.quoteOf),
+      reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+      myReaction: myReactions.get(post._id.toString()) || null,
       quoteOf: post.quoteOf
         ? {
             ...post.quoteOf._doc,
             isLiked: likedPostIds.has(post.quoteOf._id.toString()),
             isBookmarked: bookmarkedPostIds.has(post.quoteOf._id.toString()),
             isReposted: repostedPostIds.has(post.quoteOf._id.toString()),
+            reactionSummary: reactionSummaries.get(post.quoteOf._id.toString()) || {},
+            myReaction: myReactions.get(post.quoteOf._id.toString()) || null,
           }
         : null,
     };
@@ -1779,6 +1915,7 @@ export const deletePost = async (req, res) => {
     await removeAllLikesForPost(post._id);
     await removeAllBookmarksForPost(post._id);
     await removeAllRepostsForPost(post._id);
+    await removeAllReactionsForTarget("post", post._id);
 
     // Quotes of this post are NOT cascade-deleted — a quote is a real,
     // independently-authored Post with its own likes/comments/

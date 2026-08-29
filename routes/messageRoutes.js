@@ -7,6 +7,7 @@ import {
   paginationSchema,
   messageVideoSignatureSchema,
   sendVideoMessageSchema,
+  reactSchema,
 } from "../utils/validators.js";
 import { messageLimiter } from "../middleware/rateLimiter.js";
 import {
@@ -14,6 +15,7 @@ import {
   getMessages,
   sendMessage,
   deleteMessage,
+  reactToMessage,
   getMessageRequests,
   respondToRequest,
   createMessageVideoUploadSignature,
@@ -65,5 +67,15 @@ router.post(
   sendMessage,
 );
 router.delete("/:messageId", protect, deleteMessage);
+// Emoji reaction on a message bubble — same PUT-as-set-state convention
+// as postRoutes' /react/:id. No dedicated rate limiter: reactions are
+// cheap, idempotent-per-emoji writes, same reasoning as post likes not
+// having one either.
+router.put(
+  "/:messageId/react",
+  protect,
+  validate(reactSchema),
+  reactToMessage,
+);
 
 export default router;

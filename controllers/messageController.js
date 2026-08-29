@@ -14,6 +14,16 @@ import {
   getConversationId,
   evaluateSendPermission,
 } from "../services/conversationService.js";
+import {
+  getReactionSummaries,
+  getUserReactions,
+  getUserReaction,
+  getReactionSummary,
+  setReaction,
+  removeReaction,
+  removeAllReactionsForTarget,
+  REACTION_EMOJIS,
+} from "../services/reactionService.js";
 
 export const sendMessage = async (req, res) => {
   try {
@@ -498,6 +508,20 @@ export const getMessages = async (req, res) => {
 
     const messages = recentMessages.reverse();
 
+    // Bulk-attach reaction state the same way postController does for
+    // posts — one aggregation + one query for the whole page instead of
+    // a per-message round trip.
+    const messageIds = messages.map((m) => m._id);
+    const [reactionSummaries, myReactions] = await Promise.all([
+      getReactionSummaries("message", messageIds),
+      getUserReactions(currentUserId, "message", messageIds),
+    ]);
+    const messagesWithReactions = messages.map((m) => ({
+      ...m._doc,
+      reactionSummary: reactionSummaries.get(m._id.toString()) || {},
+      myReaction: myReactions.get(m._id.toString()) || null,
+    }));
+
     const unreadMessages = await Message.updateMany(
       {
         conversationId,
@@ -532,7 +556,7 @@ export const getMessages = async (req, res) => {
     }
 
     res.status(200).json({
-      messages,
+      messages: messagesWithReactions,
       currentPage: page,
       totalPages: Math.ceil(totalMessages / limit),
       hasMore: skip + recentMessages.length < totalMessages,
@@ -575,6 +599,7 @@ export const deleteMessage = async (req, res) => {
       }
     }
 
+    await removeAllReactionsForTarget("message", message._id);
     await Message.findByIdAndDelete(messageId);
 
     emitToUser(message.receiver, "messageDeleted", { messageId });
@@ -582,6 +607,85 @@ export const deleteMessage = async (req, res) => {
     res.status(200).json({ message: "Message deleted." });
   } catch (error) {
     console.error("DELETE MESSAGE ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// REACT TO MESSAGE — double-tap on a bubble. Same set/switch/clear
+// semantics as reactToPost (see postController.js): sending the emoji
+// the user already has toggles it off, a different emoji switches it,
+// omitting emoji clears it. Both participants can react to either
+// side's messages — a reaction isn't restricted to "only the receiver
+// can react to the sender's message" the way read receipts are, since
+// either party reacting to their own sent message (e.g. confirming
+// "got it 👍" on their own follow-up) is a normal chat pattern.
+export const reactToMessage = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { messageId } = req.params;
+    const { emoji } = req.body;
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: "Message not found." });
+    }
+
+    // Only the two participants of this conversation may react — same
+    // boundary as getMessages/deleteMessage, checked via sender/receiver
+    // rather than a separate participants lookup since Message already
+    // carries both.
+    const isParticipant =
+      message.sender.toString() === userId.toString() ||
+      message.receiver.toString() === userId.toString();
+    if (!isParticipant) {
+      return res.status(403).json({ message: "Not authorized." });
+    }
+
+    if (await isBlockedEitherWay(userId, message.sender)) {
+      return res
+        .status(403)
+        .json({ message: "You can't interact with this message." });
+    }
+
+    if (emoji && !REACTION_EMOJIS.includes(emoji)) {
+      return res.status(400).json({ message: "Invalid reaction emoji" });
+    }
+
+    const current = await getUserReaction(userId, "message", message._id);
+    let myReaction;
+
+    if (!emoji || current === emoji) {
+      await removeReaction(userId, "message", message._id);
+      myReaction = null;
+    } else {
+      await setReaction(userId, "message", message._id, emoji);
+      myReaction = emoji;
+    }
+
+    const summary = await getReactionSummary("message", message._id);
+
+    const otherUserId =
+      message.sender.toString() === userId.toString()
+        ? message.receiver
+        : message.sender;
+
+    const payload = {
+      messageId: message._id,
+      conversationId: message.conversationId,
+      summary,
+      userId: userId.toString(),
+      emoji: myReaction,
+    };
+
+    // Direct emit to the other participant (not a room-broadcast like
+    // post reactions) — a DM thread has exactly one other person who
+    // needs this, and emitToUser already reaches them on any instance
+    // via the Redis adapter.
+    emitToUser(otherUserId, "messageReactionUpdate", payload);
+
+    res.status(200).json({ summary, myReaction });
+  } catch (error) {
+    console.error("REACT TO MESSAGE ERROR:", error);
     res.status(500).json({ message: error.message });
   }
 };

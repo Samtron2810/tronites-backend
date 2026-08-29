@@ -12,6 +12,10 @@ import { removeAllLikesForPost, removeAllLikesForUser } from "./likeService.js";
 import { removeAllBookmarksForPost, removeAllBookmarksForUser } from "./bookmarkService.js";
 import { removeAllRepostsForPost, removeAllRepostsForUser } from "./repostService.js";
 import { removeAllCommentLikesForUser } from "./commentLikeService.js";
+import {
+  removeAllReactionsForTargets,
+  removeAllReactionsForUser,
+} from "./reactionService.js";
 import { removeAllFollowEdgesForUser } from "./followService.js";
 import { removeAllMuteEdgesForUser } from "./muteService.js";
 import { removeAllBlockEdgesForUser } from "./blockService.js";
@@ -93,6 +97,7 @@ export const hardDeleteAccount = async (userId) => {
     await Promise.all(postIds.map((id) => removeAllLikesForPost(id)));
     await Promise.all(postIds.map((id) => removeAllBookmarksForPost(id)));
     await Promise.all(postIds.map((id) => removeAllRepostsForPost(id)));
+    await removeAllReactionsForTargets("post", postIds);
     await Post.deleteMany({ _id: { $in: postIds } });
   }
 
@@ -113,6 +118,7 @@ export const hardDeleteAccount = async (userId) => {
   await removeAllFollowEdgesForUser(userId);
   await removeAllMuteEdgesForUser(userId);
   await removeAllBlockEdgesForUser(userId);
+  await removeAllReactionsForUser(userId);
 
   // ── Notifications: both directions (this user's own notification
   // feed, and any notification this user triggered for someone else).
@@ -154,6 +160,10 @@ export const hardDeleteAccount = async (userId) => {
       }
     }),
   );
+  const allMessageIds = await Message.find({
+    $or: [{ sender: userId }, { receiver: userId }],
+  }).distinct("_id");
+  await removeAllReactionsForTargets("message", allMessageIds);
   await Message.deleteMany({ $or: [{ sender: userId }, { receiver: userId }] });
   await Conversation.deleteMany({ participants: userId });
 

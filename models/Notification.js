@@ -33,6 +33,12 @@ const notificationSchema = new mongoose.Schema(
         // ("X reposted your post" reads fine for both), only for
         // whether the frontend deep-links to the quote's own text.
         "repost",
+        // 1.2 — emoji reaction on a post. `message` carries the emoji
+        // itself so the notifications page can render "X reacted ❤️ to
+        // your post" without a second lookup — same free-text-payload
+        // pattern moderator_warning uses below, just for an emoji
+        // instead of a reason string.
+        "reaction",
         // Phase 4 — formal moderator warning. Rendered specially by the
         // notifications page: reason text from `message`, sender identity
         // never displayed (the warned user sees "Moderation team", not

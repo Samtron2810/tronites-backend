@@ -164,6 +164,16 @@ export const createQuoteSchema = z.object({
     .default(""),
 });
 
+// 1.2 — emoji reaction on a post or message. `emoji` omitted/null clears
+// the caller's existing reaction; otherwise must be one of the fixed
+// 6-emoji set (kept in sync with models/Reaction.js's REACTION_EMOJIS —
+// duplicated here rather than imported so validators.js has no
+// dependency on the models layer, matching every other schema in this
+// file).
+export const reactSchema = z.object({
+  emoji: z.enum(["❤️", "😂", "😮", "😢", "😡", "👍"]).nullish(),
+});
+
 // ─── Comment ────────────────────────────────────────────────────────────────
 
 export const createCommentSchema = z.object({

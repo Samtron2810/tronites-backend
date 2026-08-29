@@ -23,13 +23,18 @@
 // notifications) already bounds how far apart in time a group's
 // members can be, without the extra complexity of picking a bucket
 // size that has to agree with pagination boundaries.
-const GROUPABLE_TYPES = new Set(["like", "commentLike", "follow"]);
+const GROUPABLE_TYPES = new Set(["like", "commentLike", "follow", "reaction"]);
 
 const groupKeyFor = (n) => {
   if (n.type === "follow") return `follow:${n.read}`;
   if (n.type === "like") return `like:${n.post?._id || n.post}:${n.read}`;
   if (n.type === "commentLike")
     return `commentLike:${n.comment?._id || n.comment}:${n.read}`;
+  // Reactions group per (post, emoji) — "Ada and 5 others reacted ❤️"
+  // stays separate from "Sam reacted 😂" on the same post, since the
+  // emoji itself is the content being reported, not incidental.
+  if (n.type === "reaction")
+    return `reaction:${n.post?._id || n.post}:${n.message}:${n.read}`;
   return null;
 };
 

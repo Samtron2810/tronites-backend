@@ -11,6 +11,7 @@ import {
   getTrendingHashtags,
   searchPosts,
   likePost,
+  reactToPost,
   toggleBookmark,
   toggleRepost,
   createQuotePost,
@@ -27,6 +28,7 @@ import {
   createVideoPostSchema,
   editPostSchema,
   createQuoteSchema,
+  reactSchema,
   paginationSchema,
 } from "../utils/validators.js";
 import { postLimiter, editPostLimiter } from "../middleware/rateLimiter.js";
@@ -67,6 +69,10 @@ router.post(
 );
 
 router.put("/like/:id", protect, likePost);
+// Emoji reaction bar — separate from the like toggle above. Same PUT-
+// as-set-state convention; body carries the chosen emoji (or omits it
+// to clear).
+router.put("/react/:id", protect, validate(reactSchema), reactToPost);
 router.put("/bookmark/:id", protect, toggleBookmark);
 // Toggle repost (create/undo) — same PUT-as-toggle convention as
 // like/bookmark above, not a separate POST+DELETE pair.

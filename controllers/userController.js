@@ -24,6 +24,10 @@ import { getLikedPostIds } from "../services/likeService.js";
 import { getBookmarkedPostIds } from "../services/bookmarkService.js";
 import { getRepostedPostIds } from "../services/repostService.js";
 import {
+  getReactionSummaries,
+  getUserReactions,
+} from "../services/reactionService.js";
+import {
   PUBLIC_ONLY_FILTER,
   FOLLOWERS_VISIBLE_FILTER,
 } from "../services/postVisibilityService.js";
@@ -558,10 +562,18 @@ export const getUserProfile = async (req, res) => {
       .filter((item) => item.post.quoteOf)
       .map((item) => item.post.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds] = await Promise.all([
+    const [
+      likedPostIds,
+      bookmarkedPostIds,
+      repostedPostIds,
+      reactionSummaries,
+      myReactions,
+    ] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
+      getReactionSummaries("post", allIds),
+      getUserReactions(req.user._id, "post", allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -569,6 +581,8 @@ export const getUserProfile = async (req, res) => {
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
     });
 
     const postsWithLikeState = postsResult.items.map((item) => ({
@@ -576,6 +590,11 @@ export const getUserProfile = async (req, res) => {
       isLiked: likedPostIds.has(item.post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(item.post._id.toString()),
       isReposted: repostedPostIds.has(item.post._id.toString()),
+      // Same reaction fields the feed endpoints send (see postController)
+      // — PostCard's reaction bar needs them; omitting them leaves
+      // reactionSummary undefined on profile posts.
+      reactionSummary: reactionSummaries.get(item.post._id.toString()) || {},
+      myReaction: myReactions.get(item.post._id.toString()) || null,
       isQuotePost: Boolean(item.post.quoteOf),
       quoteOf: item.post.quoteOf ? formatQuoteOf(item.post.quoteOf) : null,
       // On a profile page, "repostedBy" is redundant with "whose
