@@ -585,6 +585,26 @@ io.on("connection", (socket) => {
     }
   });
 
+  // --- Typing indicator ---
+  // Fire-and-forget, no persistence: targets the other participant
+  // directly via their personal room (same emitToUser pattern the REST
+  // controllers use for receiveMessage/messagesRead), not a
+  // conversation_* room broadcast — those rooms aren't used for chat
+  // events elsewhere in this file, and a directed emit means only the
+  // intended recipient's client ever runs the "X is typing" logic.
+  // recipientId is trusted here the same way conversationId already is
+  // on joinConversation — the receiving client only reacts to it when
+  // it matches the thread currently open, so a forged id just misses.
+  socket.on("typing", ({ conversationId, recipientId }) => {
+    if (!conversationId || !recipientId) return;
+    emitToUser(recipientId, "typing", { conversationId, userId });
+  });
+
+  socket.on("stopTyping", ({ conversationId, recipientId }) => {
+    if (!conversationId || !recipientId) return;
+    emitToUser(recipientId, "stopTyping", { conversationId, userId });
+  });
+
   socket.on("disconnect", async () => {
     clearInterval(heartbeatInterval);
 
