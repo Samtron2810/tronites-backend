@@ -26,7 +26,11 @@ export const getNotifications = async (req, res) => {
       Notification.find({ recipient: req.user._id })
         .populate("sender", "name username profilePic")
         .populate("post", "text images")
-        .populate("comment", "text")
+        // parentComment comes along so "reply" notifications can
+        // deep-link straight into their reply thread — the reply's own
+        // id identifies the row to highlight, but the frontend needs
+        // the parent's id to know which thread to expand first.
+        .populate("comment", "text parentComment")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit),

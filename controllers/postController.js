@@ -1715,7 +1715,9 @@ export const createQuotePost = async (req, res) => {
         const newNotif = await Notification.create({
           recipient: original.user,
           sender: userId,
-          type: "repost",
+          // A quote is its own thing, not a repost — the recipient's
+          // notifications page renders "X quoted your post" from this.
+          type: "quote",
           post: original._id,
         });
         const populatedNotif = await newNotif.populate(

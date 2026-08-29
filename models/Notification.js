@@ -23,16 +23,16 @@ const notificationSchema = new mongoose.Schema(
         "mention",
         "reply",
         "commentLike",
-        // 1.1 — repost/quote notification. Same row shape for both:
-        // `post` always points at the ORIGINAL post, never the quote
-        // (a quote has no Post document of its own — see
-        // models/Repost.js — so there's nothing else it could point
-        // at). The recipient's notifications page can't currently tell
-        // a plain repost from a quote apart from this type alone; that
-        // distinction isn't needed for the notification text itself
-        // ("X reposted your post" reads fine for both), only for
-        // whether the frontend deep-links to the quote's own text.
+        // 1.1 — repost/quote notification. `post` always points at the
+        // ORIGINAL post, never the quote (a quote has no Post document
+        // of its own — see models/Repost.js — so there's nothing else
+        // it could point at). Plain reposts use "repost"; quotes use
+        // "quote" so the notifications page can say "X quoted your
+        // post" instead of the misleading "X reposted your post" — the
+        // recipient sees their own quote text either way, since both
+        // deep-link to the original post the quote/repost targets.
         "repost",
+        "quote",
         // 1.2 — emoji reaction on a post. `message` carries the emoji
         // itself so the notifications page can render "X reacted ❤️ to
         // your post" without a second lookup — same free-text-payload
