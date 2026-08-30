@@ -9,6 +9,11 @@ import { emitToUser } from "../socket/socket.js";
 // replay and chat threads don't get multi-minute files.
 const MAX_MESSAGE_VIDEO_DURATION_SECONDS = 30;
 const MESSAGE_VIDEO_FOLDER = "tronites_message_videos";
+// Voice notes: 2-minute cap (matches the recorder's client-side stop-at-limit
+// in Chat.jsx). No eager transform is signed — Cloudinary stores the
+// recorded WebM/Opus as-is, which every target browser can already play
+// back natively, so there's nothing to trim/transcode server-side.
+const MESSAGE_VOICE_FOLDER = "tronites_message_voice";
 import { isBlockedEitherWay } from "../services/blockService.js";
 import {
   getConversationId,
@@ -299,6 +304,140 @@ export const sendVideoMessage = async (req, res) => {
   }
 };
 
+// Signed browser upload: request a Cloudinary signature for a voice-note
+// upload. Mirrors createMessageVideoUploadSignature — no eager transform
+// signed since there's nothing to trim/transcode (see MESSAGE_VOICE_FOLDER
+// comment above). The message itself is created afterwards via
+// sendVoiceMessage once the recorded Blob has finished uploading.
+export const createMessageVoiceUploadSignature = async (req, res) => {
+  try {
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = MESSAGE_VOICE_FOLDER;
+
+    const paramsToSign = { timestamp, folder };
+
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      process.env.CLOUDINARY_API_SECRET,
+    );
+
+    res.status(200).json({
+      signature,
+      timestamp,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      folder,
+    });
+  } catch (error) {
+    console.error("CREATE MESSAGE VOICE SIGNATURE ERROR:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// SEND VOICE MESSAGE — called by the recorder AFTER the browser has
+// uploaded the recorded Blob directly to Cloudinary (signed via the
+// endpoint above). Shares the same permission/block/conversation handling
+// as sendMessage/sendVideoMessage — only the media delivery differs.
+export const sendVoiceMessage = async (req, res) => {
+  try {
+    const senderId = req.user._id;
+    const receiverId = req.params.userId;
+    const { text, voice } = req.body;
+
+    if (senderId.toString() === receiverId.toString()) {
+      return res
+        .status(400)
+        .json({ message: "Cannot send a message to yourself." });
+    }
+
+    const receiver = await User.findById(receiverId).select("name profilePic");
+    if (!receiver) {
+      return res.status(404).json({ message: "Recipient not found." });
+    }
+
+    if (await isBlockedEitherWay(senderId, receiverId)) {
+      return res.status(403).json({
+        message: "You can't message this user.",
+        code: "BLOCKED",
+      });
+    }
+
+    const permission = await evaluateSendPermission(senderId, receiverId);
+    if (!permission.allowed) {
+      return res.status(403).json({
+        message: permission.reason,
+        code: permission.code,
+      });
+    }
+
+    // Validate the asset belongs to our Cloudinary account and folder —
+    // same arbitrary-URL-injection defense as sendVideoMessage. Cloudinary
+    // stores audio under the `video` resource_type namespace, so the
+    // delivery URL prefix is /video/upload/ here too.
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const allowedPrefix = `https://res.cloudinary.com/${cloudName}/video/upload/`;
+    if (
+      typeof voice?.url !== "string" ||
+      !voice.url.startsWith(allowedPrefix) ||
+      typeof voice.publicId !== "string" ||
+      !voice.publicId.startsWith(`${MESSAGE_VOICE_FOLDER}/`)
+    ) {
+      return res.status(400).json({ message: "Invalid voice note URL" });
+    }
+
+    const message = await Message.create({
+      sender: senderId,
+      receiver: receiverId,
+      text: text?.trim() || null,
+      voice: {
+        publicId: voice.publicId,
+        url: voice.url,
+        durationSeconds: voice.durationSeconds || null,
+        waveform: Array.isArray(voice.waveform) ? voice.waveform : [],
+        status: "ready",
+      },
+      conversationId: getConversationId(senderId, receiverId),
+    });
+
+    // Reflect the permission outcome in the Conversation record — identical
+    // handling to sendMessage/sendVideoMessage.
+    if (permission.isNewRequest) {
+      await Conversation.create({
+        conversationId: permission.conversationId,
+        participants: [senderId, receiverId],
+        status: "pending",
+        initiator: senderId,
+      });
+    } else if (permission.implicitAccept) {
+      await Conversation.updateOne(
+        { conversationId: permission.conversationId },
+        { $set: { status: "accepted" } },
+      );
+    } else if (permission.isMutual && !permission.conversation) {
+      await Conversation.create({
+        conversationId: permission.conversationId,
+        participants: [senderId, receiverId],
+        status: "accepted",
+        initiator: senderId,
+      }).catch((err) => {
+        if (err.code !== 11000) throw err;
+      });
+    }
+
+    const populatedMessage = await message.populate([
+      { path: "sender", select: "_id name profilePic" },
+      { path: "receiver", select: "_id name profilePic" },
+    ]);
+
+    emitToUser(receiverId, "receiveMessage", populatedMessage);
+
+    res.status(201).json(populatedMessage);
+  } catch (error) {
+    console.error("SEND VOICE MESSAGE ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const getConversations = async (req, res) => {
   try {
     const currentUserId = req.user._id;
@@ -335,7 +474,19 @@ export const getConversations = async (req, res) => {
                       $ne: [{ $ifNull: ["$video.url", null] }, null],
                     },
                     "🎬 Video",
-                    { $cond: [{ $ne: ["$images", []] }, "📷 Photo(s)", ""] },
+                    {
+                      $cond: [
+                        { $ne: [{ $ifNull: ["$voice.url", null] }, null] },
+                        "🎤 Voice message",
+                        {
+                          $cond: [
+                            { $ne: ["$images", []] },
+                            "📷 Photo(s)",
+                            "",
+                          ],
+                        },
+                      ],
+                    },
                   ],
                 },
                 "$text",
@@ -584,11 +735,13 @@ export const deleteMessage = async (req, res) => {
         .json({ message: "Not authorized to delete this message." });
     }
 
-    // Delete the Cloudinary video asset, if any. Best-effort, matching the
-    // pattern postController.deletePost uses — an orphaned CDN asset is a
-    // cleanup task, not a reason to fail the delete. Message images are
+    // Delete the Cloudinary video/voice asset, if any. Best-effort, matching
+    // the pattern postController.deletePost uses — an orphaned CDN asset is
+    // a cleanup task, not a reason to fail the delete. Message images are
     // intentionally left alone here (consistent with the pre-existing
-    // behavior for legacy/multi-image messages).
+    // behavior for legacy/multi-image messages). Voice notes live under the
+    // same `video` resource_type namespace as Cloudinary has no distinct
+    // "audio" type for uploads.
     if (message.video?.publicId) {
       try {
         await cloudinary.uploader.destroy(message.video.publicId, {
@@ -596,6 +749,15 @@ export const deleteMessage = async (req, res) => {
         });
       } catch (err) {
         console.log("Cloudinary message video delete failed:", err.message);
+      }
+    }
+    if (message.voice?.publicId) {
+      try {
+        await cloudinary.uploader.destroy(message.voice.publicId, {
+          resource_type: "video",
+        });
+      } catch (err) {
+        console.log("Cloudinary message voice delete failed:", err.message);
       }
     }
 

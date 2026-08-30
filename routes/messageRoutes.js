@@ -7,6 +7,8 @@ import {
   paginationSchema,
   messageVideoSignatureSchema,
   sendVideoMessageSchema,
+  messageVoiceSignatureSchema,
+  sendVoiceMessageSchema,
   reactSchema,
 } from "../utils/validators.js";
 import { messageLimiter } from "../middleware/rateLimiter.js";
@@ -20,6 +22,8 @@ import {
   respondToRequest,
   createMessageVideoUploadSignature,
   sendVideoMessage,
+  createMessageVoiceUploadSignature,
+  sendVoiceMessage,
 } from "../controllers/messageController.js";
 
 const router = express.Router();
@@ -45,6 +49,15 @@ router.post(
   createMessageVideoUploadSignature,
 );
 
+// Same "before the dynamic /:userId routes" reasoning as /signature/video.
+router.post(
+  "/signature/voice",
+  protect,
+  messageLimiter,
+  validate(messageVoiceSignatureSchema),
+  createMessageVoiceUploadSignature,
+);
+
 router.get("/:userId", protect, validateQuery(paginationSchema), getMessages);
 
 // Custom uploader flow: create the video message AFTER the browser has
@@ -56,6 +69,16 @@ router.post(
   messageLimiter,
   validate(sendVideoMessageSchema),
   sendVideoMessage,
+);
+
+// Same flow as above, for a recorded voice note (signed via
+// /signature/voice).
+router.post(
+  "/:userId/voice",
+  protect,
+  messageLimiter,
+  validate(sendVoiceMessageSchema),
+  sendVoiceMessage,
 );
 
 router.post(

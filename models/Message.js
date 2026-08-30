@@ -62,6 +62,30 @@ const messageSchema = new mongoose.Schema(
         default: "ready",
       },
     },
+    // A chat voice note. Mirrors `video` above — signed direct-to-Cloudinary
+    // upload (POST /messages/signature/voice), created via POST
+    // /messages/:userId/voice once the browser-recorded Blob has finished
+    // uploading. Cloudinary stores audio under its `video` resource_type
+    // namespace (see messageController.deleteMessage), so this reuses the
+    // same status enum for consistency even though there's no eager
+    // transform / "processing" state in practice — same reasoning as video.
+    // Voice notes are mutually exclusive with images/video/text-only in a
+    // single message, matching the video field's contract.
+    voice: {
+      publicId: { type: String, default: null },
+      url: { type: String, default: null },
+      durationSeconds: { type: Number, default: null },
+      // Coarse amplitude samples (0-1, fixed-length array) computed
+      // client-side from the recorded Blob via Web Audio — purely
+      // cosmetic (renders the static waveform bar in the bubble), never
+      // trusted for anything else.
+      waveform: { type: [Number], default: [] },
+      status: {
+        type: String,
+        enum: ["processing", "ready", "failed"],
+        default: "ready",
+      },
+    },
     conversationId: {
       type: String,
       required: true,

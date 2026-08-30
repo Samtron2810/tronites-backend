@@ -217,6 +217,29 @@ export const sendVideoMessageSchema = z.object({
   }),
 });
 
+// Signed browser upload: request a signature for a voice-note upload. Same
+// empty-body contract as messageVideoSignatureSchema.
+export const messageVoiceSignatureSchema = z.object({});
+
+// Create a voice-note message from an already-uploaded Cloudinary asset —
+// mirrors sendVideoMessageSchema. `waveform` is a fixed-length client-computed
+// amplitude array, capped generously so a malformed client can't send an
+// oversized array; it's cosmetic only, never trusted server-side beyond shape.
+export const sendVoiceMessageSchema = z.object({
+  text: z
+    .string()
+    .trim()
+    .max(1000, "Message too long")
+    .optional()
+    .default(""),
+  voice: z.object({
+    publicId: z.string().trim().min(1, "Missing voice publicId").max(255),
+    url: z.string().url("Invalid voice URL"),
+    durationSeconds: z.number().positive().max(120).nullable().optional(),
+    waveform: z.array(z.number().min(0).max(1)).max(200).optional().default([]),
+  }),
+});
+
 // ─── User ───────────────────────────────────────────────────────────────────
 
 export const setUsernameSchema = z.object({
