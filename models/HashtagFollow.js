@@ -23,6 +23,21 @@ const hashtagFollowSchema = new mongoose.Schema(
       lowercase: true,
       maxlength: 50,
     },
+    // Fairness fix — implicit interest signal (see
+    // jobs/computeForYouSignals.js's recomputeImplicitHashtagFollows).
+    // false = the user tapped "Follow" on the hashtag page themselves.
+    // true = auto-derived from repeated posting/engagement with the
+    // tag, because requiring an explicit follow before `interest`
+    // sourcing ever activates left that For You source dark for nearly
+    // everyone — almost no one proactively follows a hashtag unprompted.
+    // Never shown as "Following" in the UI and never blocks the
+    // explicit follow toggle from creating a real explicit edge (see
+    // hashtagFollowService.followHashtag) — implicit is a promotion
+    // path, not a substitute for the real thing.
+    implicit: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true },
 );

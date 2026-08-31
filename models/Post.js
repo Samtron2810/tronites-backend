@@ -138,6 +138,27 @@ const postSchema = new mongoose.Schema(
       trim: true,
       maxlength: 500,
     },
+
+    // Fairness fix #2 — real-time engagement-velocity circuit breaker.
+    // Set by likePost/reactToPost/addComment (see postController.js/
+    // commentController.js) when a post's engagement-to-follower ratio
+    // in its first hour is statistically implausible for its author's
+    // real audience size — the classic "bought engagement" pattern.
+    // This is a CHEAP heuristic flag, not a verdict: it exists so the
+    // nightly credibleRatio sweep (jobs/computeForYouSignals.js) can
+    // prioritize the post's author on its very next run instead of
+    // waiting up to 24h, and so trending/interest sourcing can
+    // deprioritize the post in the meantime. A human/the nightly job
+    // makes the real call; this field only shortens how long a gamed
+    // post can ride front-page visibility before that happens.
+    velocityFlagged: {
+      type: Boolean,
+      default: false,
+    },
+    velocityFlaggedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );
@@ -156,6 +177,10 @@ postSchema.index({ removedAt: 1, createdAt: -1 });
 // and gets slower linearly with post count; MongoDB's $text operator
 // uses this index and also gives relevance scoring for free.
 postSchema.index({ text: "text" });
+// Fairness fix #2 — lets the nightly sweep cheaply find posts flagged
+// since its last run, and lets forYouService/getTrendingPosts exclude
+// flagged posts from ranking without a collection scan.
+postSchema.index({ velocityFlagged: 1, velocityFlaggedAt: -1 });
 
 const Post = mongoose.model("Post", postSchema);
 

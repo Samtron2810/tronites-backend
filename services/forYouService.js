@@ -110,6 +110,15 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
     createdAt: { $gte: since },
   };
 
+  // Fairness fix #2 — velocity-flagged posts (see
+  // services/engagementVelocityService.js) are excluded from the
+  // DISCOVERY sources only (interest, trending). followed/fof stay
+  // untouched: a flag limits how far a post's suspicious engagement
+  // can travel to people who haven't chosen the author, it doesn't
+  // hide content from people who already follow them — that would be
+  // an unexplained stealth removal from their own chosen feed.
+  const discoveryFilter = { ...baseFilter, velocityFlagged: { $ne: true } };
+
   const [followedPosts, fofPosts, interestPosts, trendingPosts] = await Promise.all([
     followedAuthorIds.length
       ? Post.find({
@@ -141,7 +150,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
       : [],
     followedTags.length
       ? Post.find({
-          ...baseFilter,
+          ...discoveryFilter,
           hashtags: { $in: followedTags },
           user: { $nin: [...excludeAuthors, ...followedAuthorIds] },
           ...PUBLIC_ONLY_FILTER, // interest is a discovery source — public only
@@ -155,7 +164,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           .limit(MAX_CANDIDATES_PER_SOURCE)
       : [],
     Post.find({
-      ...baseFilter,
+      ...discoveryFilter,
       user: { $nin: [...excludeAuthors, ...followedAuthorIds] },
       ...PUBLIC_ONLY_FILTER,
     })

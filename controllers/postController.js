@@ -27,11 +27,12 @@ import {
 } from "../services/blockService.js";
 import { getForYouCandidates } from "../services/forYouService.js";
 import {
-  isFollowingHashtag,
+  isExplicitlyFollowingHashtag,
   followHashtag,
   unfollowHashtag,
-  listFollowedHashtags,
+  listExplicitlyFollowedHashtags,
 } from "../services/hashtagFollowService.js";
+import { checkEngagementVelocity } from "../services/engagementVelocityService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
 import {
   hasLiked,
@@ -943,6 +944,13 @@ export const getTrendingPosts = async (req, res) => {
       // Trending is a global discovery surface — only public posts
       // qualify (the shared cache must stay viewer-independent).
       ...PUBLIC_ONLY_FILTER,
+      // Fairness fix #2 — velocity-flagged posts (see
+      // services/engagementVelocityService.js) are excluded from
+      // Trending, same as For You's discovery sources. Trending is
+      // exactly the kind of high-visibility surface a bought-engagement
+      // push is trying to reach, so this is the highest-value place to
+      // enforce the flag.
+      velocityFlagged: { $ne: true },
       ...(excludedUserIds.size
         ? { user: { $nin: [...excludedUserIds] } }
         : {}),
@@ -1194,12 +1202,20 @@ export const getPostsByHashtag = async (req, res) => {
 // routes — one route, body-less, idempotent either direction. Tag is
 // normalized (trim/lowercase) the same way Post.hashtags are parsed, so
 // "#AfroBeats" and "afrobeats" resolve to the same edge.
+//
+// Keys off EXPLICIT follow state, not "any edge exists" — a tag the
+// nightly job auto-followed for this user (see
+// jobs/computeForYouSignals.js's recomputeImplicitHashtagFollows) must
+// still show as "Follow" to them and, when tapped, upgrade that
+// implicit edge to explicit (handled inside followHashtag) rather than
+// deleting it. Toggling off an explicit follow the user is unaware they
+// implicitly had would be a confusing, unrequested unfollow.
 export const toggleHashtagFollow = async (req, res) => {
   try {
     const tag = String(req.params.tag || "").trim().toLowerCase();
     if (!tag) return res.status(400).json({ message: "Hashtag is required" });
 
-    const alreadyFollowing = await isFollowingHashtag(req.user._id, tag);
+    const alreadyFollowing = await isExplicitlyFollowingHashtag(req.user._id, tag);
     if (alreadyFollowing) {
       await unfollowHashtag(req.user._id, tag);
       return res.status(200).json({ following: false, tag });
@@ -1211,11 +1227,15 @@ export const toggleHashtagFollow = async (req, res) => {
   }
 };
 
-// List the tags the current user follows — settings/hashtags page and
-// (indirectly) what powers For You's interest source.
+// List the tags the current user EXPLICITLY follows — settings/
+// hashtags page. Implicit (auto-derived) follows are intentionally
+// excluded here: they still feed For You's interest source (see
+// forYouService.js, which reads ALL edges via listFollowedHashtags),
+// but showing them on a page titled "hashtags you follow" would
+// surprise a user who never chose them.
 export const getFollowedHashtags = async (req, res) => {
   try {
-    const tags = await listFollowedHashtags(req.user._id);
+    const tags = await listExplicitlyFollowedHashtags(req.user._id);
     res.status(200).json({ tags });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -1471,6 +1491,17 @@ export const likePost = async (req, res) => {
       likes: post.likesCount,
       liked,
     });
+
+    // Fairness fix #2 — fire-and-forget, after the response so it never
+    // adds latency to the like action itself. Only checked on the
+    // "like" branch (liked === true): an unlike can only reduce
+    // engagement, never trigger the implausible-velocity pattern this
+    // guards against. See services/engagementVelocityService.js.
+    if (liked) {
+      checkEngagementVelocity(post).catch((err) =>
+        console.error("Velocity check error:", err),
+      );
+    }
   } catch (error) {
     res.status(500).json({
       message: error.message,

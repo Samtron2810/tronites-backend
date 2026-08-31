@@ -8,6 +8,7 @@ import { extractMentions } from "../utils/textParser.js";
 import { isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockService.js";
 import { canViewPost } from "../services/postVisibilityService.js";
 import { hasMuted } from "../services/muteService.js";
+import { checkEngagementVelocity } from "../services/engagementVelocityService.js";
 import {
   getLikedCommentIds,
   createCommentLikeEdge,
@@ -182,6 +183,15 @@ export const addComment = async (req, res) => {
     }
 
     res.status(201).json(populatedComment);
+
+    // Fairness fix #2 — fire-and-forget, after the response so it never
+    // adds latency to the comment action. Comments only ever ADD
+    // engagement here (top-level create, not delete), so every call
+    // site is a legitimate candidate to check. See
+    // services/engagementVelocityService.js.
+    checkEngagementVelocity(post).catch((err) =>
+      console.error("Velocity check error:", err),
+    );
   } catch (error) {
     res.status(500).json({
       message: error.message,
