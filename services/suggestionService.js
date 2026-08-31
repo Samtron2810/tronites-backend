@@ -14,18 +14,27 @@ import { getMutedIds } from "./muteService.js";
 //      follows also follow this candidate. The strongest signal:
 //      "people you trust already trust them."
 //   2. Shared hashtag engagement — candidate has recently posted with a
-//      hashtag the viewer has also recently posted or engaged with
-//      (liked/commented). Reuses Post.hashtags — no new tracking.
+//      hashtag the viewer has also recently posted with. Reuses
+//      Post.hashtags — no new tracking.
 //   3. Recency of activity — candidates who haven't posted in a long
 //      time are poor suggestions even if otherwise well-connected.
 //   4. New-to-Tronites boost — small bonus for accounts created
 //      recently, so genuinely new users get a fair shot at their first
 //      followers instead of only ever-more-followed accounts compounding.
 //
-// This also directly feeds For You's "interest" source is NOT this file
-// (that's HashtagFollow, 2.3) — this file is specifically about
-// candidate *people*, not candidate *posts*.
-
+// This is about candidate *people*; candidate *posts* is HashtagFollow
+// (2.3, services/hashtagFollowService.js) instead.
+//
+// ── Hot-path budget ──────────────────────────────────────────────────
+// The candidate-level signals (2 and 3 above) read User.lastPostAt and
+// User.recentHashtags — both precomputed off the hot path by the
+// nightly jobs/computeForYouSignals.js sweep (see that job's
+// recomputeSuggestionSignals). This function does NOT scan Post for
+// candidates at all; the only Post read left here is the viewer's OWN
+// recent hashtags (signal 2's other half), which is bounded to one
+// user and cheap regardless of platform size. Only mutual-follow
+// counts (signal 1, genuinely per-viewer, can't be precomputed once
+// for everyone) still run a live aggregate.
 const MUTUAL_WEIGHT = 3;
 const SHARED_HASHTAG_WEIGHT = 2;
 const RECENCY_WEIGHT = 1.5;
@@ -36,12 +45,10 @@ const NEW_ACCOUNT_WINDOW_DAYS = 14;
 const HASHTAG_SIGNAL_WINDOW_DAYS = 30;
 const CANDIDATE_POOL_SIZE = 300;
 
-// Hashtags the viewer has recently posted with — the "engaged with"
-// half (liked/commented posts carrying a tag) is deferred: Like/Comment
-// don't currently denormalize the target post's hashtags, and joining
-// through Post per like is expensive at this candidate-pool size for a
-// v1 signal. Authored hashtags alone is still a real, non-random signal
-// and matches what's cheaply available today.
+// Hashtags the viewer has recently posted with — scoped to one user
+// (viewer), so this stays cheap at any platform size without needing
+// precomputation. The candidate side of this same signal is
+// User.recentHashtags, computed nightly (see module comment above).
 const getViewerRecentHashtags = async (viewerId) => {
   const since = new Date(Date.now() - HASHTAG_SIGNAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const posts = await Post.find({
@@ -59,7 +66,8 @@ const getViewerRecentHashtags = async (viewerId) => {
 
 // For each candidate, how many of the viewer's own follows also follow
 // them. One aggregation over Follow rather than N per-candidate
-// queries.
+// queries. Genuinely per-viewer — nothing to precompute here, this is
+// as cheap as this signal gets.
 const getMutualFollowCounts = async (viewerFollowingIds, candidateIds) => {
   if (!viewerFollowingIds.length || !candidateIds.length) return new Map();
   const rows = await Follow.aggregate([
@@ -72,34 +80,6 @@ const getMutualFollowCounts = async (viewerFollowingIds, candidateIds) => {
     { $group: { _id: "$following", count: { $sum: 1 } } },
   ]);
   return new Map(rows.map((r) => [r._id.toString(), r.count]));
-};
-
-// Candidates' own most-recent post (for recency) + hashtags used in the
-// last HASHTAG_SIGNAL_WINDOW_DAYS (for shared-tag overlap). One query
-// covering both signals.
-const getCandidateActivity = async (candidateIds) => {
-  const since = new Date(Date.now() - HASHTAG_SIGNAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  const posts = await Post.find({
-    user: { $in: candidateIds },
-    removedAt: null,
-  })
-    .select("user hashtags createdAt")
-    .sort({ createdAt: -1 })
-    .limit(CANDIDATE_POOL_SIZE * 5)
-    .lean();
-
-  const lastPostAt = new Map();
-  const hashtagsById = new Map();
-  for (const p of posts) {
-    const uid = p.user.toString();
-    if (!lastPostAt.has(uid)) lastPostAt.set(uid, p.createdAt);
-    if (p.createdAt >= since && p.hashtags?.length) {
-      const set = hashtagsById.get(uid) || new Set();
-      for (const t of p.hashtags) set.add(t);
-      hashtagsById.set(uid, set);
-    }
-  }
-  return { lastPostAt, hashtagsById };
 };
 
 // Returns ranked, populated candidate user docs (lean) for the empty-
@@ -121,65 +101,63 @@ export const getWhoToFollow = async (viewerId, { skip = 0, limit = 10 } = {}) =>
   ]);
 
   // Candidate pool: recently-active accounts not already excluded.
-  // Pulling from Post authors (rather than all Users) biases toward
-  // accounts that have actually posted something — an account with zero
-  // posts is a weak "who to follow" suggestion regardless of how new it
-  // is.
+  // Reads directly off User.lastPostAt (precomputed nightly) instead of
+  // Post.distinct — this is now a single indexed User query regardless
+  // of total post volume, where it used to scan up to
+  // CANDIDATE_POOL_SIZE * 5 posts per request.
   const since = new Date(Date.now() - RECENT_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  const recentAuthorIds = await Post.distinct("user", {
-    removedAt: null,
-    createdAt: { $gte: since },
-  });
-  const poolIds = recentAuthorIds
-    .map((id) => id.toString())
-    .filter((id) => !excludeIds.has(id));
+  const activeCandidates = await User.find({
+    _id: { $nin: [...excludeIds] },
+    lastPostAt: { $gte: since },
+  })
+    .select("name username bio profilePic createdAt lastPostAt recentHashtags")
+    .sort({ lastPostAt: -1 })
+    .limit(CANDIDATE_POOL_SIZE)
+    .lean();
 
   // Cold-start fallback: brand-new platforms won't have 14 days of
-  // activity yet — fall back to any non-excluded user so the surface
-  // never renders empty on a fresh install.
-  let candidateIds = poolIds;
-  if (candidateIds.length < limit + skip) {
-    const fallback = await User.find({ _id: { $nin: [...excludeIds] } })
-      .select("_id")
+  // activity yet (or the nightly job hasn't run once) — fall back to
+  // any non-excluded user so the surface never renders empty on a
+  // fresh install. Fallback candidates simply score 0 on recency/
+  // hashtag signals below, which is honest — we have no activity data
+  // for them.
+  let candidates = activeCandidates;
+  if (candidates.length < limit + skip) {
+    const alreadyIn = new Set(candidates.map((u) => u._id.toString()));
+    const fallback = await User.find({
+      _id: { $nin: [...excludeIds, ...alreadyIn] },
+    })
+      .select("name username bio profilePic createdAt lastPostAt recentHashtags")
       .limit(CANDIDATE_POOL_SIZE)
       .lean();
-    const fallbackIds = fallback.map((u) => u._id.toString());
-    candidateIds = [...new Set([...candidateIds, ...fallbackIds])];
+    candidates = [...candidates, ...fallback];
   }
-  candidateIds = candidateIds.slice(0, CANDIDATE_POOL_SIZE);
+  candidates = candidates.slice(0, CANDIDATE_POOL_SIZE);
 
-  if (!candidateIds.length) return { users: [], hasMore: false };
+  if (!candidates.length) return { users: [], hasMore: false };
 
-  const candidateObjectIds = candidateIds.map((id) => new mongoose.Types.ObjectId(id));
+  const candidateObjectIds = candidates.map((u) => u._id);
 
-  const [users, mutualCounts, { lastPostAt, hashtagsById }, viewerHashtags] =
-    await Promise.all([
-      User.find({ _id: { $in: candidateObjectIds } })
-        .select("name username bio profilePic createdAt")
-        .lean(),
-      getMutualFollowCounts(followingIds, candidateObjectIds),
-      getCandidateActivity(candidateIds),
-      getViewerRecentHashtags(viewerId),
-    ]);
+  const [mutualCounts, viewerHashtags] = await Promise.all([
+    getMutualFollowCounts(followingIds, candidateObjectIds),
+    getViewerRecentHashtags(viewerId),
+  ]);
 
   const now = Date.now();
-  const scored = users.map((u) => {
+  const scored = candidates.map((u) => {
     const id = u._id.toString();
     const mutual = mutualCounts.get(id) || 0;
 
-    const candidateTags = hashtagsById.get(id);
-    const sharedHashtags = candidateTags
-      ? [...candidateTags].filter((t) => viewerHashtags.has(t)).length
-      : 0;
+    const candidateTags = u.recentHashtags || [];
+    const sharedHashtags = candidateTags.filter((t) => viewerHashtags.has(t)).length;
 
-    const last = lastPostAt.get(id);
     // 0..1, decaying linearly to 0 at the edge of the activity window —
     // a candidate who posted today scores full recency credit, one who
     // posted RECENT_ACTIVITY_WINDOW_DAYS ago scores ~0.
-    const recencyScore = last
+    const recencyScore = u.lastPostAt
       ? Math.max(
           0,
-          1 - (now - new Date(last).getTime()) / (RECENT_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000),
+          1 - (now - new Date(u.lastPostAt).getTime()) / (RECENT_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000),
         )
       : 0;
 

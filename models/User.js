@@ -256,6 +256,30 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 1,
     },
+
+    // 2.2 "Who to follow" ranking — precomputed off the hot path by the
+    // nightly jobs/computeForYouSignals.js sweep (same job that already
+    // computes credibleRatio, since both scan Post/Like/Comment on a
+    // similar cadence). Moving these off searchUsers's empty-query path
+    // is what turns "who to follow" from a per-request Post scan across
+    // up to 1500 candidate posts into two flat User.find() reads — see
+    // services/suggestionService.js's getWhoToFollow for the read side.
+    //
+    // lastPostAt: this user's most recent non-removed post timestamp —
+    // drives the recency-of-activity signal. null if they've never
+    // posted (or their only posts are removed).
+    lastPostAt: {
+      type: Date,
+      default: null,
+    },
+    // recentHashtags: up to 20 distinct lowercase tags this user has
+    // posted with in the last HASHTAG_SIGNAL_WINDOW_DAYS (see
+    // suggestionService.js) — capped so a hashtag-spamming account
+    // can't bloat this field or the shared-tag-overlap computation.
+    recentHashtags: {
+      type: [String],
+      default: [],
+    },
   },
   { timestamps: true },
 );
@@ -274,6 +298,10 @@ userSchema.pre("validate", function () {
 
 // Indexes (email is already indexed via `unique: true` in the schema)
 userSchema.index({ name: 1 });
+// 2.2 "Who to follow" — getWhoToFollow's candidate-pool query filters/
+// sorts directly on lastPostAt now instead of scanning Post per
+// request (see the field's own comment above).
+userSchema.index({ lastPostAt: -1 });
 
 const User = mongoose.model("User", userSchema);
 

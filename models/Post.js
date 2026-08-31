@@ -145,6 +145,12 @@ const postSchema = new mongoose.Schema(
 // Indexes
 postSchema.index({ user: 1, createdAt: -1 });
 postSchema.index({ hashtags: 1, createdAt: -1 });
+// jobs/computeForYouSignals.js's recomputeSuggestionSignals aggregation
+// matches on (removedAt, createdAt) with no user filter, then sorts by
+// createdAt before grouping — neither compound index above leads with
+// a field that query filters on, so it would otherwise collection-scan
+// every run.
+postSchema.index({ removedAt: 1, createdAt: -1 });
 // Full-text search over post captions (Explore's content search). A
 // regex scan would work for small collections but doesn't use an index
 // and gets slower linearly with post count; MongoDB's $text operator
