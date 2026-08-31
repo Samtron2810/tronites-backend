@@ -19,6 +19,13 @@ import Post from "../models/Post.js";
 // exclude it immediately and (b) letting the nightly sweep prioritize
 // its author on its very next run instead of waiting for the full
 // engager-aggregation pass to reach them.
+//
+// ── Tuning ───────────────────────────────────────────────────────────
+// IMPLAUSIBLE_MULTIPLE below is a first-guess number, not one tuned
+// against real usage — there's no production engagement data yet to
+// tune it against (see the reasoning behind VELOCITY_FLAG_LOG below).
+// It's env-configurable via VELOCITY_IMPLAUSIBLE_MULTIPLE (see
+// .env.example) so tuning later is a config change, not a redeploy.
 
 // A post is only eligible to be flagged inside this window after
 // creation — velocity is only a meaningful signal early; a post that's
@@ -40,7 +47,13 @@ const MIN_ENGAGEMENT_TO_EVALUATE = 15;
 // few times over. This threshold is tuned to catch the pattern the
 // fairness doc specifically named as implausible (200 likes in minutes
 // on a 5-follower account = 40x), not to catch ordinary overperformance.
-const IMPLAUSIBLE_MULTIPLE = 15;
+//
+// VELOCITY_IMPLAUSIBLE_MULTIPLE env var overrides the default — see
+// .env.example's "Fairness tuning" section. Falls back to 15 if unset
+// or unparseable, rather than crashing the flag check.
+const parsedMultiple = parseFloat(process.env.VELOCITY_IMPLAUSIBLE_MULTIPLE);
+const IMPLAUSIBLE_MULTIPLE =
+  Number.isFinite(parsedMultiple) && parsedMultiple > 0 ? parsedMultiple : 15;
 
 // Called after a like/reaction/comment is recorded. Cheap by design:
 // one Post read (already have it loaded in the calling controller in
@@ -69,6 +82,23 @@ export const checkEngagementVelocity = async (post) => {
     await Post.updateOne(
       { _id: post._id, velocityFlagged: false },
       { $set: { velocityFlagged: true, velocityFlaggedAt: new Date() } },
+    );
+
+    // Fix #1 (instrument now, tune later) — logs the exact numbers at
+    // the moment of firing, not just "a flag fired". This is the
+    // dataset that makes IMPLAUSIBLE_MULTIPLE tunable later: once
+    // there's real traffic, these lines let someone look back at the
+    // actual (engagementScore, followerCount, multiple-that-fired)
+    // distribution and pick a real threshold instead of another guess.
+    // Plain console.log to match this codebase's existing logging
+    // convention (see roadmap 4.3 — structured logging is a known,
+    // separately-tracked gap, not something to introduce piecemeal
+    // here).
+    console.log(
+      `[VELOCITY_FLAG] post=${post._id} author=${author.user?._id ?? "unknown"} ` +
+        `engagementScore=${engagementScore} followerCount=${followerCount} ` +
+        `actualMultiple=${followerCount > 0 ? (engagementScore / followerCount).toFixed(2) : "inf"} ` +
+        `threshold=${IMPLAUSIBLE_MULTIPLE} ageMs=${ageMs}`,
     );
   } catch (error) {
     // Never let a fairness heuristic break the like/comment action it's

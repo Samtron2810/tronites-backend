@@ -75,17 +75,36 @@ const MAX_STORED_HASHTAGS = 20;
 // actually activate the interest source for moderately active users,
 // high enough that a single post or a single like doesn't imply an
 // ongoing interest.
-const IMPLICIT_FOLLOW_POST_THRESHOLD = 3;
-const IMPLICIT_FOLLOW_ENGAGEMENT_THRESHOLD = 5;
+//
+// ── Tuning ───────────────────────────────────────────────────────────
+// Both thresholds below are first-guess numbers — there's no production
+// engagement data yet to tune "how much interest predicts more
+// interest" against. Env-configurable via IMPLICIT_FOLLOW_POST_THRESHOLD
+// / IMPLICIT_FOLLOW_ENGAGEMENT_THRESHOLD / IMPLICIT_FOLLOW_STALE_THRESHOLD
+// (see .env.example) so tuning later is a config change, not a
+// redeploy. Every (user, tag) pair that crosses a threshold is logged
+// with its actual counts (see the loop below) — that's the dataset
+// that eventually makes real tuning possible.
+const parseThreshold = (envVar, fallback) => {
+  const parsed = parseInt(process.env[envVar], 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+const IMPLICIT_FOLLOW_POST_THRESHOLD = parseThreshold("IMPLICIT_FOLLOW_POST_THRESHOLD", 3);
+const IMPLICIT_FOLLOW_ENGAGEMENT_THRESHOLD = parseThreshold(
+  "IMPLICIT_FOLLOW_ENGAGEMENT_THRESHOLD",
+  5,
+);
 // Below this combined signal, a previously-implicit follow is
 // considered to have gone stale and is removed — matches the
 // lastPostAt stale-clear pattern elsewhere in this job. Lower than the
 // creation thresholds above (a follow that's earned shouldn't be lost
 // the moment activity dips slightly below the bar that created it —
 // only once interest has genuinely dropped off).
-const IMPLICIT_FOLLOW_STALE_THRESHOLD = 1;
+const IMPLICIT_FOLLOW_STALE_THRESHOLD = parseThreshold("IMPLICIT_FOLLOW_STALE_THRESHOLD", 1);
 // Bounds how many (user, tag) pairs a single sweep will touch — a
-// safety valve, not expected to bind under normal activity levels.
+// safety valve, not expected to bind under normal activity levels. Not
+// exposed as an env var: this is an operational safety cap, not a
+// fairness tuning knob.
 const MAX_IMPLICIT_FOLLOW_PAIRS = 20000;
 
 const isCredibleAccount = (user) => {
@@ -323,13 +342,32 @@ const recomputeImplicitHashtagFollows = async () => {
 
   const toCreate = [];
   const toRemove = [];
+  // Fix #1 (instrument now, tune later) — capped sample of the actual
+  // (authored, engaged) counts that crossed a threshold. A full log
+  // line per pair could be thousands of lines on a busy platform; a
+  // bounded sample still gives a real distribution to look at later
+  // without flooding logs on every run.
+  const createSampleLog = [];
+  const SAMPLE_LOG_SIZE = 20;
+
   for (const { userId, tag, authored, engaged } of signals.values()) {
     if (authored >= IMPLICIT_FOLLOW_POST_THRESHOLD || engaged >= IMPLICIT_FOLLOW_ENGAGEMENT_THRESHOLD) {
       toCreate.push({ userId, tag });
+      if (createSampleLog.length < SAMPLE_LOG_SIZE) {
+        createSampleLog.push(`${tag}(authored=${authored},engaged=${engaged})`);
+      }
     } else if (authored <= IMPLICIT_FOLLOW_STALE_THRESHOLD && engaged <= IMPLICIT_FOLLOW_STALE_THRESHOLD) {
       toRemove.push({ userId, tag });
     }
     if (toCreate.length + toRemove.length >= MAX_IMPLICIT_FOLLOW_PAIRS) break;
+  }
+
+  if (createSampleLog.length) {
+    console.log(
+      `[IMPLICIT_FOLLOW_FLAG] ${toCreate.length} pair(s) crossed threshold ` +
+        `(postThreshold=${IMPLICIT_FOLLOW_POST_THRESHOLD}, engagementThreshold=${IMPLICIT_FOLLOW_ENGAGEMENT_THRESHOLD}). ` +
+        `Sample: ${createSampleLog.join(", ")}`,
+    );
   }
 
   const created = await bulkCreateImplicitFollows(toCreate);
