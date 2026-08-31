@@ -230,6 +230,32 @@ const userSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+
+    // For You ranking (see TRONITES_RANKING_FAIRNESS.md) — the score
+    // formula divides by follower count on every candidate, and doing
+    // that with Follow.countDocuments() per candidate is too slow for a
+    // ~600-post ranking pass. Denormalized here for O(1) reads and kept
+    // in sync at the point of follow/unfollow in followService.js
+    // (same $inc-at-the-edge pattern as Post.likesCount/repostsCount).
+    // Nightly reconciliation happens in jobs/reconcileFollowerCounts.js
+    // in case a crash mid-request ever leaves this drifted — same
+    // safety net roadmap 4.7 proposes for the other denormalized
+    // counters.
+    followersCount: {
+      type: Number,
+      default: 0,
+    },
+
+    // For You ranking — fraction of this user's likes/comments that come
+    // from "credible" accounts (age > 7d, has a username, not
+    // restricted, has followers of their own). Computed off the hot
+    // path by the nightly affinity job (jobs/computeForYouSignals.js)
+    // and read as a flat multiplier at rank time. Stubbed at 1.0 until
+    // there's observed gaming to defend against, per the fairness doc.
+    credibleRatio: {
+      type: Number,
+      default: 1,
+    },
   },
   { timestamps: true },
 );

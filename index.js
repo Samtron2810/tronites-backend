@@ -38,6 +38,7 @@ import errorHandler from "./middleware/errorHandler.js";
 import { cleanupAbandonedVideoShells } from "./jobs/cleanupAbandonedVideoShells.js";
 import { purgeDeletedAccounts } from "./jobs/purgeDeletedAccounts.js";
 import { flagRepeatOffenders } from "./jobs/flagRepeatOffenders.js";
+import { computeForYouSignals } from "./jobs/computeForYouSignals.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -188,6 +189,19 @@ const startServer = async () => {
     CLEANUP_INTERVAL_MS,
   );
 
+  // For You ranking maintenance — followersCount reconciliation +
+  // credibleRatio recompute (jobs/computeForYouSignals.js). Runs less
+  // often than the hourly sweeps above: credibleRatio is intentionally
+  // a slow-moving signal (TRONITES_RANKING_FAIRNESS.md calls it
+  // "nightly"), and follower-count drift only matters for ranking
+  // precision, not correctness of any user-facing count display.
+  const FOR_YOU_SIGNALS_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  computeForYouSignals();
+  const forYouSignalsInterval = setInterval(
+    computeForYouSignals,
+    FOR_YOU_SIGNALS_INTERVAL_MS,
+  );
+
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
   // up a second, unrelated http.Server and leave Socket.IO unreachable).
@@ -211,6 +225,7 @@ const startServer = async () => {
       clearInterval(cleanupInterval);
       clearInterval(purgeInterval);
       clearInterval(offenderInterval);
+      clearInterval(forYouSignalsInterval);
 
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see

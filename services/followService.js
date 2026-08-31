@@ -1,4 +1,5 @@
 import Follow from "../models/Follow.js";
+import User from "../models/User.js";
 
 // Centralizes all follow-relationship queries so controllers don't each
 // repeat their own Follow.find()/countDocuments() calls, and so the
@@ -54,6 +55,10 @@ export const listFollowingIds = async (userId) => {
 export const createFollowEdge = async (followerId, followingId) => {
   try {
     await Follow.create({ follower: followerId, following: followingId });
+    // Denormalized for For You ranking (see models/User.js followersCount).
+    // Best-effort: a crash between the two writes is caught by the
+    // nightly reconciliation job, not retried here.
+    await User.updateOne({ _id: followingId }, { $inc: { followersCount: 1 } });
     return true;
   } catch (err) {
     // Duplicate key = edge already exists (schema's unique index) — treat
@@ -66,7 +71,37 @@ export const createFollowEdge = async (followerId, followingId) => {
 // Remove the edge. Returns true if an edge was actually deleted.
 export const removeFollowEdge = async (followerId, followingId) => {
   const result = await Follow.deleteOne({ follower: followerId, following: followingId });
+  if (result.deletedCount > 0) {
+    await User.updateOne(
+      { _id: followingId, followersCount: { $gt: 0 } },
+      { $inc: { followersCount: -1 } },
+    );
+  }
   return result.deletedCount > 0;
+};
+
+// For You candidate sourcing (2nd-degree / "friends of follows"): given
+// the ids the viewer already follows, returns the ids THOSE people
+// follow, excluding anyone in `excludeIds` (viewer + already-followed +
+// self). Capped via `sampleSize` since a viewer following many active
+// accounts can fan out to a huge set — this only needs to be big enough
+// to sample candidates from, not exhaustive.
+export const listFriendsOfFollowsIds = async (followingIds, excludeIds, sampleSize = 300) => {
+  if (!followingIds.length) return [];
+  const edges = await Follow.find({ follower: { $in: followingIds } })
+    .select("following")
+    .limit(sampleSize)
+    .lean();
+  const exclude = new Set(excludeIds.map((id) => id.toString()));
+  const seen = new Set();
+  const result = [];
+  for (const e of edges) {
+    const id = e.following.toString();
+    if (exclude.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+  }
+  return result;
 };
 
 // Every follow edge involving a user, in either direction — used for

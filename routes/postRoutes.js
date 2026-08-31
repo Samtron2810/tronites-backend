@@ -7,6 +7,7 @@ import {
   createVideoPost,
   editPost,
   getFeedPosts,
+  getForYouFeed,
   getTrendingPosts,
   getTrendingHashtags,
   searchPosts,
@@ -103,6 +104,7 @@ router.put(
 );
 
 router.get("/feed", protect, validateQuery(paginationSchema), getFeedPosts);
+router.get("/for-you", protect, getForYouFeed);
 router.get("/trending", protect, getTrendingPosts);
 router.get("/trending-hashtags", protect, getTrendingHashtags);
 router.get("/search", protect, searchPosts);

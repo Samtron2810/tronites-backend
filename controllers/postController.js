@@ -25,6 +25,7 @@ import {
   getBlockedEitherWayIds,
   isBlockedEitherWay,
 } from "../services/blockService.js";
+import { getForYouCandidates } from "../services/forYouService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
 import {
   hasLiked,
@@ -763,6 +764,97 @@ export const getFeedPosts = async (req, res) => {
     res.status(500).json({
       message: error.message,
     });
+  }
+};
+
+// GET FOR YOU FEED
+//
+// Ranked, personalized feed — replaces Trending as Home's second tab
+// (see tab-architecture.html). Sources: followed + friends-of-follows +
+// trending, blended by computeForYouScore (services/forYouService.js),
+// which ranks on Bayesian-smoothed engagement RATE rather than raw
+// volume so audience size stops being the deciding factor (see
+// TRONITES_RANKING_FAIRNESS.md for the full worked proof). Following
+// stays untouched as the strictly-chronological, unranked tab.
+//
+// Not cached like getFeedPosts — the per-viewer candidate assembly
+// (2 extra population queries) is heavier, but affinity/exploration
+// slot content is meant to shift between loads more than a plain
+// following feed, so a 30s cache would mostly hide the personalization
+// this endpoint exists to provide. Revisit if load becomes a problem —
+// same getFeedCacheKey/getOrSetCache plumbing is right there if needed.
+export const getForYouFeed = async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
+    // Opaque cursor: comma-joined post ids already delivered, same
+    // exclude-what-you've-seen approach Trending uses for the same
+    // reason (a computed, unstored score can't back a DB cursor).
+    const rawExcludeIds = String(req.query.excludeIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const excludePostIds = rawExcludeIds.slice(0, 400);
+
+    const [blockedIds, mutedIds] = await Promise.all([
+      getBlockedEitherWayIds(req.user._id),
+      getMutedIds(req.user._id),
+    ]);
+    const excludeUserIds = [...blockedIds, ...mutedIds];
+
+    const { page, hasMore } = await getForYouCandidates({
+      viewerId: req.user._id,
+      excludeUserIds,
+      excludePostIds,
+      limit,
+    });
+
+    const postIds = page.map(({ post }) => post._id);
+    const quoteOfIds = page
+      .filter(({ post }) => post.quoteOf)
+      .map(({ post }) => post.quoteOf._id);
+    const allIds = [...postIds, ...quoteOfIds];
+    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+      getLikedPostIds(req.user._id, allIds),
+      getBookmarkedPostIds(req.user._id, allIds),
+      getRepostedPostIds(req.user._id, allIds),
+      getReactionSummaries("post", allIds),
+      getUserReactions(req.user._id, "post", allIds),
+    ]);
+
+    const formatQuoteOf = (quoteOfDoc) => ({
+      ...quoteOfDoc._doc,
+      isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+      isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
+    });
+
+    const formattedPosts = page.map(({ post, source }) => ({
+      ...post._doc,
+      isLiked: likedPostIds.has(post._id.toString()),
+      isBookmarked: bookmarkedPostIds.has(post._id.toString()),
+      isReposted: repostedPostIds.has(post._id.toString()),
+      isQuotePost: Boolean(post.quoteOf),
+      quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
+      reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+      myReaction: myReactions.get(post._id.toString()) || null,
+      // Lets the frontend render a subtle "why am I seeing this" badge
+      // (e.g. "From a friend of someone you follow") without a second
+      // lookup. Never shown for plain `followed` — that needs no
+      // explanation.
+      forYouSource: source,
+    }));
+
+    res.status(200).json({
+      posts: formattedPosts,
+      hasMore,
+      nextCursor: hasMore
+        ? [...excludePostIds, ...postIds.map((id) => id.toString())].join(",")
+        : null,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
 
