@@ -8,6 +8,7 @@ import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/soc
 import { getOrSetCache, invalidateCache, invalidateFeedCache } from "../utils/redis.js";
 import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { hasBlocked, isBlockedEitherWay } from "../services/blockService.js";
+import { getWhoToFollow } from "../services/suggestionService.js";
 import { autoPromoteIfMutual } from "../services/conversationService.js";
 import { toPublicUserDTO, toPrivateSelfDTO } from "../dtos/userDTO.js";
 import {
@@ -645,18 +646,13 @@ export const searchUsers = async (req, res) => {
         let totalUsers;
 
         if (query.length === 0) {
-          // Get the list of users the current user is already following
-          const followingIds = await listFollowingIds(req.user._id);
-          const excludeIds = [req.user._id, ...followingIds];
-
-          [matchedUsers, totalUsers] = await Promise.all([
-            User.find({ _id: { $nin: excludeIds } })
-              .select("name username bio profilePic")
-              .skip(skip)
-              .limit(limit)
-              .lean(),
-            User.countDocuments({ _id: { $nin: excludeIds } }),
-          ]);
+          // 2.2 — real "Who to follow" ranking (mutual follows, shared
+          // hashtag activity, recency, new-account boost) instead of
+          // the old arbitrary $nin scan. See services/suggestionService.js
+          // for the full scoring breakdown. This branch already returns
+          // the final page/hasMore shape, so it skips the shared
+          // matchedUsers -> users hydration below entirely.
+          return getWhoToFollow(req.user._id, { skip, limit });
         } else if (query.length < 2) {
           return { users: [], hasMore: false };
         } else {

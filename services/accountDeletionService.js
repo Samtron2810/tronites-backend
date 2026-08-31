@@ -19,6 +19,7 @@ import {
 import { removeAllFollowEdgesForUser } from "./followService.js";
 import { removeAllMuteEdgesForUser } from "./muteService.js";
 import { removeAllBlockEdgesForUser } from "./blockService.js";
+import { removeAllHashtagFollowsForUser } from "./hashtagFollowService.js";
 import { revokeAllSessions } from "../utils/tokens.js";
 
 // Grace window between a user confirming deletion (soft-delete,
@@ -118,6 +119,7 @@ export const hardDeleteAccount = async (userId) => {
   await removeAllFollowEdgesForUser(userId);
   await removeAllMuteEdgesForUser(userId);
   await removeAllBlockEdgesForUser(userId);
+  await removeAllHashtagFollowsForUser(userId);
   await removeAllReactionsForUser(userId);
 
   // ── Notifications: both directions (this user's own notification

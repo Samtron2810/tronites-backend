@@ -1,0 +1,225 @@
+import mongoose from "mongoose";
+import User from "../models/User.js";
+import Follow from "../models/Follow.js";
+import Post from "../models/Post.js";
+import { listFollowingIds } from "./followService.js";
+import { getBlockedEitherWayIds } from "./blockService.js";
+import { getMutedIds } from "./muteService.js";
+
+// 2.2 — Real "Who to follow". Replaces the old `searchUsers` empty-query
+// branch, which returned arbitrary non-followed users (effectively
+// random — see TRONITES_FEATURE_ROADMAP.md 2.2). Ranks candidates on:
+//
+//   1. Mutual-follow count  — how many accounts the viewer already
+//      follows also follow this candidate. The strongest signal:
+//      "people you trust already trust them."
+//   2. Shared hashtag engagement — candidate has recently posted with a
+//      hashtag the viewer has also recently posted or engaged with
+//      (liked/commented). Reuses Post.hashtags — no new tracking.
+//   3. Recency of activity — candidates who haven't posted in a long
+//      time are poor suggestions even if otherwise well-connected.
+//   4. New-to-Tronites boost — small bonus for accounts created
+//      recently, so genuinely new users get a fair shot at their first
+//      followers instead of only ever-more-followed accounts compounding.
+//
+// This also directly feeds For You's "interest" source is NOT this file
+// (that's HashtagFollow, 2.3) — this file is specifically about
+// candidate *people*, not candidate *posts*.
+
+const MUTUAL_WEIGHT = 3;
+const SHARED_HASHTAG_WEIGHT = 2;
+const RECENCY_WEIGHT = 1.5;
+const NEW_ACCOUNT_WEIGHT = 1;
+
+const RECENT_ACTIVITY_WINDOW_DAYS = 14;
+const NEW_ACCOUNT_WINDOW_DAYS = 14;
+const HASHTAG_SIGNAL_WINDOW_DAYS = 30;
+const CANDIDATE_POOL_SIZE = 300;
+
+// Hashtags the viewer has recently posted with — the "engaged with"
+// half (liked/commented posts carrying a tag) is deferred: Like/Comment
+// don't currently denormalize the target post's hashtags, and joining
+// through Post per like is expensive at this candidate-pool size for a
+// v1 signal. Authored hashtags alone is still a real, non-random signal
+// and matches what's cheaply available today.
+const getViewerRecentHashtags = async (viewerId) => {
+  const since = new Date(Date.now() - HASHTAG_SIGNAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const posts = await Post.find({
+    user: viewerId,
+    createdAt: { $gte: since },
+    hashtags: { $exists: true, $ne: [] },
+  })
+    .select("hashtags")
+    .limit(100)
+    .lean();
+  const tags = new Set();
+  for (const p of posts) for (const t of p.hashtags) tags.add(t);
+  return tags;
+};
+
+// For each candidate, how many of the viewer's own follows also follow
+// them. One aggregation over Follow rather than N per-candidate
+// queries.
+const getMutualFollowCounts = async (viewerFollowingIds, candidateIds) => {
+  if (!viewerFollowingIds.length || !candidateIds.length) return new Map();
+  const rows = await Follow.aggregate([
+    {
+      $match: {
+        follower: { $in: viewerFollowingIds.map((id) => new mongoose.Types.ObjectId(id)) },
+        following: { $in: candidateIds },
+      },
+    },
+    { $group: { _id: "$following", count: { $sum: 1 } } },
+  ]);
+  return new Map(rows.map((r) => [r._id.toString(), r.count]));
+};
+
+// Candidates' own most-recent post (for recency) + hashtags used in the
+// last HASHTAG_SIGNAL_WINDOW_DAYS (for shared-tag overlap). One query
+// covering both signals.
+const getCandidateActivity = async (candidateIds) => {
+  const since = new Date(Date.now() - HASHTAG_SIGNAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const posts = await Post.find({
+    user: { $in: candidateIds },
+    removedAt: null,
+  })
+    .select("user hashtags createdAt")
+    .sort({ createdAt: -1 })
+    .limit(CANDIDATE_POOL_SIZE * 5)
+    .lean();
+
+  const lastPostAt = new Map();
+  const hashtagsById = new Map();
+  for (const p of posts) {
+    const uid = p.user.toString();
+    if (!lastPostAt.has(uid)) lastPostAt.set(uid, p.createdAt);
+    if (p.createdAt >= since && p.hashtags?.length) {
+      const set = hashtagsById.get(uid) || new Set();
+      for (const t of p.hashtags) set.add(t);
+      hashtagsById.set(uid, set);
+    }
+  }
+  return { lastPostAt, hashtagsById };
+};
+
+// Returns ranked, populated candidate user docs (lean) for the empty-
+// query "who to follow" surface. Shape matches what searchUsers already
+// returns (name/username/bio/profilePic + followers id array) so the
+// Explore frontend needs zero changes.
+export const getWhoToFollow = async (viewerId, { skip = 0, limit = 10 } = {}) => {
+  const [followingIds, blockedIds, mutedIds] = await Promise.all([
+    listFollowingIds(viewerId),
+    getBlockedEitherWayIds(viewerId),
+    getMutedIds(viewerId),
+  ]);
+
+  const excludeIds = new Set([
+    viewerId.toString(),
+    ...followingIds,
+    ...blockedIds,
+    ...mutedIds,
+  ]);
+
+  // Candidate pool: recently-active accounts not already excluded.
+  // Pulling from Post authors (rather than all Users) biases toward
+  // accounts that have actually posted something — an account with zero
+  // posts is a weak "who to follow" suggestion regardless of how new it
+  // is.
+  const since = new Date(Date.now() - RECENT_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const recentAuthorIds = await Post.distinct("user", {
+    removedAt: null,
+    createdAt: { $gte: since },
+  });
+  const poolIds = recentAuthorIds
+    .map((id) => id.toString())
+    .filter((id) => !excludeIds.has(id));
+
+  // Cold-start fallback: brand-new platforms won't have 14 days of
+  // activity yet — fall back to any non-excluded user so the surface
+  // never renders empty on a fresh install.
+  let candidateIds = poolIds;
+  if (candidateIds.length < limit + skip) {
+    const fallback = await User.find({ _id: { $nin: [...excludeIds] } })
+      .select("_id")
+      .limit(CANDIDATE_POOL_SIZE)
+      .lean();
+    const fallbackIds = fallback.map((u) => u._id.toString());
+    candidateIds = [...new Set([...candidateIds, ...fallbackIds])];
+  }
+  candidateIds = candidateIds.slice(0, CANDIDATE_POOL_SIZE);
+
+  if (!candidateIds.length) return { users: [], hasMore: false };
+
+  const candidateObjectIds = candidateIds.map((id) => new mongoose.Types.ObjectId(id));
+
+  const [users, mutualCounts, { lastPostAt, hashtagsById }, viewerHashtags] =
+    await Promise.all([
+      User.find({ _id: { $in: candidateObjectIds } })
+        .select("name username bio profilePic createdAt")
+        .lean(),
+      getMutualFollowCounts(followingIds, candidateObjectIds),
+      getCandidateActivity(candidateIds),
+      getViewerRecentHashtags(viewerId),
+    ]);
+
+  const now = Date.now();
+  const scored = users.map((u) => {
+    const id = u._id.toString();
+    const mutual = mutualCounts.get(id) || 0;
+
+    const candidateTags = hashtagsById.get(id);
+    const sharedHashtags = candidateTags
+      ? [...candidateTags].filter((t) => viewerHashtags.has(t)).length
+      : 0;
+
+    const last = lastPostAt.get(id);
+    // 0..1, decaying linearly to 0 at the edge of the activity window —
+    // a candidate who posted today scores full recency credit, one who
+    // posted RECENT_ACTIVITY_WINDOW_DAYS ago scores ~0.
+    const recencyScore = last
+      ? Math.max(
+          0,
+          1 - (now - new Date(last).getTime()) / (RECENT_ACTIVITY_WINDOW_DAYS * 24 * 60 * 60 * 1000),
+        )
+      : 0;
+
+    const accountAgeDays = (now - new Date(u.createdAt).getTime()) / (24 * 60 * 60 * 1000);
+    const newAccountScore = accountAgeDays <= NEW_ACCOUNT_WINDOW_DAYS ? 1 : 0;
+
+    const score =
+      mutual * MUTUAL_WEIGHT +
+      sharedHashtags * SHARED_HASHTAG_WEIGHT +
+      recencyScore * RECENCY_WEIGHT +
+      newAccountScore * NEW_ACCOUNT_WEIGHT;
+
+    return { user: u, score, mutual };
+  });
+
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.user._id.toString().localeCompare(b.user._id.toString());
+  });
+
+  const page = scored.slice(skip, skip + limit);
+  const hasMore = scored.length > skip + limit;
+
+  return {
+    users: page.map(({ user, mutual }) => ({
+      _id: user._id,
+      name: user.name,
+      username: user.username,
+      bio: user.bio,
+      profilePic: user.profilePic,
+      // Not authoritative follow-state (searchUsers' non-empty branch
+      // still returns the real `followers` id array) — the empty-query
+      // "who to follow" list only ever shows non-followed candidates by
+      // construction, so this is always empty. Kept for shape parity
+      // with the frontend's `user.followers.includes(...)` check.
+      followers: [],
+      // Surfaced so the frontend CAN show "N mutual followers" — purely
+      // additive, ignored by any caller that doesn't read it.
+      mutualFollowersCount: mutual,
+    })),
+    hasMore,
+  };
+};

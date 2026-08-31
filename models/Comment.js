@@ -65,6 +65,9 @@ const commentSchema = new mongoose.Schema(
 commentSchema.index({ post: 1, createdAt: -1 });
 commentSchema.index({ user: 1 });
 commentSchema.index({ parentComment: 1, createdAt: 1 });
+// Bare createdAt — same reasoning as Like's, for the same
+// jobs/computeForYouSignals.js sweep.
+commentSchema.index({ createdAt: -1 });
 
 const Comment = mongoose.model("Comment", commentSchema);
 

@@ -2,6 +2,7 @@ import Post from "../models/Post.js";
 import User from "../models/User.js";
 import Follow from "../models/Follow.js";
 import { listFollowingIds, listFriendsOfFollowsIds } from "./followService.js";
+import { listFollowedHashtags } from "./hashtagFollowService.js";
 import { PUBLIC_ONLY_FILTER, feedVisibilityFilter } from "./postVisibilityService.js";
 
 // ── For You ranking ─────────────────────────────────────────────────
@@ -98,12 +99,18 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
     300,
   );
 
+  // 2.3 — interest source: posts carrying a hashtag the viewer follows,
+  // from authors not already covered by followed/fof. This is the
+  // signal SOURCE_WEIGHT.interest was defined for but had nothing to
+  // read from until HashtagFollow existed (see services/hashtagFollowService.js).
+  const followedTags = await listFollowedHashtags(viewerId);
+
   const baseFilter = {
     removedAt: null,
     createdAt: { $gte: since },
   };
 
-  const [followedPosts, fofPosts, trendingPosts] = await Promise.all([
+  const [followedPosts, fofPosts, interestPosts, trendingPosts] = await Promise.all([
     followedAuthorIds.length
       ? Post.find({
           ...baseFilter,
@@ -132,6 +139,21 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           .sort({ createdAt: -1 })
           .limit(MAX_CANDIDATES_PER_SOURCE)
       : [],
+    followedTags.length
+      ? Post.find({
+          ...baseFilter,
+          hashtags: { $in: followedTags },
+          user: { $nin: [...excludeAuthors, ...followedAuthorIds] },
+          ...PUBLIC_ONLY_FILTER, // interest is a discovery source — public only
+        })
+          .populate("user", "name username profilePic followersCount credibleRatio")
+          .populate({
+            path: "quoteOf",
+            populate: { path: "user", select: "name username profilePic" },
+          })
+          .sort({ createdAt: -1 })
+          .limit(MAX_CANDIDATES_PER_SOURCE)
+      : [],
     Post.find({
       ...baseFilter,
       user: { $nin: [...excludeAuthors, ...followedAuthorIds] },
@@ -149,6 +171,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
   const tagged = [
     ...followedPosts.map((post) => ({ post, source: "followed" })),
     ...fofPosts.map((post) => ({ post, source: "fof" })),
+    ...interestPosts.map((post) => ({ post, source: "interest" })),
     ...trendingPosts.map((post) => ({ post, source: "trending" })),
   ];
 

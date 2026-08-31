@@ -39,6 +39,12 @@ likeSchema.index({ user: 1, post: 1 }, { unique: true });
 likeSchema.index({ post: 1, createdAt: -1 });
 // Fast "posts liked by user X" lookups.
 likeSchema.index({ user: 1, createdAt: -1 });
+// Bare createdAt — jobs/computeForYouSignals.js's credibleRatio sweep
+// filters ONLY by a createdAt range (no post/user in the initial
+// aggregate stage), so it needs its own index rather than reusing
+// either compound one above, both of which lead with a field the sweep
+// doesn't filter on.
+likeSchema.index({ createdAt: -1 });
 
 const Like = mongoose.model("Like", likeSchema);
 

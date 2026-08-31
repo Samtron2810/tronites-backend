@@ -20,6 +20,8 @@ import {
   getPostById,
   deletePost,
   getPostsByHashtag,
+  toggleHashtagFollow,
+  getFollowedHashtags,
 } from "../controllers/postController.js";
 import { validate, validateQuery } from "../utils/validators.js";
 import {
@@ -114,6 +116,10 @@ router.get(
   validateQuery(paginationSchema),
   getPostsByHashtag,
 );
+// 2.3 — follow hashtags. Must stay above the trailing "/:id" catch-all
+// below, same reasoning as every other literal route in this block.
+router.get("/hashtag-follows", protect, getFollowedHashtags);
+router.put("/hashtag-follows/:tag", protect, toggleHashtagFollow);
 
 // Single-post fetch by id — kept below every other literal GET route
 // above (feed/trending/trending-hashtags/search/hashtag/bookmarks) so

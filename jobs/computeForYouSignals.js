@@ -30,6 +30,11 @@ const SIGNAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 // enough and keeps this job cheap.
 const ENGAGER_SAMPLE_SIZE = 200;
 
+// NOTE: the createdAt-range scans below (Like/Comment) are backed by
+// each model's bare `{ createdAt: -1 }` index — see models/Like.js and
+// models/Comment.js. Without it this sweep collection-scans both
+// collections every run.
+
 const isCredibleAccount = (user) => {
   if (!user) return false;
   if (user.banned) return false;

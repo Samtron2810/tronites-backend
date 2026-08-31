@@ -26,6 +26,12 @@ import {
   isBlockedEitherWay,
 } from "../services/blockService.js";
 import { getForYouCandidates } from "../services/forYouService.js";
+import {
+  isFollowingHashtag,
+  followHashtag,
+  unfollowHashtag,
+  listFollowedHashtags,
+} from "../services/hashtagFollowService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
 import {
   hasLiked,
@@ -1176,6 +1182,41 @@ export const getPostsByHashtag = async (req, res) => {
     }));
 
     res.status(200).json({ ...result, posts: formattedPosts });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// 2.3 — FOLLOW / UNFOLLOW HASHTAG
+//
+// Toggle endpoints (mirrors the like/bookmark/repost PUT-toggle pattern
+// elsewhere in this controller) rather than separate follow/unfollow
+// routes — one route, body-less, idempotent either direction. Tag is
+// normalized (trim/lowercase) the same way Post.hashtags are parsed, so
+// "#AfroBeats" and "afrobeats" resolve to the same edge.
+export const toggleHashtagFollow = async (req, res) => {
+  try {
+    const tag = String(req.params.tag || "").trim().toLowerCase();
+    if (!tag) return res.status(400).json({ message: "Hashtag is required" });
+
+    const alreadyFollowing = await isFollowingHashtag(req.user._id, tag);
+    if (alreadyFollowing) {
+      await unfollowHashtag(req.user._id, tag);
+      return res.status(200).json({ following: false, tag });
+    }
+    await followHashtag(req.user._id, tag);
+    return res.status(200).json({ following: true, tag });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// List the tags the current user follows — settings/hashtags page and
+// (indirectly) what powers For You's interest source.
+export const getFollowedHashtags = async (req, res) => {
+  try {
+    const tags = await listFollowedHashtags(req.user._id);
+    res.status(200).json({ tags });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
