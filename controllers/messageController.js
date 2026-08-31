@@ -967,21 +967,66 @@ export const searchMessages = async (req, res) => {
       return res.status(200).json({ messages: [], hasMore: false });
     }
 
-    const filter = {
+    const hasTextQuery = query.length >= 2;
+
+    // Typing a person's name/username in the search box is the more
+    // natural expectation ("find my chat with Sam") than typing exact
+    // words from a message body — regex against name/username (not
+    // $text, since these are short strings a partial/prefix match
+    // should hit) resolves any of the caller's OTHER participants whose
+    // name or username contains the query. Combined via $or with the
+    // existing $text body search below, so one search box covers both
+    // "who did I talk to" and "what did we say".
+    let nameMatchedUserIds = [];
+    if (hasTextQuery) {
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const nameMatches = await User.find({
+        $or: [
+          { name: { $regex: escaped, $options: "i" } },
+          { username: { $regex: escaped, $options: "i" } },
+        ],
+      }).select("_id");
+      nameMatchedUserIds = nameMatches.map((u) => u._id);
+    }
+
+    const baseFilter = {
       participants: currentUserId,
       removedAt: null,
-      ...(query.length >= 2 ? { $text: { $search: query } } : {}),
       ...(fromUserId ? { participants: { $all: [currentUserId, fromUserId] } } : {}),
       ...dateRangeFilter(startDate, endDate),
       ...hasMediaFilter(hasMedia),
     };
 
-    const hasTextQuery = query.length >= 2;
+    const filter = hasTextQuery
+      ? {
+          ...baseFilter,
+          $or: [
+            { $text: { $search: query } },
+            ...(nameMatchedUserIds.length
+              ? [
+                  {
+                    $and: [
+                      { participants: { $in: nameMatchedUserIds } },
+                      { participants: currentUserId },
+                    ],
+                  },
+                ]
+              : []),
+          ],
+        }
+      : baseFilter;
+
     const MAX_SEARCH_CANDIDATES = 500;
+    // $or with $text can't be scored via $meta("textScore") on every
+    // branch reliably across driver versions, so name-matched results
+    // (which have no textScore) sort by recency alongside body-matched
+    // ones — sorting purely by createdAt whenever the query also
+    // matched a person keeps both kinds of hits in one sane order
+    // rather than crashing on a missing score field.
     const candidates = await Message.find(filter)
       .populate("sender", "name username profilePic")
       .populate("receiver", "name username profilePic")
-      .sort(hasTextQuery ? { score: { $meta: "textScore" }, _id: -1 } : { createdAt: -1, _id: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(MAX_SEARCH_CANDIDATES);
 
     // Cursor is always time-based here (not score-based like posts/
