@@ -33,6 +33,11 @@ import {
   listExplicitlyFollowedHashtags,
 } from "../services/hashtagFollowService.js";
 import { checkEngagementVelocity } from "../services/engagementVelocityService.js";
+import {
+  parseSearchFilters,
+  dateRangeFilter,
+  hasMediaFilter,
+} from "../services/searchService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
 import {
   hasLiked,
@@ -1267,7 +1272,20 @@ export const searchPosts = async (req, res) => {
     const cursorId = req.query.afterId || null;
     const hasCursor = cursorScore !== null && cursorId && !Number.isNaN(cursorScore);
 
-    if (query.length < 2) {
+    // Filters (from user / date range / has-media / min-likes) can
+    // stand alone or combine with a text query — an empty query with at
+    // least one filter is still a valid search ("just show me @sam's
+    // posts with media"), so only bail out when there's truly nothing
+    // to search on.
+    const { fromUserId, startDate, endDate, hasMedia, minLikes } =
+      await parseSearchFilters(req.query);
+    const hasFilters =
+      fromUserId || startDate || endDate || hasMedia !== null || minLikes !== null;
+
+    if (query.length > 0 && query.length < 2) {
+      return res.status(200).json({ posts: [], hasMore: false });
+    }
+    if (query.length === 0 && !hasFilters) {
       return res.status(200).json({ posts: [], hasMore: false });
     }
 
@@ -1279,13 +1297,31 @@ export const searchPosts = async (req, res) => {
     // same as getFeedPosts's per-viewer nature but simpler since search
     // results are inherently low-traffic per unique query.
     const blockedIds = await getBlockedEitherWayIds(req.user._id);
+    // `user` gets built separately rather than spread twice: a plain
+    // block-exclusion ($nin) and an exact from-user match ($eq via a
+    // bare ObjectId) both target the same `user` key, so the later
+    // spread would otherwise silently clobber the earlier one instead
+    // of combining them. Explicit "user searched for X and X isn't
+    // blocked" -> impossible-id filter, same as the unknown-username
+    // case in parseSearchFilters, so it correctly returns zero results
+    // rather than falling back to "any non-blocked user".
+    const userFilter = fromUserId
+      ? blockedIds.has(fromUserId.toString?.() ?? fromUserId)
+        ? { user: "000000000000000000000000" }
+        : { user: fromUserId }
+      : blockedIds.size
+        ? { user: { $nin: [...blockedIds] } }
+        : {};
     const filter = {
-      $text: { $search: query },
+      ...(query.length >= 2 ? { $text: { $search: query } } : {}),
       removedAt: null, // moderator soft-takedown — see reportService
       // Content search is a global discovery surface — public posts
       // only (and results can't vary by the searcher's follow graph).
       ...PUBLIC_ONLY_FILTER,
-      ...(blockedIds.size ? { user: { $nin: [...blockedIds] } } : {}),
+      ...userFilter,
+      ...dateRangeFilter(startDate, endDate),
+      ...hasMediaFilter(hasMedia),
+      ...(minLikes !== null ? { likesCount: { $gte: minLikes } } : {}),
     };
 
     // Mongo can't apply a $lt/$or filter against the $meta-projected
@@ -1298,20 +1334,36 @@ export const searchPosts = async (req, res) => {
     // than paginating past it — acceptable since search result sets this
     // deep are not a realistic user journey.
     const MAX_SEARCH_CANDIDATES = 500;
-    const candidates = await Post.find(filter, { score: { $meta: "textScore" } })
+    // Filters-only search (no $text) has no textScore to sort/project
+    // by — falls back to newest-first, same convention as every other
+    // non-ranked listing (feed/hashtag/bookmarks).
+    const hasTextQuery = query.length >= 2;
+    const candidates = await Post.find(
+      filter,
+      hasTextQuery ? { score: { $meta: "textScore" } } : {},
+    )
       .populate("user", "name username profilePic")
       .populate({
         path: "quoteOf",
         populate: { path: "user", select: "name username profilePic" },
       })
-      .sort({ score: { $meta: "textScore" }, _id: -1 })
+      .sort(hasTextQuery ? { score: { $meta: "textScore" }, _id: -1 } : { createdAt: -1, _id: -1 })
       .limit(MAX_SEARCH_CANDIDATES);
 
+    // Filters-only pagination cursors on (createdAt, _id) instead of
+    // (score, _id) — mirrors getFeedPosts/getPostsByHashtag's plain
+    // time cursor since there's no textScore to rank by here.
     const filtered = hasCursor
       ? candidates.filter((p) => {
-          const s = p._doc.score;
-          if (s < cursorScore) return true;
-          if (s === cursorScore) return p._id.toString() < cursorId;
+          if (hasTextQuery) {
+            const s = p._doc.score;
+            if (s < cursorScore) return true;
+            if (s === cursorScore) return p._id.toString() < cursorId;
+            return false;
+          }
+          const t = p.createdAt.getTime();
+          if (t < cursorScore) return true;
+          if (t === cursorScore) return p._id.toString() < cursorId;
           return false;
         })
       : candidates;
@@ -1354,7 +1406,12 @@ export const searchPosts = async (req, res) => {
       posts: formattedPosts,
       hasMore,
       nextCursor: hasMore
-        ? { afterScore: posts[posts.length - 1]._doc.score, afterId: posts[posts.length - 1]._id }
+        ? {
+            afterScore: hasTextQuery
+              ? posts[posts.length - 1]._doc.score
+              : posts[posts.length - 1].createdAt.getTime(),
+            afterId: posts[posts.length - 1]._id,
+          }
         : null,
     });
   } catch (error) {

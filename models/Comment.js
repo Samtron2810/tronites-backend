@@ -68,6 +68,11 @@ commentSchema.index({ parentComment: 1, createdAt: 1 });
 // Bare createdAt — same reasoning as Like's, for the same
 // jobs/computeForYouSignals.js sweep.
 commentSchema.index({ createdAt: -1 });
+// Full-text search over comment bodies (Search upgrades — "search
+// comments"). Same reasoning as Post.text's index: $text gives relevance
+// scoring for free and stays indexed as the collection grows, unlike a
+// regex scan.
+commentSchema.index({ text: "text" });
 
 const Comment = mongoose.model("Comment", commentSchema);
 

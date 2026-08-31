@@ -20,6 +20,11 @@ import {
   evaluateSendPermission,
 } from "../services/conversationService.js";
 import {
+  parseSearchFilters,
+  dateRangeFilter,
+  hasMediaFilter,
+} from "../services/searchService.js";
+import {
   getReactionSummaries,
   getUserReactions,
   getUserReaction,
@@ -929,6 +934,90 @@ export const respondToRequest = async (req, res) => {
     res.status(200).json({ status: conversation.status });
   } catch (error) {
     console.error("RESPOND TO REQUEST ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// SEARCH MESSAGES — full-text search over the CALLER's own message
+// history only. `participants: currentUserId` is mandatory and always
+// AND'd in first, so this can never leak another pair's conversation
+// regardless of what filters are passed — a $text search with no
+// participants scoping would otherwise search every message in the
+// database. `from` here means "the other participant in the thread",
+// resolved to a userId and required to be a conversation partner (not
+// an arbitrary global user filter like posts/comments' `from`).
+export const searchMessages = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const query = String(req.query.q || "").trim();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 15, 1), 30);
+    const cursorTime =
+      req.query.afterTime !== undefined ? new Date(req.query.afterTime) : null;
+    const cursorId = req.query.afterId || null;
+    const hasCursor =
+      cursorTime && !Number.isNaN(cursorTime.getTime()) && cursorId;
+
+    const { fromUserId, startDate, endDate, hasMedia } = await parseSearchFilters(req.query);
+    const hasFilters = fromUserId || startDate || endDate || hasMedia !== null;
+
+    if (query.length > 0 && query.length < 2) {
+      return res.status(200).json({ messages: [], hasMore: false });
+    }
+    if (query.length === 0 && !hasFilters) {
+      return res.status(200).json({ messages: [], hasMore: false });
+    }
+
+    const filter = {
+      participants: currentUserId,
+      removedAt: null,
+      ...(query.length >= 2 ? { $text: { $search: query } } : {}),
+      ...(fromUserId ? { participants: { $all: [currentUserId, fromUserId] } } : {}),
+      ...dateRangeFilter(startDate, endDate),
+      ...hasMediaFilter(hasMedia),
+    };
+
+    const hasTextQuery = query.length >= 2;
+    const MAX_SEARCH_CANDIDATES = 500;
+    const candidates = await Message.find(filter)
+      .populate("sender", "name username profilePic")
+      .populate("receiver", "name username profilePic")
+      .sort(hasTextQuery ? { score: { $meta: "textScore" }, _id: -1 } : { createdAt: -1, _id: -1 })
+      .limit(MAX_SEARCH_CANDIDATES);
+
+    // Cursor is always time-based here (not score-based like posts/
+    // comments) — chat search results read best in chronological
+    // order per thread, and mixing relevance-order with pagination is
+    // more confusing than useful for a "find that message" use case.
+    const filtered = hasCursor
+      ? candidates.filter((m) => {
+          const t = m.createdAt.getTime();
+          const ct = cursorTime.getTime();
+          if (t < ct) return true;
+          if (t === ct) return m._id.toString() < cursorId;
+          return false;
+        })
+      : candidates;
+
+    const hasMore = filtered.length > limit;
+    const messages = hasMore ? filtered.slice(0, limit) : filtered;
+
+    const formatted = messages.map((m) => ({
+      ...m._doc,
+      otherUser:
+        m.sender._id.toString() === currentUserId.toString() ? m.receiver : m.sender,
+    }));
+
+    res.status(200).json({
+      messages: formatted,
+      hasMore,
+      nextCursor: hasMore
+        ? {
+            afterTime: messages[messages.length - 1].createdAt.toISOString(),
+            afterId: messages[messages.length - 1]._id,
+          }
+        : null,
+    });
+  } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };

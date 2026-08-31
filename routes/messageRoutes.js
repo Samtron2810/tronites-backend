@@ -24,6 +24,7 @@ import {
   sendVideoMessage,
   createMessageVoiceUploadSignature,
   sendVoiceMessage,
+  searchMessages,
 } from "../controllers/messageController.js";
 
 const router = express.Router();
@@ -34,6 +35,9 @@ router.get(
   validateQuery(paginationSchema),
   getConversations,
 );
+// Above the dynamic "/:userId" GET below — same literal-route-before-
+// param reasoning as postRoutes.js's "/search".
+router.get("/search", protect, searchMessages);
 router.get("/requests", protect, getMessageRequests);
 router.put("/requests/:userId", protect, respondToRequest);
 

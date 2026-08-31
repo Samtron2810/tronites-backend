@@ -9,6 +9,7 @@ import { isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockSer
 import { canViewPost } from "../services/postVisibilityService.js";
 import { hasMuted } from "../services/muteService.js";
 import { checkEngagementVelocity } from "../services/engagementVelocityService.js";
+import { parseSearchFilters, dateRangeFilter } from "../services/searchService.js";
 import {
   getLikedCommentIds,
   createCommentLikeEdge,
@@ -457,5 +458,121 @@ export const getReplies = async (req, res) => {
     res.status(500).json({
       message: error.message,
     });
+  }
+};
+
+// SEARCH COMMENTS — content search over comment bodies, mirrors
+// postController.searchPosts's shape/pagination (cursor on textScore,
+// public-post-only scope, block-list exclusion) so Explore's "Comments"
+// tab can reuse the same client-side pagination code. Only comments on
+// PUBLIC posts are searchable (a followers-only/only-me post's comments
+// are exactly as hidden from global search as the post itself), and
+// `mine=true` narrows further to just the caller's own comments
+// regardless of post visibility (searching your own words back should
+// always work, even on your own only-me posts).
+export const searchComments = async (req, res) => {
+  try {
+    const query = String(req.query.q || "").trim();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 30);
+    const cursorScore =
+      req.query.afterScore !== undefined ? parseFloat(req.query.afterScore) : null;
+    const cursorId = req.query.afterId || null;
+    const hasCursor = cursorScore !== null && cursorId && !Number.isNaN(cursorScore);
+    const mineOnly = req.query.mine === "true";
+
+    const { fromUserId, startDate, endDate, minLikes } = await parseSearchFilters(req.query);
+    const hasFilters = fromUserId || startDate || endDate || minLikes !== null;
+
+    if (query.length > 0 && query.length < 2) {
+      return res.status(200).json({ comments: [], hasMore: false });
+    }
+    if (query.length === 0 && !hasFilters && !mineOnly) {
+      return res.status(200).json({ comments: [], hasMore: false });
+    }
+
+    const blockedIds = await getBlockedEitherWayIds(req.user._id);
+    const userFilter = mineOnly
+      ? { user: req.user._id }
+      : fromUserId
+        ? { user: fromUserId }
+        : blockedIds.size
+          ? { user: { $nin: [...blockedIds] } }
+          : {};
+
+    const hasTextQuery = query.length >= 2;
+    const filter = {
+      ...(hasTextQuery ? { $text: { $search: query } } : {}),
+      removedAt: null, // moderator soft-takedown — see reportService
+      ...userFilter,
+      ...dateRangeFilter(startDate, endDate),
+      ...(minLikes !== null ? { likesCount: { $gte: minLikes } } : {}),
+    };
+
+    const MAX_SEARCH_CANDIDATES = 500;
+    let candidates = await Comment.find(
+      filter,
+      hasTextQuery ? { score: { $meta: "textScore" } } : {},
+    )
+      .populate("user", "name username profilePic")
+      .populate("post", "user privacy removedAt")
+      .sort(hasTextQuery ? { score: { $meta: "textScore" }, _id: -1 } : { createdAt: -1, _id: -1 })
+      .limit(MAX_SEARCH_CANDIDATES);
+
+    // Post-visibility gate applied after the DB query (same reasoning
+    // as everywhere else canViewPost is used: privacy depends on the
+    // follow graph, which isn't cheaply expressible as a single Mongo
+    // filter). Skipped entirely for mineOnly since your own comments on
+    // your own only-me post should still be findable by you.
+    if (!mineOnly) {
+      const visible = [];
+      for (const c of candidates) {
+        if (!c.post || c.post.removedAt) continue;
+        if (!(await canViewPost(req.user._id, c.post))) continue;
+        visible.push(c);
+      }
+      candidates = visible;
+    } else {
+      candidates = candidates.filter((c) => c.post && !c.post.removedAt);
+    }
+
+    const filtered = hasCursor
+      ? candidates.filter((c) => {
+          if (hasTextQuery) {
+            const s = c._doc.score;
+            if (s < cursorScore) return true;
+            if (s === cursorScore) return c._id.toString() < cursorId;
+            return false;
+          }
+          const t = c.createdAt.getTime();
+          if (t < cursorScore) return true;
+          if (t === cursorScore) return c._id.toString() < cursorId;
+          return false;
+        })
+      : candidates;
+
+    const hasMore = filtered.length > limit;
+    const comments = hasMore ? filtered.slice(0, limit) : filtered;
+
+    const likedCommentIds = await getLikedCommentIds(req.user._id, comments.map((c) => c._id));
+    const formattedComments = comments.map((c) => ({
+      ...c._doc,
+      isLiked: likedCommentIds.has(c._id.toString()),
+      postId: c.post._id,
+    }));
+
+    res.status(200).json({
+      comments: formattedComments,
+      hasMore,
+      nextCursor: hasMore
+        ? {
+            afterScore: hasTextQuery
+              ? comments[comments.length - 1]._doc.score
+              : comments[comments.length - 1].createdAt.getTime(),
+            afterId: comments[comments.length - 1]._id,
+          }
+        : null,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };

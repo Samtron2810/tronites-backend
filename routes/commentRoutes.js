@@ -11,9 +11,14 @@ import {
   getComments,
   deleteComment,
   getReplies,
+  searchComments,
 } from "../controllers/commentController.js";
 
 const router = express.Router();
+
+// Above the "/:id" catch-all GETs below — same literal-route-before-
+// dynamic-param reasoning as postRoutes.js's "/search".
+router.get("/search", protect, searchComments);
 
 router.post(
   "/:id",

@@ -128,6 +128,11 @@ messageSchema.index({ receiver: 1, read: 1 });
 // Message (participants) instead of only via the sender/receiver $or
 // used today — not queried anywhere yet, but cheap to have ready.
 messageSchema.index({ participants: 1 });
+// Full-text search over message bodies (Search upgrades — "search your
+// own messages"). Combined at query time with a `participants` filter
+// so a user can only ever full-text search conversations they're
+// actually part of — same reasoning as Post.text/Comment.text's index.
+messageSchema.index({ text: "text" });
 
 messageSchema.pre("validate", async function () {
   if (this.sender && this.receiver) {
