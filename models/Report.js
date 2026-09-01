@@ -6,10 +6,36 @@ import mongoose from "mongoose";
 // createdAt, instead of merging four collections client-side.
 const reportSchema = new mongoose.Schema(
   {
+    // Null for system-generated reports (Phase 7 pre-moderation — see
+    // services/preModerationService.js). Every human-submitted report
+    // still requires a reporter; only the automated heuristics path is
+    // allowed to omit one, so `required` can't just be dropped — it's
+    // enforced conditionally below instead.
     reporter: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
+      required: function () {
+        return !this.system;
+      },
+    },
+
+    // Phase 7 — true when this row was raised by automated pre-moderation
+    // heuristics (utils/moderationHeuristics.js) rather than a human
+    // report. Lets the queue/UI badge it distinctly ("Flagged by system")
+    // and lets resolveReport's audit trail distinguish false-positive
+    // tuning from real user complaints.
+    system: {
+      type: Boolean,
+      default: false,
+    },
+
+    // Which heuristic(s) fired, e.g. ["slur_list", "link_spam"]. Empty
+    // for human reports. Kept as free-form strings (not an enum) so new
+    // heuristics don't require a schema migration.
+    signals: {
+      type: [String],
+      default: [],
     },
 
     // What kind of thing is being reported. "user" covers profile-level
@@ -104,8 +130,19 @@ const reportSchema = new mongoose.Schema(
 // Moderation queue lists open reports newest-first.
 reportSchema.index({ status: 1, createdAt: -1 });
 // "has this reporter already flagged this exact object" — used to make
-// reporting idempotent (see reportService).
-reportSchema.index({ reporter: 1, targetType: 1, targetId: 1 }, { unique: true });
+// reporting idempotent (see reportService). Partial filter excludes
+// system reports (reporter: null) so multiple automated flags against
+// different targets never collide on the unique index.
+reportSchema.index(
+  { reporter: 1, targetType: 1, targetId: 1 },
+  { unique: true, partialFilterExpression: { reporter: { $type: "objectId" } } },
+);
+// System reports are deduped per-target instead (see
+// preModerationService.flagContent) — one open system report per object.
+reportSchema.index(
+  { system: 1, targetType: 1, targetId: 1 },
+  { unique: true, partialFilterExpression: { system: true } },
+);
 // "how many/which reports exist against this owner" — surfaces repeat
 // offenders to a moderator without a full collection scan.
 reportSchema.index({ targetOwner: 1, createdAt: -1 });

@@ -375,6 +375,11 @@ export const warnUserSchema = z.object({
   reportId: z.string().optional(),
 });
 
+// Phase 7 (roadmap 3.6) — moderator notes.
+export const addModeratorNoteSchema = z.object({
+  body: z.string().trim().min(1).max(1000),
+});
+
 // Phase 5 — granular permission editing. Whole-array replacement (not
 // add/remove deltas): simpler client, and the confirm modal always sends
 // the full intended set. Enum mirrors models/User.js PERMISSIONS — keep

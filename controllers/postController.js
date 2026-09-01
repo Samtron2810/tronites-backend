@@ -26,6 +26,7 @@ import {
   isBlockedEitherWay,
 } from "../services/blockService.js";
 import { getForYouCandidates } from "../services/forYouService.js";
+import { runPreModeration } from "../services/preModerationService.js";
 import {
   isExplicitlyFollowingHashtag,
   followHashtag,
@@ -196,6 +197,17 @@ export const createPost = async (req, res) => {
     // Invalidate feed cache for author's followers
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
+
+    // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass. Never
+    // awaited: a slow or failed heuristics check must not delay the
+    // response the post has already earned.
+    runPreModeration({
+      targetType: "post",
+      target: post,
+      author: req.user,
+    }).catch((err) =>
+      console.error("Pre-moderation dispatch failed:", err.message),
+    );
 
     // Send response FIRST before real-time socket emissions
     res.status(201).json(populatedPost);

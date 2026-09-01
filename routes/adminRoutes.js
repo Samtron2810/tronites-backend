@@ -12,6 +12,7 @@ import {
   warnUserSchema,
   updatePermissionsSchema,
   bulkUsersSchema,
+  addModeratorNoteSchema,
 } from "../utils/validators.js";
 import {
   listUsersForAdmin,
@@ -24,6 +25,12 @@ import {
   bulkUpdateUsers,
   listAuditLogs,
 } from "../controllers/adminController.js";
+import {
+  addModeratorNoteHandler,
+  listModeratorNotesHandler,
+  deleteModeratorNoteHandler,
+  getUserCaseHistoryHandler,
+} from "../controllers/moderatorNoteController.js";
 
 const router = express.Router();
 
@@ -104,6 +111,40 @@ router.post(
   requireAdmin,
   validate(bulkUsersSchema),
   bulkUpdateUsers,
+);
+
+// Phase 7 (roadmap 3.6) — moderator notes + one-screen case history.
+// Same manage_users gate as suspend/unrestrict: notes are a moderation
+// tool, not a plain-user-reachable surface. Deleting is scoped inside
+// the controller (own notes only, unless admin).
+router.get(
+  "/users/:id/case-history",
+  protect,
+  requireModerator,
+  requirePermission("manage_users"),
+  getUserCaseHistoryHandler,
+);
+router.get(
+  "/users/:id/notes",
+  protect,
+  requireModerator,
+  requirePermission("manage_users"),
+  listModeratorNotesHandler,
+);
+router.post(
+  "/users/:id/notes",
+  protect,
+  requireModerator,
+  requirePermission("manage_users"),
+  validate(addModeratorNoteSchema),
+  addModeratorNoteHandler,
+);
+router.delete(
+  "/users/:id/notes/:noteId",
+  protect,
+  requireModerator,
+  requirePermission("manage_users"),
+  deleteModeratorNoteHandler,
 );
 
 export default router;
