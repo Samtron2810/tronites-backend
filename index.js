@@ -20,6 +20,7 @@ import appealRoutes from "./routes/appealRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import webhookRoutes from "./routes/webhookRoutes.js";
+import pushRoutes from "./routes/pushRoutes.js";
 import {
   app,
   server,
@@ -105,6 +106,7 @@ app.use("/api/reports", reportRoutes);
 app.use("/api/appeals", appealRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/search", searchRoutes);
+app.use("/api/push", pushRoutes);
 app.get("/", (req, res) => {
   res.send("API Running...");
 });

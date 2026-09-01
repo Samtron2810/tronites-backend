@@ -343,6 +343,23 @@ export const presenceVisibilitySchema = z.object({
   presenceVisibility: z.enum(["everyone", "followers", "nobody"]),
 });
 
+// 4.5 — Web Push
+export const pushSubscribeSchema = z.object({
+  endpoint: z.string().url(),
+  keys: z.object({
+    p256dh: z.string().min(1),
+    auth: z.string().min(1),
+  }),
+});
+
+export const pushUnsubscribeSchema = z.object({
+  endpoint: z.string().url(),
+});
+
+export const pushPrefsSchema = z.object({
+  pushPrefs: z.record(z.string(), z.boolean()),
+});
+
 // ─── Admin ──────────────────────────────────────────────────────────────────
 
 export const updateRoleSchema = z.object({

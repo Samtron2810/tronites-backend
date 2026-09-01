@@ -9,6 +9,7 @@ import getAllowedOrigins from "../config/allowedOrigins.js";
 import User from "../models/User.js";
 import { isFollowing, listFollowingIds } from "../services/followService.js";
 import { getBlockedEitherWayIds } from "../services/blockService.js";
+import { pushForNotification, pushForMessage } from "../services/pushService.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -156,6 +157,19 @@ export const getReceiverSocketIds = (receiverId) => {
 export const emitToUser = (userId, event, payload) => {
   if (!userId) return;
   io.to(`user_${userId.toString()}`).emit(event, payload);
+
+  // 4.5 — Web Push fan-out. Every notification-creation site across the
+  // controllers already calls emitToUser(recipientId, "newNotification",
+  // populatedNotif) for the live-socket case, and every message-send
+  // site already calls emitToUser(receiverId, "receiveMessage", ...) —
+  // hooking in here means push reaches both without touching 14 call
+  // sites individually. Fire-and-forget: a push failure must never
+  // affect the socket emit or the request that triggered it.
+  if (event === "newNotification") {
+    pushForNotification(userId, payload).catch(() => {});
+  } else if (event === "receiveMessage") {
+    pushForMessage(userId, payload).catch(() => {});
+  }
 };
 
 // --- Followers room: O(1) fan-out for "new post" events ---

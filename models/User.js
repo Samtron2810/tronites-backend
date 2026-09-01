@@ -133,6 +133,24 @@ const userSchema = new mongoose.Schema(
       default: "everyone",
     },
 
+    // 4.5 — per-type Web Push toggles. Same shape as the "type" enum on
+    // Notification.js so pushService can do `pushPrefs[type] !== false`
+    // as a single check per fan-out. Defaults all true — opt-out, not
+    // opt-in, so existing users keep getting notified once they enable
+    // push at all (permission itself is the real opt-in gate).
+    pushPrefs: {
+      like: { type: Boolean, default: true },
+      comment: { type: Boolean, default: true },
+      follow: { type: Boolean, default: true },
+      mention: { type: Boolean, default: true },
+      reply: { type: Boolean, default: true },
+      commentLike: { type: Boolean, default: true },
+      repost: { type: Boolean, default: true },
+      quote: { type: Boolean, default: true },
+      reaction: { type: Boolean, default: true },
+      message: { type: Boolean, default: true },
+    },
+
     // Gates the moderation queue (list/resolve reports). Only ever set
     // directly in the database or by an existing admin via a future
     // admin tool — there is no self-service endpoint that changes this,
