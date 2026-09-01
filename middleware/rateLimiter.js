@@ -230,3 +230,19 @@ export const reportLimiter = rateLimit({
   legacyHeaders: false,
   store: makeStore("rl:report:"),
 });
+
+// Appeal limiter — submission and status-check both take a raw password
+// guess with no session behind them (see appealController), so this
+// needs the same brute-force protection as authLimiter. Its own bucket
+// keeps a burst of real login attempts from eating a restricted user's
+// appeal budget and vice versa.
+export const appealLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: {
+    message: "Too many appeal attempts, please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: makeStore("rl:appeal:"),
+});

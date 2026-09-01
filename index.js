@@ -16,6 +16,7 @@ import userRoutes from "./routes/userRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
 import reportRoutes from "./routes/reportRoutes.js";
+import appealRoutes from "./routes/appealRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import webhookRoutes from "./routes/webhookRoutes.js";
@@ -101,6 +102,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/appeals", appealRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/search", searchRoutes);
 app.get("/", (req, res) => {

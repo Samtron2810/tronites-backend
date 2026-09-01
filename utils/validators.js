@@ -424,6 +424,29 @@ export const bulkUsersSchema = z
     }
   });
 
+// Phase 3.1 — appeals. Submission re-proves account ownership the same
+// way loginSchema does (a restricted account never has a valid session to
+// authenticate the request with instead — see appealService).
+export const submitAppealSchema = z.object({
+  identifier: z.string().trim().min(1, "Email or username is required"),
+  password: z.string().min(1, "Password is required"),
+  statement: z
+    .string()
+    .trim()
+    .min(10, "Please explain your appeal in a bit more detail")
+    .max(1000, "Appeal statement is too long"),
+});
+
+export const appealStatusSchema = z.object({
+  identifier: z.string().trim().min(1, "Email or username is required"),
+  password: z.string().min(1, "Password is required"),
+});
+
+export const resolveAppealSchema = z.object({
+  decision: z.enum(["granted", "denied"]),
+  note: z.string().trim().max(500).optional().default(""),
+});
+
 // ─── Middleware factory ──────────────────────────────────────────────────────
 
 export const validate = (schema) => (req, res, next) => {
