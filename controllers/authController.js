@@ -321,6 +321,13 @@ export const loginUser = async (req, res) => {
     const ip = req.ip || "";
     const session = await issueSession(res, user._id, { userAgent, ip });
 
+    // Stamp lastLoginAt — used by verification eligibility check (must
+    // have logged in within 6 months). Fire-and-forget: a timestamp
+    // write failure must never break the login response.
+    User.findByIdAndUpdate(user._id, { $set: { lastLoginAt: new Date() } }).catch(
+      (e) => console.error("[login] failed to stamp lastLoginAt:", e.message),
+    );
+
     // Fire-and-forget: never let an email hiccup block or fail the
     // login response itself.
     maybeSendNewDeviceAlert({

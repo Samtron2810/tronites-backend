@@ -11,17 +11,14 @@ import {
 import {
   submitVerificationRequestHandler,
   listMyVerificationRequestsHandler,
+  checkEligibilityHandler,
   listVerificationRequestsHandler,
   resolveVerificationRequestHandler,
-  initiateKycHandler,
 } from "../controllers/verificationController.js";
 
 const router = express.Router();
 
-// Applicant-facing — unlike Appeal these are always `protect`-gated: a
-// user applying for a badge is by definition not a restricted account
-// with no session, so there's no need for Appeal's credential-reproof
-// workaround.
+// Applicant-facing
 router.post(
   "/",
   protect,
@@ -29,14 +26,9 @@ router.post(
   submitVerificationRequestHandler,
 );
 router.get("/mine", protect, listMyVerificationRequestsHandler);
+router.get("/eligibility", protect, checkEligibilityHandler);
 
-// KYC initiation — consent + attempt counter. protect-gated.
-// Called just before the Dojah widget launches, after user ticks consent.
-router.post("/kyc/initiate", protect, initiateKycHandler);
-
-// Reviewer queue — same manage_verification permission as the direct
-// grant/revoke endpoints in adminRoutes.js, since approving a request is
-// exactly "grant" with a paper trail.
+// Reviewer queue
 router.get(
   "/",
   protect,

@@ -62,6 +62,13 @@ export const toPrivateSelfDTO = (user) => {
     // another user last renamed is nobody else's business.
     usernameChangedAt: u.usernameChangedAt || null,
     nameChangedAt: u.nameChangedAt || null,
+    // Account visibility — client needs this to show/hide the "must be
+    // public" eligibility gate in VerificationSection.
+    isPrivate: Boolean(u.isPrivate),
+    // Last login timestamp — surfaced to the client so VerificationSection
+    // can compute the 6-month activity requirement client-side before
+    // the user fills out the form.
+    lastLoginAt: u.lastLoginAt || null,
   };
 };
 

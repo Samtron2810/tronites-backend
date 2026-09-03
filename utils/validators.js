@@ -453,11 +453,30 @@ export const revokeVerificationSchema = z.object({
 export const submitVerificationRequestSchema = z.object({
   type: z.enum(GRANTABLE_VERIFICATION_TYPES),
   entityName: z.string().trim().max(120).optional().default(""),
+  legalName: z
+    .string()
+    .trim()
+    .min(2, "Legal name is required")
+    .max(120, "Legal name is too long"),
+  dateOfBirth: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Date of birth must be in YYYY-MM-DD format"),
+  country: z
+    .string()
+    .trim()
+    .min(2, "Country is required")
+    .max(80, "Country name is too long"),
   statement: z
     .string()
     .trim()
-    .min(10, "Please explain your application in a bit more detail")
+    .min(20, "Please explain your application in more detail (20+ characters)")
     .max(1000, "Statement is too long"),
+  publicLinks: z
+    .array(z.string().trim().url("Each link must be a valid URL").max(500))
+    .max(3, "Maximum 3 public links allowed")
+    .optional()
+    .default([]),
 });
 
 export const resolveVerificationRequestSchema = z.object({

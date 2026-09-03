@@ -3,20 +3,23 @@ import {
   listMyVerificationRequests,
   listVerificationRequests,
   resolveVerificationRequest,
-  initiateKyc,
+  checkVerificationEligibility,
 } from "../services/verificationService.js";
 import { logAudit } from "../utils/auditLogger.js";
 
-// SUBMIT REQUEST — protect-gated (unlike Appeal, which has to work
-// without a session); an applicant is by definition not restricted.
+// SUBMIT REQUEST
 export const submitVerificationRequestHandler = async (req, res) => {
   try {
-    const { type, entityName, statement } = req.body;
+    const { type, entityName, legalName, dateOfBirth, country, statement, publicLinks } = req.body;
     const request = await submitVerificationRequest({
       userId: req.user._id,
       type,
       entityName,
+      legalName,
+      dateOfBirth,
+      country,
       statement,
+      publicLinks,
     });
     res.status(201).json({
       message: "Application submitted. Reviews typically take a few business days.",
@@ -27,9 +30,7 @@ export const submitVerificationRequestHandler = async (req, res) => {
   }
 };
 
-// MY REQUESTS — the applicant's own queue, so Settings can show live
-// status ("pending" / "approved" / "denied") without a moderator round
-// trip or a separate notification-only path.
+// MY REQUESTS — applicant's own status queue
 export const listMyVerificationRequestsHandler = async (req, res) => {
   try {
     const requests = await listMyVerificationRequests(req.user._id);
@@ -39,15 +40,25 @@ export const listMyVerificationRequestsHandler = async (req, res) => {
   }
 };
 
+// ELIGIBILITY PRE-CHECK — lets the frontend show which requirements fail
+// before the user fills out the whole form.
+export const checkEligibilityHandler = async (req, res) => {
+  try {
+    const { type } = req.query;
+    if (!type) return res.status(400).json({ message: "type is required." });
+    await checkVerificationEligibility({ userId: req.user._id, type });
+    res.status(200).json({ eligible: true });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message, eligible: false });
+  }
+};
+
 // REVIEW QUEUE — reviewer-only (manage_verification), pending-first.
 export const listVerificationRequestsHandler = async (req, res) => {
   try {
     const status = req.query.status || "pending";
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit, 10) || 25, 1),
-      100,
-    );
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
     const result = await listVerificationRequests({ status, page, limit });
     res.status(200).json(result);
   } catch (error) {
@@ -55,8 +66,7 @@ export const listVerificationRequestsHandler = async (req, res) => {
   }
 };
 
-// RESOLVE REQUEST — approve (grants the badge via the shared write path)
-// or deny.
+// RESOLVE — approve grants the badge; deny resolves only.
 export const resolveVerificationRequestHandler = async (req, res) => {
   try {
     const { decision, note } = req.body;
@@ -88,22 +98,10 @@ export const resolveVerificationRequestHandler = async (req, res) => {
       },
     });
 
-    res.status(200).json({ request, user: user ? { verifications: user.verifications, isVerified: user.isVerified } : undefined });
-  } catch (error) {
-    res.status(error.statusCode || 500).json({ message: error.message });
-  }
-};
-
-// Called just before the Dojah widget launches — records explicit consent
-// and increments the KYC attempt counter. Protect-gated (real session).
-export const initiateKycHandler = async (req, res) => {
-  try {
-    const { requestId } = req.body;
-    if (!requestId) {
-      return res.status(400).json({ message: "requestId is required." });
-    }
-    const request = await initiateKyc({ requestId, userId: req.user._id });
-    res.status(200).json({ request });
+    res.status(200).json({
+      request,
+      user: user ? { verifications: user.verifications, isVerified: user.isVerified } : undefined,
+    });
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
   }
