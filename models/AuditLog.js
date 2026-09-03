@@ -27,6 +27,8 @@ export const AUDIT_ACTIONS = [
   "appeal_denied",
   "user_verification_granted",
   "user_verification_revoked",
+  "verification_request_approved",
+  "verification_request_denied",
 ];
 
 const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];

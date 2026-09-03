@@ -447,6 +447,24 @@ export const revokeVerificationSchema = z.object({
   reason: z.string().trim().max(500).optional().default(""),
 });
 
+// Phase 2 — self-service application. Same GRANTABLE_TYPES/entityName
+// pairing rule as grantVerificationSchema, plus the applicant's own
+// statement (mirrors submitAppealSchema's statement field).
+export const submitVerificationRequestSchema = z.object({
+  type: z.enum(GRANTABLE_VERIFICATION_TYPES),
+  entityName: z.string().trim().max(120).optional().default(""),
+  statement: z
+    .string()
+    .trim()
+    .min(10, "Please explain your application in a bit more detail")
+    .max(1000, "Statement is too long"),
+});
+
+export const resolveVerificationRequestSchema = z.object({
+  decision: z.enum(["approved", "denied"]),
+  note: z.string().trim().max(500).optional().default(""),
+});
+
 // Phase 6 -- bulk restriction from the admin panel selection bar. Mirrors
 // the single-user suspend/ban/unrestrict contract: one batch of userIds,
 // action in suspend|ban|unrestrict (no role escalation), `until` required

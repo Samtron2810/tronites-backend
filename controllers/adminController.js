@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import User, { DEFAULT_MODERATOR_PERMISSIONS, VERIFICATION_TYPES } from "../models/User.js";
+import User, { DEFAULT_MODERATOR_PERMISSIONS } from "../models/User.js";
 import Notification from "../models/Notification.js";
 import AuditLog, { AUDIT_ACTIONS } from "../models/AuditLog.js";
 import { toAdminUserDTO } from "../dtos/userDTO.js";
@@ -7,6 +7,10 @@ import { emitToUser, disconnectUser } from "../socket/socket.js";
 import { revokeAllSessions } from "../utils/tokens.js";
 import { invalidateCache, invalidateFeedCache } from "../utils/redis.js";
 import { logAudit } from "../utils/auditLogger.js";
+import {
+  grantVerificationToUser,
+  revokeVerificationFromUser,
+} from "../services/verificationService.js";
 
 // LIST/SEARCH USERS (admin only) — paginated, optional name/username/
 // email search and role filter, for the admin panel's user picker.
@@ -790,52 +794,13 @@ export const grantVerification = async (req, res) => {
   try {
     const { type, entityName, expiresAt } = req.body;
 
-    if (type === "staff") {
-      return res.status(400).json({
-        message:
-          "Staff badges derive from role and can't be granted directly — promote to moderator/admin instead.",
-      });
-    }
-
-    if (["business", "government"].includes(type) && !entityName) {
-      return res.status(400).json({
-        message: `entityName is required for a ${type} badge — that's the whole point of the claim.`,
-      });
-    }
-
-    if (expiresAt && new Date(expiresAt) <= new Date()) {
-      return res.status(400).json({ message: "expiresAt must be in the future." });
-    }
-
-    const target = await User.findById(req.params.id).select(
-      "_id name username email profilePic role verifications isVerified createdAt banned suspendedUntil restrictionReason strikes permissions",
-    );
-    if (!target) {
-      return res.status(404).json({ message: "User not found." });
-    }
-
-    const existingIndex = (target.verifications || []).findIndex(
-      (v) => v.type === type,
-    );
-
-    const entry = {
+    const target = await grantVerificationToUser({
+      userId: req.params.id,
       type,
-      verifiedAt: new Date(),
-      expiresAt: expiresAt || null,
-      method: "manual",
-      providerRef: "",
-      entityName: entityName || "",
+      entityName,
+      expiresAt,
       reviewedBy: req.user._id,
-    };
-
-    if (existingIndex >= 0) {
-      target.verifications[existingIndex] = entry;
-    } else {
-      target.verifications.push(entry);
-    }
-    target.isVerified = true;
-
-    await target.save();
+    });
 
     logAudit({
       action: "user_verification_granted",
@@ -855,7 +820,7 @@ export const grantVerification = async (req, res) => {
 
     res.status(200).json({ user: toAdminUserDTO(target) });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
 
@@ -869,25 +834,10 @@ export const revokeVerification = async (req, res) => {
     const { type } = req.params;
     const { reason } = req.body;
 
-    if (!VERIFICATION_TYPES.includes(type)) {
-      return res.status(400).json({ message: "Invalid verification type." });
-    }
-
-    const target = await User.findById(req.params.id).select(
-      "_id name username email profilePic role verifications isVerified createdAt banned suspendedUntil restrictionReason strikes permissions",
-    );
-    if (!target) {
-      return res.status(404).json({ message: "User not found." });
-    }
-
-    const before = target.verifications.length;
-    target.verifications = target.verifications.filter((v) => v.type !== type);
-    if (target.verifications.length === before) {
-      return res.status(400).json({ message: `User doesn't hold a ${type} badge.` });
-    }
-    target.isVerified = target.verifications.length > 0;
-
-    await target.save();
+    const target = await revokeVerificationFromUser({
+      userId: req.params.id,
+      type,
+    });
 
     logAudit({
       action: "user_verification_revoked",
@@ -907,6 +857,6 @@ export const revokeVerification = async (req, res) => {
 
     res.status(200).json({ user: toAdminUserDTO(target) });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
