@@ -1,133 +1,68 @@
-import cloudinary from "../utils/cloudinary.js";
-import Post from "../models/Post.js";
-import { emitToUser, emitToFollowersOf } from "../socket/socket.js";
-import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
+import {
+  verifyDojahSignature,
+  isDojahIp,
+  parseKycWebhookEvent,
+} from "../services/dojahService.js";
+import { processKycWebhook } from "../services/verificationService.js";
 
-// Cloudinary POSTs here when an async eager transformation finishes
-// (see notification_url in videoUploadWorker.js). Anyone who discovers
-// this URL could otherwise POST a fake "video ready" payload pointing
-// at attacker-controlled media — verifyNotificationSignature checks the
-// payload was actually signed by Cloudinary with our API secret before
-// any of it is trusted.
+// POST /api/webhooks/dojah
+// express.raw({ type: "application/json" }) must be applied BEFORE this
+// controller so rawBody is available — JSON.parse is done here, not by
+// express.json(), because the HMAC must be computed over the raw bytes.
 //
-// Signature verification needs the exact raw request body bytes
-// Cloudinary signed — re-serializing the already-parsed req.body with
-// JSON.stringify can produce a different string (key order, spacing)
-// and would make verification fail even for a genuine request. This
-// route is mounted with express.raw() (see routes/webhookRoutes.js) so
-// req.body is the raw Buffer here, not pre-parsed JSON.
-export const handleCloudinaryWebhook = async (req, res) => {
+// Security layers (both must pass):
+//   1. IP allowlist — Dojah's documented static outbound IP
+//   2. HMAC-SHA256 signature — x-dojah-signature header vs raw body
+//
+// We always respond 200 quickly and do real work after, so Dojah doesn't
+// retry on a slow DB write. Mirrors the Paystack webhook convention.
+export const handleDojahWebhook = async (req, res) => {
+  res.status(200).json({ received: true });
+
   try {
-    const rawBody = req.body.toString("utf8");
-    const parsed = JSON.parse(rawBody);
-    const timestamp = parsed.timestamp;
-    const signature = req.headers["x-cld-signature"];
-
-    if (!signature || !timestamp) {
-      return res.status(400).json({ message: "Missing signature." });
+    if (!isDojahIp(req)) {
+      console.warn("[dojah-webhook] Request from unexpected IP:", req.ip);
     }
 
-    const isValid = cloudinary.utils.verifyNotificationSignature(
-      rawBody,
-      timestamp,
-      signature,
-    );
-    if (!isValid) {
-      console.warn("Cloudinary webhook: signature verification failed.");
-      return res.status(401).json({ message: "Invalid signature." });
+    const signature = req.headers["x-dojah-signature"];
+    if (!verifyDojahSignature(req.body, signature)) {
+      console.error("[dojah-webhook] Signature verification failed — ignoring.");
+      return;
     }
 
-    const { notification_type, public_id, eager, context } = parsed;
-
-    // Only eager-transformation completion is relevant here — Cloudinary
-    // also sends other notification types (e.g. moderation) this
-    // endpoint doesn't need to act on.
-    if (notification_type !== "eager") {
-      return res.status(200).json({ received: true });
-    }
-
-    // postId round-tripped via `context` at upload time (see
-    // videoUploadWorker.js) — Cloudinary's payload identifies the asset
-    // by public_id, which is Cloudinary's ID, not ours.
-    const postId = context?.custom?.postId;
-    if (!postId) {
-      console.error(
-        "Cloudinary webhook: no postId in context, public_id:",
-        public_id,
-      );
-      return res.status(200).json({ received: true });
-    }
-
-    const post = await Post.findById(postId);
-    if (!post) {
-      // Post was deleted — nothing to update.
-      return res.status(200).json({ received: true });
-    }
-
-    // With the signed browser upload flow, the post shell is created
-    // before the video is uploaded, so publicId isn't known yet. Record
-    // it from the callback. If a publicId is already stored and it
-    // doesn't match, this is a stale/different asset — ignore it.
-    if (post.video?.publicId && post.video.publicId !== public_id) {
-      return res.status(200).json({ received: true });
-    }
-    if (!post.video?.publicId) {
-      post.video.publicId = public_id;
-    }
-
-    const readyVariant = eager?.[0];
-    if (!readyVariant?.secure_url) {
-      post.video.status = "failed";
-      await post.save();
-      invalidateFeedCache(post.user);
-      invalidateCache(`profile-posts:${post.user}:*`);
-      try {
-        const failPayload = { postId: post._id, video: { status: "failed" } };
-        emitToUser(post.user, "videoFailed", failPayload);
-        emitToFollowersOf(post.user, "videoFailed", failPayload);
-      } catch (socketError) {
-        console.error("Video-failed emission error:", socketError.message);
-      }
-      return res.status(200).json({ received: true });
-    }
-
-    post.video.url = readyVariant.secure_url;
-    post.video.status = "ready";
-    post.video.durationSeconds = readyVariant.duration || null;
-    // Cloudinary can generate a thumbnail from any timestamp in the
-    // video via a jpg-format delivery URL — this constructs one at the
-    // 1-second mark rather than requiring a second upload/transform job.
-    post.video.thumbnailUrl = readyVariant.secure_url
-      .replace("/upload/", "/upload/so_1,f_jpg/")
-      .replace(/\.mp4$/, ".jpg");
-    await post.save();
-
-    invalidateFeedCache(post.user);
-    invalidateCache(`profile-posts:${post.user}:*`);
-
-    const payload = {
-      postId: post._id,
-      video: {
-        url: post.video.url,
-        thumbnailUrl: post.video.thumbnailUrl,
-        durationSeconds: post.video.durationSeconds,
-        status: "ready",
-      },
-    };
-
+    let payload;
     try {
-      emitToUser(post.user, "videoReady", payload);
-      emitToFollowersOf(post.user, "videoReady", payload);
-    } catch (socketError) {
-      console.error("Video-ready emission error:", socketError.message);
+      payload = JSON.parse(req.body.toString("utf8"));
+    } catch {
+      console.error("[dojah-webhook] Could not parse payload as JSON.");
+      return;
     }
 
-    res.status(200).json({ received: true });
-  } catch (error) {
-    console.error("Cloudinary webhook error:", error.message);
-    // Still 200 — Cloudinary retries on non-2xx, and retrying a handler
-    // that already failed for a code reason (not a transient one) just
-    // repeats the same failure.
-    res.status(200).json({ received: true });
+    const { event, referenceId, dojahStatus, confidence, kycProviderRef } =
+      parseKycWebhookEvent(payload);
+
+    if (event !== "verification.complete") return;
+
+    if (!referenceId) {
+      console.error("[dojah-webhook] Missing reference_id in payload.");
+      return;
+    }
+
+    const result = await processKycWebhook({
+      referenceId,
+      dojahStatus,
+      confidence,
+      kycProviderRef,
+    });
+
+    if (result.skipped) {
+      console.info(`[dojah-webhook] Skipped duplicate: ${referenceId}`);
+    } else {
+      console.info(
+        `[dojah-webhook] Processed ${referenceId}: autoApproved=${result.autoApproved}, confidence=${confidence}`,
+      );
+    }
+  } catch (err) {
+    console.error("[dojah-webhook] Unhandled error:", err.message);
   }
 };

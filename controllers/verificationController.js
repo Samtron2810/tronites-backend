@@ -3,6 +3,7 @@ import {
   listMyVerificationRequests,
   listVerificationRequests,
   resolveVerificationRequest,
+  initiateKyc,
 } from "../services/verificationService.js";
 import { logAudit } from "../utils/auditLogger.js";
 
@@ -88,6 +89,21 @@ export const resolveVerificationRequestHandler = async (req, res) => {
     });
 
     res.status(200).json({ request, user: user ? { verifications: user.verifications, isVerified: user.isVerified } : undefined });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// Called just before the Dojah widget launches — records explicit consent
+// and increments the KYC attempt counter. Protect-gated (real session).
+export const initiateKycHandler = async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    if (!requestId) {
+      return res.status(400).json({ message: "requestId is required." });
+    }
+    const request = await initiateKyc({ requestId, userId: req.user._id });
+    res.status(200).json({ request });
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
   }

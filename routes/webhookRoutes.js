@@ -1,16 +1,13 @@
 import express from "express";
-import { handleCloudinaryWebhook } from "../controllers/webhookController.js";
+import { handleDojahWebhook } from "../controllers/webhookController.js";
 
 const router = express.Router();
 
-// express.raw() here (not the app-wide express.json()) — signature
-// verification needs the exact bytes Cloudinary sent, see
-// webhookController.js for why re-parsed-then-restringified JSON
-// doesn't work for this.
+// express.raw() before express.json() — HMAC must be over raw bytes.
 router.post(
-  "/cloudinary",
-  express.raw({ type: "application/json" }),
-  handleCloudinaryWebhook,
+  "/dojah",
+  express.raw({ type: "application/json", limit: "1mb" }),
+  handleDojahWebhook,
 );
 
 export default router;

@@ -12,6 +12,12 @@ const ADMIN_TARGET_SELECT =
 
 const GRANTABLE_TYPES = ["individual", "business", "government", "creator"];
 
+// Phase 3 constants
+const ACCOUNT_MIN_AGE_DAYS = 30;
+const KYC_ATTEMPT_CAP = 3;
+const KYC_ATTEMPT_WINDOW_DAYS = 90;
+const KYC_AUTO_APPROVE_CONFIDENCE = 80; // Dojah NIN face-match threshold
+
 // Single write path for User.verifications — both adminController's
 // direct grant endpoint AND resolveVerificationRequest (below) call this,
 // so there is exactly one place that ever mutates the array. Mirrors the
@@ -115,8 +121,51 @@ export const submitVerificationRequest = async ({
     throw httpError(400, `entityName is required for a ${type} badge.`);
   }
 
-  const user = await User.findById(userId).select("verifications");
-  if (user?.verifications?.some((v) => v.type === type)) {
+  // Pull the full user doc once so we can run all guards in one DB hit.
+  const user = await User.findById(userId).select(
+    "verifications createdAt strikes banned suspendedUntil kycLockedUntil kycAttempts kycLastAttemptAt",
+  );
+  if (!user) throw httpError(404, "User not found.");
+
+  // Guard 1 — account must be ≥ 30 days old. Prevents badge-farming on
+  // freshly created throwaway accounts. Same timestamp-comparison pattern
+  // as usernameChangedAt cooldown in userController.
+  const accountAgeDays =
+    (Date.now() - new Date(user.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+  if (accountAgeDays < ACCOUNT_MIN_AGE_DAYS) {
+    const daysLeft = Math.ceil(ACCOUNT_MIN_AGE_DAYS - accountAgeDays);
+    throw httpError(
+      403,
+      `Your account must be at least ${ACCOUNT_MIN_AGE_DAYS} days old to apply for verification. ${daysLeft} day${daysLeft === 1 ? "" : "s"} remaining.`,
+    );
+  }
+
+  // Guard 2 — account must be in good standing.
+  if (user.banned) {
+    throw httpError(403, "Banned accounts can't apply for verification.");
+  }
+  if (user.suspendedUntil && new Date(user.suspendedUntil) > new Date()) {
+    throw httpError(403, "Suspended accounts can't apply for verification.");
+  }
+  if ((user.strikes || 0) >= 3) {
+    throw httpError(
+      403,
+      "Accounts with 3 or more active strikes can't apply for verification.",
+    );
+  }
+
+  // Guard 3 — KYC lock (Individual only). A user is locked if they've
+  // burned their KYC attempt budget in the rolling window.
+  if (type === "individual" && user.kycLockedUntil && new Date(user.kycLockedUntil) > new Date()) {
+    const until = new Date(user.kycLockedUntil).toLocaleDateString();
+    throw httpError(
+      429,
+      `You've used all ${KYC_ATTEMPT_CAP} KYC attempts for this period. You can try again after ${until}.`,
+    );
+  }
+
+  // Guard 4 — already holds this badge.
+  if (user.verifications?.some((v) => v.type === type)) {
     throw httpError(409, `You already hold the ${type} badge.`);
   }
 
@@ -134,6 +183,60 @@ export const submitVerificationRequest = async ({
     }
     throw err;
   }
+};
+
+// Called when the user ticks consent and the frontend is about to launch
+// the Dojah widget. Records consent, increments the KYC attempt counter,
+// and returns the request so the frontend has a fresh reference_id to
+// pass to the widget. Only valid for Individual requests — other types
+// don't use the KYC widget.
+export const initiateKyc = async ({ requestId, userId }) => {
+  const [request, user] = await Promise.all([
+    VerificationRequest.findOne({ _id: requestId, user: userId, status: "pending" }),
+    User.findById(userId).select("kycAttempts kycLastAttemptAt kycLockedUntil"),
+  ]);
+
+  if (!request) throw httpError(404, "Verification request not found.");
+  if (request.type !== "individual") {
+    throw httpError(400, "KYC initiation is only for Individual badge requests.");
+  }
+  if (request.consentGiven) {
+    // Idempotent — consent already recorded, just return the request so
+    // the widget can be re-launched if the user closed it prematurely.
+    return request;
+  }
+
+  // Check KYC lock again at initiation time (belt-and-suspenders; the
+  // submit guard already checked, but time may have passed).
+  if (user.kycLockedUntil && new Date(user.kycLockedUntil) > new Date()) {
+    throw httpError(429, "KYC attempts exhausted for this period.");
+  }
+
+  // Reset attempt counter if the window has expired.
+  const windowMs = KYC_ATTEMPT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const windowExpired =
+    !user.kycLastAttemptAt ||
+    Date.now() - new Date(user.kycLastAttemptAt).getTime() > windowMs;
+  const newAttempts = windowExpired ? 1 : (user.kycAttempts || 0) + 1;
+  const locked = newAttempts >= KYC_ATTEMPT_CAP;
+
+  await User.findByIdAndUpdate(userId, {
+    $set: {
+      kycAttempts: newAttempts,
+      kycLastAttemptAt: new Date(),
+      kycLockedUntil: locked
+        ? new Date(Date.now() + windowMs)
+        : null,
+    },
+  });
+
+  // Stamp consent + set kycStatus to "pending" (widget launched).
+  request.consentGiven = true;
+  request.consentAt = new Date();
+  request.kycStatus = "pending";
+  await request.save();
+
+  return request;
 };
 
 // The requesting user's own queue — every request they've filed,
@@ -166,6 +269,55 @@ export const listVerificationRequests = async ({
   ]);
 
   return { requests, total, page, totalPages: Math.ceil(total / limit) };
+};
+
+// Called by the Dojah webhook handler (webhookController.js). Finds the
+// VerificationRequest by Dojah's reference_id, then either auto-approves
+// (confidence ≥ threshold, NIN verified) or flags for manual review.
+// NEVER stores NIN number, BVN, selfie URL, or any raw identity data —
+// only the opaque Dojah reference ID. See PrivacyPolicy KYC section.
+export const processKycWebhook = async ({
+  referenceId,
+  dojahStatus,
+  confidence,
+  kycProviderRef,
+}) => {
+  const request = await VerificationRequest.findOne({
+    _id: referenceId,
+    status: "pending",
+    type: "individual",
+    kycStatus: "pending",
+  });
+  if (!request) {
+    // Already resolved or not found — webhook may be a duplicate/replay.
+    return { skipped: true };
+  }
+
+  const autoApprove = dojahStatus === true && confidence >= KYC_AUTO_APPROVE_CONFIDENCE;
+
+  request.kycConfidence = confidence ?? null;
+  request.kycProviderRef = kycProviderRef || "";
+  request.kycStatus = autoApprove ? "auto_approved" : confidence > 0 ? "manual_review" : "failed";
+
+  if (autoApprove) {
+    // Single write path — same function the admin grant endpoint calls.
+    await grantVerificationToUser({
+      userId: request.user,
+      type: "individual",
+      entityName: "",
+      expiresAt: null,
+      reviewedBy: null, // system-granted, no human reviewer
+    });
+
+    request.status = "approved";
+    request.reviewedAt = new Date();
+    request.decisionNote = `Auto-approved via KYC (confidence: ${confidence}).`;
+  }
+  // If not auto-approved, leave status "pending" — drops into the
+  // reviewer's "manual_review" queue in ModerationQueue → Verification tab.
+
+  await request.save();
+  return { autoApproved: autoApprove, request };
 };
 
 // Approve = grant the badge via the single write path above AND resolve

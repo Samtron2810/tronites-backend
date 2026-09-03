@@ -60,6 +60,48 @@ const verificationRequestSchema = new mongoose.Schema(
       default: "pending",
     },
 
+    // KYC-specific fields — only populated for Individual badge requests
+    // that go through the Dojah widget flow. Other badge types (business,
+    // government, creator) go straight to the manual review queue with
+    // these left at defaults.
+    //
+    // kycStatus tracks the webhook outcome independently of the overall
+    // request status so the reviewer queue can distinguish "pending
+    // manual review because KYC confidence was borderline" from "pending
+    // because no KYC has been run yet."
+    kycStatus: {
+      type: String,
+      enum: ["none", "pending", "auto_approved", "manual_review", "failed"],
+      default: "none",
+    },
+    // Dojah's confidence score for the NIN face-match (0–100). Stored
+    // so a reviewer can see exactly how borderline a manual_review case
+    // is. Never exposed publicly — admin/reviewer only.
+    kycConfidence: {
+      type: Number,
+      default: null,
+    },
+    // Opaque Dojah reference ID returned in the webhook. This is the
+    // ONLY Dojah/identity data we store — never NIN number, BVN, selfie
+    // URL, or document scan. See PrivacyPolicy KYC section.
+    kycProviderRef: {
+      type: String,
+      default: "",
+    },
+
+    // NDPR / legal requirement: explicit consent must be recorded before
+    // any identity data flows to Dojah. The KycConsentModal on the
+    // frontend sets these; the backend verificationRoutes endpoint
+    // rejects a KYC initiation request if consentGiven is not true.
+    consentGiven: {
+      type: Boolean,
+      default: false,
+    },
+    consentAt: {
+      type: Date,
+      default: null,
+    },
+
     reviewedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

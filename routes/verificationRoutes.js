@@ -13,6 +13,7 @@ import {
   listMyVerificationRequestsHandler,
   listVerificationRequestsHandler,
   resolveVerificationRequestHandler,
+  initiateKycHandler,
 } from "../controllers/verificationController.js";
 
 const router = express.Router();
@@ -28,6 +29,10 @@ router.post(
   submitVerificationRequestHandler,
 );
 router.get("/mine", protect, listMyVerificationRequestsHandler);
+
+// KYC initiation — consent + attempt counter. protect-gated.
+// Called just before the Dojah widget launches, after user ticks consent.
+router.post("/kyc/initiate", protect, initiateKycHandler);
 
 // Reviewer queue — same manage_verification permission as the direct
 // grant/revoke endpoints in adminRoutes.js, since approving a request is

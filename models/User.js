@@ -105,6 +105,27 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
 
+    // KYC rate-limiting — prevents a user from cycling multiple
+    // different NINs/BVNs through the Individual badge flow to find one
+    // that passes. Cap is 3 attempts per KYC_ATTEMPT_WINDOW_DAYS (90).
+    // Counter is incremented when a Dojah widget session is *initiated*
+    // (not when it succeeds), so abandoned sessions consume budget just
+    // like failed ones — otherwise a user could spam widget opens with
+    // no cost. kycLockedUntil is set by the webhook handler when the
+    // cap is hit; cleared by a manual admin unlock (manage_verification).
+    kycAttempts: {
+      type: Number,
+      default: 0,
+    },
+    kycLastAttemptAt: {
+      type: Date,
+      default: null,
+    },
+    kycLockedUntil: {
+      type: Date,
+      default: null,
+    },
+
     email: {
       type: String,
       required: true,
