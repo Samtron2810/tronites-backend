@@ -9,6 +9,23 @@ export const PERMISSIONS = [
   "manage_content",
   "view_audit_log",
   "manage_roles",
+  // Verification badges — deliberately its own permission, not folded
+  // into manage_users. The blast radius of "can suspend accounts" and
+  // "can grant/revoke identity badges" should not be the same role.
+  "manage_verification",
+];
+
+// The five verification types Tronites issues. Single source of truth
+// for the model enum; keep in sync with the zod enum in
+// utils/validators.js and the display list in
+// frontend/src/constants/verification.js — same duplication tradeoff
+// as PERMISSIONS / AUDIT_ACTIONS.
+export const VERIFICATION_TYPES = [
+  "individual",
+  "business",
+  "government",
+  "creator",
+  "staff",
 ];
 
 // What a moderator could do BEFORE granular permissions existed (Phases
@@ -298,6 +315,58 @@ const userSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+
+    // Verification badges — CLAIM model, not status: each entry asserts
+    // one specific, falsifiable thing ("this is a real human" vs "this
+    // is the registered business"), never generic importance. A user can
+    // hold MULTIPLE badges (a verified individual who also runs a
+    // verified business), so this is an array, not a single enum. Only
+    // `type` and `verifiedAt`/`entityName` are ever public — see
+    // toPublicUserDTO. The evidence trail (method, providerRef,
+    // reviewedBy) is admin-only and never leaves a
+    // requirePermission-gated response.
+    //
+    // Deliberately separate from `role`: role is an AUTHORIZATION field
+    // that gates requirePermission; verification is an ATTESTATION field
+    // that grants zero capabilities. Conflating them turns a badge-logic
+    // bug into a privilege-escalation bug. The one exception is "staff",
+    // which derives from role in one direction only — role → badge,
+    // never badge → role (see grantVerification's guard).
+    verifications: [
+      {
+        type: { type: String, enum: VERIFICATION_TYPES, required: true },
+        verifiedAt: { type: Date, default: Date.now },
+        // Null for perpetual badges (individual, staff). Set for badges
+        // that must be re-confirmed — business registrations lapse and
+        // creator notability decays. No expiry job consumes this yet
+        // (Phase 5 of the rollout); the field exists now so Phase 1
+        // data doesn't need a later migration.
+        expiresAt: { type: Date, default: null },
+        // Which KYC provider or internal process produced this. Audit
+        // context only — NEVER public. "manual" for human review, which
+        // is the only path Phase 1 supports.
+        method: { type: String, default: "manual" },
+        // Provider's opaque reference for this check. Empty in Phase 1
+        // (no provider integrated yet); reserved for Phase 3.
+        providerRef: { type: String, default: "" },
+        // For business/government: the legal entity the badge attests
+        // to. Displayed on the badge detail sheet ("Verified as: Kabu
+        // Foods Ltd") because that's the whole point of the claim.
+        entityName: { type: String, default: "", trim: true, maxlength: 120 },
+        reviewedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          default: null,
+        },
+      },
+    ],
+
+    // Denormalized "does this user hold any live badge" flag, maintained
+    // alongside the array by grantVerification/revokeVerification.
+    // Exists so feed/search/mention queries can project a badge without
+    // unwinding the subdocument array on every read — same reasoning as
+    // likesCount on Post.
+    isVerified: { type: Boolean, default: false, index: true },
   },
   { timestamps: true },
 );

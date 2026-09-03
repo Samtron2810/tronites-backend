@@ -55,10 +55,10 @@ export const listBookmarkedPosts = async (userId, { skip = 0, limit = 12 } = {})
         // null-filter below already dropped hard-deleted posts this way.
         match: { removedAt: null },
         populate: [
-          { path: "user", select: "name username profilePic" },
+          { path: "user", select: "name username profilePic verifications isVerified" },
           {
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic" },
+            populate: { path: "user", select: "name username profilePic verifications isVerified" },
           },
         ],
       }),

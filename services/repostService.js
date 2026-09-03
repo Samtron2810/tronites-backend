@@ -40,7 +40,7 @@ export const getRepostCounts = async (postIds) => {
 // same "who liked this" pattern as listLikers.
 export const listReposters = async (
   postId,
-  select = "name username profilePic",
+  select = "name username profilePic verifications isVerified",
   { skip, limit } = {},
 ) => {
   let query = Repost.find({ post: postId })

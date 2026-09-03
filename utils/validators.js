@@ -411,9 +411,40 @@ export const updatePermissionsSchema = z.object({
         "manage_content",
         "view_audit_log",
         "manage_roles",
+        "manage_verification",
       ]),
     )
-    .max(5),
+    .max(6),
+});
+
+// Verification badges (Phase 1 — manual admin grant only, no
+// self-service application flow yet). "staff" is intentionally excluded:
+// it derives from `role` in one direction only and is never independently
+// grantable — see grantVerification's guard in adminController.js.
+const GRANTABLE_VERIFICATION_TYPES = [
+  "individual",
+  "business",
+  "government",
+  "creator",
+];
+
+export const grantVerificationSchema = z.object({
+  type: z.enum(GRANTABLE_VERIFICATION_TYPES),
+  // Required for business/government (the entity being attested to);
+  // optional for individual/creator. Controller enforces the pairing —
+  // zod only bounds the shape.
+  entityName: z.string().trim().max(120).optional().default(""),
+  // Perpetual by default (individual, staff). Business/government/
+  // creator badges that need renewal pass an ISO date; controller
+  // rejects a past date.
+  expiresAt: z.coerce.date().nullish(),
+});
+
+// `type` comes from the route param (DELETE /verification/:type), not the
+// body — validated inline in the controller against VERIFICATION_TYPES.
+// This schema only covers the optional body payload.
+export const revokeVerificationSchema = z.object({
+  reason: z.string().trim().max(500).optional().default(""),
 });
 
 // Phase 6 -- bulk restriction from the admin panel selection bar. Mirrors

@@ -65,7 +65,7 @@ export const getUserReactions = async (userId, targetType, targetIds) => {
 export const listReactors = async (
   targetType,
   targetId,
-  { emoji, select = "name username profilePic", skip, limit } = {},
+  { emoji, select = "name username profilePic verifications isVerified", skip, limit } = {},
 ) => {
   const filter = { targetType, targetId };
   if (emoji) filter.emoji = emoji;

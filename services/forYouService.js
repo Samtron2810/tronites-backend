@@ -129,7 +129,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           .populate("user", "name username profilePic followersCount credibleRatio")
           .populate({
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic" },
+            populate: { path: "user", select: "name username profilePic verifications isVerified" },
           })
           .sort({ createdAt: -1 })
           .limit(MAX_CANDIDATES_PER_SOURCE)
@@ -143,7 +143,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           .populate("user", "name username profilePic followersCount credibleRatio")
           .populate({
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic" },
+            populate: { path: "user", select: "name username profilePic verifications isVerified" },
           })
           .sort({ createdAt: -1 })
           .limit(MAX_CANDIDATES_PER_SOURCE)
@@ -158,7 +158,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           .populate("user", "name username profilePic followersCount credibleRatio")
           .populate({
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic" },
+            populate: { path: "user", select: "name username profilePic verifications isVerified" },
           })
           .sort({ createdAt: -1 })
           .limit(MAX_CANDIDATES_PER_SOURCE)
@@ -171,7 +171,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
       .populate("user", "name username profilePic followersCount credibleRatio")
       .populate({
         path: "quoteOf",
-        populate: { path: "user", select: "name username profilePic" },
+        populate: { path: "user", select: "name username profilePic verifications isVerified" },
       })
       .sort({ likesCount: -1, createdAt: -1 })
       .limit(MAX_CANDIDATES_PER_SOURCE),

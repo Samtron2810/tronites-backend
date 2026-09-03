@@ -24,7 +24,7 @@ export const getNotifications = async (req, res) => {
 
     const [notifications, totalNotifications] = await Promise.all([
       Notification.find({ recipient: req.user._id })
-        .populate("sender", "name username profilePic")
+        .populate("sender", "name username profilePic verifications isVerified")
         .populate("post", "text images")
         // parentComment comes along so "reply" notifications can
         // deep-link straight into their reply thread — the reply's own

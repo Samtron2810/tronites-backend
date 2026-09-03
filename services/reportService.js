@@ -73,7 +73,7 @@ export const listReports = async ({ status = "open", page = 1, limit = 25 } = {}
       .sort({ status: 1, priority: 1, createdAt: 1 })
       .skip(skip)
       .limit(limit)
-      .populate("reporter", "name username profilePic")
+      .populate("reporter", "name username profilePic verifications isVerified")
       .populate(
         "targetOwner",
         "name username profilePic banned suspendedUntil restrictionReason",
@@ -271,8 +271,8 @@ const removeTargetContent = async (report, moderatorId, reason) => {
 //   user    -> no extra fetch; the queue deep-links to the profile.
 export const getReportContext = async (reportId) => {
   const report = await Report.findById(reportId)
-    .populate("reporter", "name username profilePic")
-    .populate("targetOwner", "name username profilePic")
+    .populate("reporter", "name username profilePic verifications isVerified")
+    .populate("targetOwner", "name username profilePic verifications isVerified")
     .lean();
   if (!report) {
     throw httpError(404, "Report not found.");
@@ -280,7 +280,7 @@ export const getReportContext = async (reportId) => {
 
   if (report.targetType === "post") {
     const post = await Post.findById(report.targetId)
-      .populate("user", "name username profilePic")
+      .populate("user", "name username profilePic verifications isVerified")
       .lean();
     if (!post) {
       throw httpError(404, "The reported post no longer exists.");
@@ -290,13 +290,13 @@ export const getReportContext = async (reportId) => {
 
   if (report.targetType === "comment") {
     const comment = await Comment.findById(report.targetId)
-      .populate("user", "name username profilePic")
+      .populate("user", "name username profilePic verifications isVerified")
       .lean();
     if (!comment) {
       throw httpError(404, "The reported comment no longer exists.");
     }
     const post = await Post.findById(comment.post)
-      .populate("user", "name username profilePic")
+      .populate("user", "name username profilePic verifications isVerified")
       .lean();
     if (!post) {
       throw httpError(404, "The parent post no longer exists.");

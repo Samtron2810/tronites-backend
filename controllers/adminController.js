@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import User, { DEFAULT_MODERATOR_PERMISSIONS } from "../models/User.js";
+import User, { DEFAULT_MODERATOR_PERMISSIONS, VERIFICATION_TYPES } from "../models/User.js";
 import Notification from "../models/Notification.js";
 import AuditLog, { AUDIT_ACTIONS } from "../models/AuditLog.js";
 import { toAdminUserDTO } from "../dtos/userDTO.js";
@@ -44,7 +44,7 @@ export const listUsersForAdmin = async (req, res) => {
       const [users, totalUsers] = await Promise.all([
         User.find(filter)
           .select(
-            "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason strikes permissions",
+            "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason strikes permissions verifications isVerified",
           )
           .sort({ createdAt: -1 })
           .skip(skip)
@@ -196,7 +196,7 @@ export const updateUserRole = async (req, res) => {
 // access simply resumes with no cleanup job.
 
 const RESTRICTION_TARGET_SELECT =
-  "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason";
+  "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason verifications isVerified";
 
 // Phase 4 -- crossing this many strikes makes the FRONTEND suggest a
 // suspension; the backend never auto-suspends (human in the loop).
@@ -561,7 +561,7 @@ export const warnUser = async (req, res) => {
       });
       const populatedNotif = await newNotif.populate(
         "sender",
-        "name username profilePic"
+        "name username profilePic verifications isVerified"
       );
       emitToUser(target._id, "newNotification", populatedNotif);
     } catch (notifError) {
@@ -771,4 +771,142 @@ export const bulkUpdateUsers = async (req, res) => {
     succeeded,
     failed: results.length - succeeded,
   });
+};
+
+// ─── Verification badges (Phase 1 — manual grant/revoke only) ─────────────
+//
+// CLAIM model, not status: each badge asserts one specific, falsifiable
+// thing. "staff" is never independently grantable through this endpoint —
+// it derives from `role` in one direction only (role → badge). Everything
+// else requires manage_verification, kept separate from manage_users so
+// "can suspend accounts" and "can attest identity" stay different blast
+// radii (see PERMISSIONS comment in models/User.js).
+
+// POST /admin/users/:id/verification -- requirePermission("manage_verification").
+// Grants one badge type. Idempotent per-type: re-granting an existing,
+// non-expired badge just refreshes verifiedAt/entityName/expiresAt rather
+// than duplicating the subdocument.
+export const grantVerification = async (req, res) => {
+  try {
+    const { type, entityName, expiresAt } = req.body;
+
+    if (type === "staff") {
+      return res.status(400).json({
+        message:
+          "Staff badges derive from role and can't be granted directly — promote to moderator/admin instead.",
+      });
+    }
+
+    if (["business", "government"].includes(type) && !entityName) {
+      return res.status(400).json({
+        message: `entityName is required for a ${type} badge — that's the whole point of the claim.`,
+      });
+    }
+
+    if (expiresAt && new Date(expiresAt) <= new Date()) {
+      return res.status(400).json({ message: "expiresAt must be in the future." });
+    }
+
+    const target = await User.findById(req.params.id).select(
+      "_id name username email profilePic role verifications isVerified createdAt banned suspendedUntil restrictionReason strikes permissions",
+    );
+    if (!target) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const existingIndex = (target.verifications || []).findIndex(
+      (v) => v.type === type,
+    );
+
+    const entry = {
+      type,
+      verifiedAt: new Date(),
+      expiresAt: expiresAt || null,
+      method: "manual",
+      providerRef: "",
+      entityName: entityName || "",
+      reviewedBy: req.user._id,
+    };
+
+    if (existingIndex >= 0) {
+      target.verifications[existingIndex] = entry;
+    } else {
+      target.verifications.push(entry);
+    }
+    target.isVerified = true;
+
+    await target.save();
+
+    logAudit({
+      action: "user_verification_granted",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: {
+          name: target.name,
+          username: target.username,
+          role: target.role,
+        },
+      },
+      detail: { verificationType: type, entityName: entityName || "", expiresAt: expiresAt || null },
+    });
+
+    res.status(200).json({ user: toAdminUserDTO(target) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// DELETE /admin/users/:id/verification/:type -- requirePermission("manage_verification").
+// Drops one badge type. Staff badges can be revoked here (e.g. offboarding
+// edge case) even though they can't be *granted* here — the asymmetry is
+// intentional: taking a badge away is always safe, handing one out bypassing
+// the role-derivation rule is not.
+export const revokeVerification = async (req, res) => {
+  try {
+    const { type } = req.params;
+    const { reason } = req.body;
+
+    if (!VERIFICATION_TYPES.includes(type)) {
+      return res.status(400).json({ message: "Invalid verification type." });
+    }
+
+    const target = await User.findById(req.params.id).select(
+      "_id name username email profilePic role verifications isVerified createdAt banned suspendedUntil restrictionReason strikes permissions",
+    );
+    if (!target) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const before = target.verifications.length;
+    target.verifications = target.verifications.filter((v) => v.type !== type);
+    if (target.verifications.length === before) {
+      return res.status(400).json({ message: `User doesn't hold a ${type} badge.` });
+    }
+    target.isVerified = target.verifications.length > 0;
+
+    await target.save();
+
+    logAudit({
+      action: "user_verification_revoked",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: {
+          name: target.name,
+          username: target.username,
+          role: target.role,
+        },
+      },
+      detail: { verificationType: type, reason: reason || "" },
+    });
+
+    res.status(200).json({ user: toAdminUserDTO(target) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };

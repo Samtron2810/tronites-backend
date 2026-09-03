@@ -148,7 +148,7 @@ export const createPost = async (req, res) => {
       images: imageUrls,
       hashtags: extractHashtags(text),
     });
-    const populatedPost = await post.populate("user", "name profilePic");
+    const populatedPost = await post.populate("user", "name profilePic verifications isVerified");
 
     // Notify mentioned users (skip self-mentions, blocked relationships,
     // and anyone who's muted the poster). Best-effort — a failure here
@@ -184,7 +184,7 @@ export const createPost = async (req, res) => {
               });
               const populatedNotif = await newNotif.populate(
                 "sender",
-                "name username profilePic",
+                "name username profilePic verifications isVerified",
               );
               emitToUser(mentionedUser._id, "newNotification", populatedNotif);
             }),
@@ -399,7 +399,7 @@ export const createVideoPost = async (req, res) => {
               });
               const populatedNotif = await newNotif.populate(
                 "sender",
-                "name username profilePic",
+                "name username profilePic verifications isVerified",
               );
               emitToUser(mentionedUser._id, "newNotification", populatedNotif);
             }),
@@ -412,7 +412,7 @@ export const createVideoPost = async (req, res) => {
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
 
-    const populatedPost = await post.populate("user", "name profilePic");
+    const populatedPost = await post.populate("user", "name profilePic verifications isVerified");
     res.status(201).json(populatedPost);
 
     // Real-time post feed update for followers. only-me posts never emit —
@@ -478,7 +478,7 @@ export const editPost = async (req, res) => {
     post.editedAt = new Date();
     await post.save();
 
-    const populatedPost = await post.populate("user", "name profilePic");
+    const populatedPost = await post.populate("user", "name profilePic verifications isVerified");
 
     // Notify newly-added mentions only — re-notifying every mention on
     // every edit would spam anyone already mentioned pre-edit.
@@ -510,7 +510,7 @@ export const editPost = async (req, res) => {
               });
               const populatedNotif = await newNotif.populate(
                 "sender",
-                "name username profilePic",
+                "name username profilePic verifications isVerified",
               );
               emitToUser(mentionedUser._id, "newNotification", populatedNotif);
             }),
@@ -640,10 +640,10 @@ export const getFeedPosts = async (req, res) => {
           ...(cursorDate ? { createdAt: { $lt: cursorDate } } : {}),
         };
         const postCandidates = await Post.find(postFilter)
-          .populate("user", "name username profilePic")
+          .populate("user", "name username profilePic verifications isVerified")
           .populate({
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic" },
+            populate: { path: "user", select: "name username profilePic verifications isVerified" },
           })
           .sort({ createdAt: -1 })
           .limit(limit + 1);
@@ -662,15 +662,15 @@ export const getFeedPosts = async (req, res) => {
           ...(cursorDate ? { createdAt: { $lt: cursorDate } } : {}),
         };
         const repostCandidates = await Repost.find(repostFilter)
-          .populate("user", "name username profilePic")
+          .populate("user", "name username profilePic verifications isVerified")
           .populate({
             path: "post",
             match: { removedAt: null, ...PUBLIC_ONLY_FILTER },
             populate: [
-              { path: "user", select: "name username profilePic" },
+              { path: "user", select: "name username profilePic verifications isVerified" },
               {
                 path: "quoteOf",
-                populate: { path: "user", select: "name username profilePic" },
+                populate: { path: "user", select: "name username profilePic verifications isVerified" },
               },
             ],
           })
@@ -974,10 +974,10 @@ export const getTrendingPosts = async (req, res) => {
     };
 
     const candidates = await Post.find(filter)
-      .populate("user", "name username profilePic")
+      .populate("user", "name username profilePic verifications isVerified")
       .populate({
         path: "quoteOf",
-        populate: { path: "user", select: "name username profilePic" },
+        populate: { path: "user", select: "name username profilePic verifications isVerified" },
       })
       .sort({ createdAt: -1 })
       .limit(MAX_TRENDING_CANDIDATES);
@@ -1153,10 +1153,10 @@ export const getPostsByHashtag = async (req, res) => {
         };
 
         const posts = await Post.find(filter)
-          .populate("user", "name username profilePic")
+          .populate("user", "name username profilePic verifications isVerified")
           .populate({
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic" },
+            populate: { path: "user", select: "name username profilePic verifications isVerified" },
           })
           .sort({ _id: -1 })
           .limit(limit + 1);
@@ -1354,10 +1354,10 @@ export const searchPosts = async (req, res) => {
       filter,
       hasTextQuery ? { score: { $meta: "textScore" } } : {},
     )
-      .populate("user", "name username profilePic")
+      .populate("user", "name username profilePic verifications isVerified")
       .populate({
         path: "quoteOf",
-        populate: { path: "user", select: "name username profilePic" },
+        populate: { path: "user", select: "name username profilePic verifications isVerified" },
       })
       .sort(hasTextQuery ? { score: { $meta: "textScore" }, _id: -1 } : { createdAt: -1, _id: -1 })
       .limit(MAX_SEARCH_CANDIDATES);
@@ -1845,7 +1845,7 @@ export const toggleRepost = async (req, res) => {
           try {
             const populatedNotif = await newNotif.populate(
               "sender",
-              "name username profilePic",
+              "name username profilePic verifications isVerified",
             );
             emitToUser(post.user, "newNotification", populatedNotif);
           } catch (socketError) {
@@ -1935,8 +1935,8 @@ export const createQuotePost = async (req, res) => {
     original.repostsCount += 1;
     await original.updateOne({ $inc: { repostsCount: 1 } });
 
-    const populatedQuote = await quotePost.populate("user", "name username profilePic");
-    const populatedOriginal = await original.populate("user", "name username profilePic");
+    const populatedQuote = await quotePost.populate("user", "name username profilePic verifications isVerified");
+    const populatedOriginal = await original.populate("user", "name username profilePic verifications isVerified");
 
     // Notify the original author (skip self-quotes, blocked, muted —
     // same guards as every other notification path here).
@@ -1955,7 +1955,7 @@ export const createQuotePost = async (req, res) => {
         });
         const populatedNotif = await newNotif.populate(
           "sender",
-          "name username profilePic",
+          "name username profilePic verifications isVerified",
         );
         emitToUser(original.user, "newNotification", populatedNotif);
       }
@@ -1986,7 +1986,7 @@ export const createQuotePost = async (req, res) => {
               });
               const populatedNotif = await newNotif.populate(
                 "sender",
-                "name username profilePic",
+                "name username profilePic verifications isVerified",
               );
               emitToUser(mentionedUser._id, "newNotification", populatedNotif);
             }),
@@ -2041,10 +2041,10 @@ export const getPostById = async (req, res) => {
       _id: req.params.id,
       removedAt: null,
     })
-      .populate("user", "name username profilePic")
+      .populate("user", "name username profilePic verifications isVerified")
       .populate({
         path: "quoteOf",
-        populate: { path: "user", select: "name username profilePic" },
+        populate: { path: "user", select: "name username profilePic verifications isVerified" },
       });
 
     if (!post) {

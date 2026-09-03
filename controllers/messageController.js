@@ -602,6 +602,8 @@ export const getConversations = async (req, res) => {
                   name: "$otherUser.name",
                   username: "$otherUser.username",
                   profilePic: "$otherUser.profilePic",
+                  verifications: "$otherUser.verifications",
+                  isVerified: "$otherUser.isVerified",
                 },
               },
             },
@@ -659,7 +661,7 @@ export const getMessages = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate("sender", "_id name profilePic")
+      .populate("sender", "_id name profilePic verifications isVerified")
       .populate("receiver", "_id name profilePic");
 
     const messages = recentMessages.reverse();
@@ -868,7 +870,7 @@ export const getMessageRequests = async (req, res) => {
       status: "pending",
       initiator: { $ne: currentUserId },
     })
-      .populate("participants", "name username profilePic")
+      .populate("participants", "name username profilePic verifications isVerified")
       .sort({ createdAt: -1 });
 
     const requests = await Promise.all(
@@ -1024,8 +1026,8 @@ export const searchMessages = async (req, res) => {
     // matched a person keeps both kinds of hits in one sane order
     // rather than crashing on a missing score field.
     const candidates = await Message.find(filter)
-      .populate("sender", "name username profilePic")
-      .populate("receiver", "name username profilePic")
+      .populate("sender", "name username profilePic verifications isVerified")
+      .populate("receiver", "name username profilePic verifications isVerified")
       .sort({ createdAt: -1, _id: -1 })
       .limit(MAX_SEARCH_CANDIDATES);
 

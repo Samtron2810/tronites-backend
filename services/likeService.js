@@ -41,7 +41,7 @@ export const getLikeCounts = async (postIds) => {
 
 // List of populated user docs who liked `postId` (paginated) — the "who
 // liked this" list the old embedded array couldn't support efficiently.
-export const listLikers = async (postId, select = "name username profilePic", { skip, limit } = {}) => {
+export const listLikers = async (postId, select = "name username profilePic verifications isVerified", { skip, limit } = {}) => {
   let query = Like.find({ post: postId })
     .populate("user", select)
     .sort({ createdAt: -1 });

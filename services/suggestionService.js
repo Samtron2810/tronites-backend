@@ -110,7 +110,7 @@ export const getWhoToFollow = async (viewerId, { skip = 0, limit = 10 } = {}) =>
     _id: { $nin: [...excludeIds] },
     lastPostAt: { $gte: since },
   })
-    .select("name username bio profilePic createdAt lastPostAt recentHashtags")
+    .select("name username bio profilePic createdAt lastPostAt recentHashtags verifications isVerified")
     .sort({ lastPostAt: -1 })
     .limit(CANDIDATE_POOL_SIZE)
     .lean();
@@ -127,7 +127,7 @@ export const getWhoToFollow = async (viewerId, { skip = 0, limit = 10 } = {}) =>
     const fallback = await User.find({
       _id: { $nin: [...excludeIds, ...alreadyIn] },
     })
-      .select("name username bio profilePic createdAt lastPostAt recentHashtags")
+      .select("name username bio profilePic createdAt lastPostAt recentHashtags verifications isVerified")
       .limit(CANDIDATE_POOL_SIZE)
       .lean();
     candidates = [...candidates, ...fallback];

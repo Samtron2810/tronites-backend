@@ -13,6 +13,8 @@ import {
   updatePermissionsSchema,
   bulkUsersSchema,
   addModeratorNoteSchema,
+  grantVerificationSchema,
+  revokeVerificationSchema,
 } from "../utils/validators.js";
 import {
   listUsersForAdmin,
@@ -24,6 +26,8 @@ import {
   updateUserPermissions,
   bulkUpdateUsers,
   listAuditLogs,
+  grantVerification,
+  revokeVerification,
 } from "../controllers/adminController.js";
 import {
   addModeratorNoteHandler,
@@ -111,6 +115,24 @@ router.post(
   requireAdmin,
   validate(bulkUsersSchema),
   bulkUpdateUsers,
+);
+
+// Verification badges (Phase 1) — own permission, deliberately not
+// manage_users. See adminController.grantVerification for the
+// staff-can't-be-granted-here guard.
+router.post(
+  "/users/:id/verification",
+  protect,
+  requirePermission("manage_verification"),
+  validate(grantVerificationSchema),
+  grantVerification,
+);
+router.delete(
+  "/users/:id/verification/:type",
+  protect,
+  requirePermission("manage_verification"),
+  validate(revokeVerificationSchema),
+  revokeVerification,
 );
 
 // Phase 7 (roadmap 3.6) — moderator notes + one-screen case history.

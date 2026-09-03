@@ -20,6 +20,20 @@ export const toPublicUserDTO = (user) => {
     username: u.username,
     bio: u.bio,
     profilePic: u.profilePic,
+    // Verification badges are CLAIMS, not status — only type, when, and
+    // (for entities) the legal name being attested to are ever public.
+    // NEVER method, providerRef, or reviewedBy — those are the evidence
+    // trail, admin-only. Expired badges (expiresAt in the past) are
+    // filtered out here so an unrenewed business badge silently stops
+    // being asserted rather than needing a cleanup job to still be
+    // correct on read.
+    verifications: (u.verifications || [])
+      .filter((v) => !v.expiresAt || new Date(v.expiresAt) > new Date())
+      .map((v) => ({
+        type: v.type,
+        verifiedAt: v.verifiedAt,
+        entityName: v.entityName || undefined,
+      })),
   };
 };
 
@@ -74,5 +88,19 @@ export const toAdminUserDTO = (user) => {
     strikesCount: Array.isArray(u.strikes) ? u.strikes.length : 0,
     // Phase 5 — admin rows need the live permission set for the editor.
     permissions: Array.isArray(u.permissions) ? u.permissions : [],
+    // Verification — admins/reviewers see the FULL entries (including
+    // method/reviewedBy) so the grant/revoke UI can show provenance,
+    // unlike the filtered public shape above. Still never providerRef
+    // (opaque KYC-provider handle, not needed for the grant/revoke
+    // decision itself).
+    verifications: (u.verifications || []).map((v) => ({
+      type: v.type,
+      verifiedAt: v.verifiedAt,
+      expiresAt: v.expiresAt || null,
+      method: v.method || "manual",
+      entityName: v.entityName || "",
+      reviewedBy: v.reviewedBy || null,
+    })),
+    isVerified: Boolean(u.isVerified),
   };
 };

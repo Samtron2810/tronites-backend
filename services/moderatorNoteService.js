@@ -26,13 +26,13 @@ export const addModeratorNote = async ({ userId, authorId, body }) => {
     author: authorId,
     body,
   });
-  return note.populate("author", "name username profilePic");
+  return note.populate("author", "name username profilePic verifications isVerified");
 };
 
 export const listModeratorNotes = async (userId) => {
   return ModeratorNote.find({ user: userId })
     .sort({ createdAt: -1 })
-    .populate("author", "name username profilePic")
+    .populate("author", "name username profilePic verifications isVerified")
     .lean();
 };
 
@@ -71,7 +71,7 @@ export const getUserCaseHistory = async (userId) => {
   const [notes, auditEntries, openReports, totalReports] = await Promise.all([
     ModeratorNote.find({ user: userId })
       .sort({ createdAt: -1 })
-      .populate("author", "name username profilePic")
+      .populate("author", "name username profilePic verifications isVerified")
       .lean(),
     AuditLog.find({ "target.type": "user", "target.ref": userId })
       .sort({ createdAt: -1 })

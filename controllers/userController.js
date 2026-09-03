@@ -331,7 +331,7 @@ export const followUser = async (req, res) => {
 export const resolveUsername = async (req, res) => {
   try {
     const username = (req.params.username || "").trim().toLowerCase();
-    const user = await User.findOne({ username }).select("_id username name profilePic");
+    const user = await User.findOne({ username }).select("_id username name profilePic verifications isVerified");
     if (!user) return res.status(404).json({ message: "User not found" });
     res.status(200).json({ user });
   } catch (error) {
@@ -378,8 +378,8 @@ export const getUserProfile = async (req, res) => {
         // through the DTO, a public-view query that never fetched email
         // in the first place still can't leak it.
         const selectFields = isSelf
-          ? "name username bio profilePic email"
-          : "name username bio profilePic";
+          ? "name username bio profilePic email verifications isVerified"
+          : "name username bio profilePic verifications isVerified";
         const user = await User.findById(req.params.id).select(selectFields);
 
         if (!user) {
@@ -489,7 +489,7 @@ export const getUserProfile = async (req, res) => {
           Post.find(postFilter)
             .populate({
               path: "quoteOf",
-              populate: { path: "user", select: "name username profilePic" },
+              populate: { path: "user", select: "name username profilePic verifications isVerified" },
             })
             .sort({ createdAt: -1 })
             .limit(MAX_PROFILE_ITEMS),
@@ -498,10 +498,10 @@ export const getUserProfile = async (req, res) => {
               path: "post",
               match: { removedAt: null, ...PUBLIC_ONLY_FILTER },
               populate: [
-                { path: "user", select: "name username profilePic" },
+                { path: "user", select: "name username profilePic verifications isVerified" },
                 {
                   path: "quoteOf",
-                  populate: { path: "user", select: "name username profilePic" },
+                  populate: { path: "user", select: "name username profilePic verifications isVerified" },
                 },
               ],
             })
@@ -667,7 +667,7 @@ export const searchUsers = async (req, res) => {
 
           [matchedUsers, totalUsers] = await Promise.all([
             User.find(filter)
-              .select("name username bio profilePic")
+              .select("name username bio profilePic verifications isVerified")
               .skip(skip)
               .limit(limit)
               .lean(),

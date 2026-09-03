@@ -74,7 +74,7 @@ export const addComment = async (req, res) => {
       await parentComment.save();
     }
 
-    const populatedComment = await comment.populate("user", "name username profilePic");
+    const populatedComment = await comment.populate("user", "name username profilePic verifications isVerified");
 
     // Invalidate cached comment list(s) for this post
     invalidateCache(`comments:${req.params.id}`);
@@ -100,7 +100,7 @@ export const addComment = async (req, res) => {
           });
           const populatedNotif = await newNotif.populate(
             "sender",
-            "name username profilePic",
+            "name username profilePic verifications isVerified",
           );
           emitToUser(parentComment.user, "newNotification", populatedNotif);
         } catch (socketError) {
@@ -121,7 +121,7 @@ export const addComment = async (req, res) => {
         });
         const populatedNotif = await newNotif.populate(
           "sender",
-          "name username profilePic",
+          "name username profilePic verifications isVerified",
         );
         emitToUser(post.user, "newNotification", populatedNotif);
       } catch (socketError) {
@@ -160,7 +160,7 @@ export const addComment = async (req, res) => {
               });
               const populatedNotif = await newNotif.populate(
                 "sender",
-                "name username profilePic",
+                "name username profilePic verifications isVerified",
               );
               emitToUser(mentionedUser._id, "newNotification", populatedNotif);
             }),
@@ -373,7 +373,7 @@ export const getComments = async (req, res) => {
           parentComment: null,
           removedAt: null, // moderator soft-takedown — see reportService
         })
-          .populate("user", "name username profilePic")
+          .populate("user", "name username profilePic verifications isVerified")
           .sort({ createdAt: -1 });
       },
       180,
@@ -433,7 +433,7 @@ export const getReplies = async (req, res) => {
           parentComment: req.params.id,
           removedAt: null, // moderator soft-takedown — see reportService
         })
-          .populate("user", "name username profilePic")
+          .populate("user", "name username profilePic verifications isVerified")
           .sort({ createdAt: 1 });
       },
       180,
@@ -513,7 +513,7 @@ export const searchComments = async (req, res) => {
       filter,
       hasTextQuery ? { score: { $meta: "textScore" } } : {},
     )
-      .populate("user", "name username profilePic")
+      .populate("user", "name username profilePic verifications isVerified")
       .populate("post", "user privacy removedAt")
       .sort(hasTextQuery ? { score: { $meta: "textScore" }, _id: -1 } : { createdAt: -1, _id: -1 })
       .limit(MAX_SEARCH_CANDIDATES);
