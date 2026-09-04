@@ -143,7 +143,7 @@ export const updateUserRole = async (req, res) => {
     // array exists yet (re-granting must not clobber an admin-curated
     // set); demoting to a plain user clears it entirely. Admin targets
     // keep whatever is stored -- their gate short-circuits anyway.
-    const preUpdate = await User.findById(targetId).select("permissions");
+    const preUpdate = await User.findById(targetId).select("permissions verifications");
     if (!preUpdate) {
       return res.status(404).json({ message: "User not found." });
     }
@@ -159,10 +159,40 @@ export const updateUserRole = async (req, res) => {
       updateOps.$set = { permissions: [] };
     }
 
+    // Staff badge auto-syncs with role — "role → badge, never badge → role"
+    // (see verificationService comment). Promoting to mod/admin adds the
+    // staff badge if not already present; demoting to user strips it.
+    const hasStaffBadge = (preUpdate.verifications || []).some(
+      (v) => v.type === "staff",
+    );
+    const isStaffRole = role === "moderator" || role === "admin";
+
+    if (isStaffRole && !hasStaffBadge) {
+      updateOps.$push = {
+        verifications: {
+          type: "staff",
+          verifiedAt: new Date(),
+          expiresAt: null,
+          method: "manual",
+          reviewedBy: req.user._id,
+        },
+      };
+      updateOps.$set = { ...(updateOps.$set || {}), isVerified: true };
+    } else if (!isStaffRole && hasStaffBadge) {
+      updateOps.$pull = { verifications: { type: "staff" } };
+      // Recompute isVerified — user may still hold other badges
+      const remainingBadges = (preUpdate.verifications || []).filter(
+        (v) => v.type !== "staff" && (!v.expiresAt || new Date(v.expiresAt) > new Date()),
+      );
+      if (!remainingBadges.length) {
+        updateOps.$set = { ...(updateOps.$set || {}), isVerified: false };
+      }
+    }
+
     const user = await User.findByIdAndUpdate(targetId, updateOps, {
       returnDocument: "after",
       runValidators: true,
-    }).select("name username email profilePic role createdAt permissions");
+    }).select("name username email profilePic role createdAt permissions verifications isVerified");
 
     if (!user) {
       return res.status(404).json({ message: "User not found." });

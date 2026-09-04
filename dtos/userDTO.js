@@ -69,6 +69,10 @@ export const toPrivateSelfDTO = (user) => {
     // can compute the 6-month activity requirement client-side before
     // the user fills out the form.
     lastLoginAt: u.lastLoginAt || null,
+    // Account creation timestamp — needed by VerificationSection to
+    // compute the 30-day age requirement client-side. Deliberately not
+    // in toPublicUserDTO (nobody else needs to know when you joined).
+    createdAt: u.createdAt || null,
   };
 };
 
