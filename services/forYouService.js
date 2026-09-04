@@ -126,7 +126,10 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           user: { $in: followedAuthorIds },
           ...feedVisibilityFilter(viewerId),
         })
-          .populate("user", "name username profilePic followersCount credibleRatio")
+          .populate(
+            "user",
+            "name username profilePic followersCount credibleRatio verifications isVerified",
+          )
           .populate({
             path: "quoteOf",
             populate: { path: "user", select: "name username profilePic verifications isVerified" },
@@ -140,7 +143,10 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           user: { $in: fofIds },
           ...PUBLIC_ONLY_FILTER, // 2nd-degree — only public posts qualify
         })
-          .populate("user", "name username profilePic followersCount credibleRatio")
+          .populate(
+            "user",
+            "name username profilePic followersCount credibleRatio verifications isVerified",
+          )
           .populate({
             path: "quoteOf",
             populate: { path: "user", select: "name username profilePic verifications isVerified" },
@@ -155,7 +161,10 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           user: { $nin: [...excludeAuthors, ...followedAuthorIds] },
           ...PUBLIC_ONLY_FILTER, // interest is a discovery source — public only
         })
-          .populate("user", "name username profilePic followersCount credibleRatio")
+          .populate(
+            "user",
+            "name username profilePic followersCount credibleRatio verifications isVerified",
+          )
           .populate({
             path: "quoteOf",
             populate: { path: "user", select: "name username profilePic verifications isVerified" },
@@ -168,7 +177,10 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
       user: { $nin: [...excludeAuthors, ...followedAuthorIds] },
       ...PUBLIC_ONLY_FILTER,
     })
-      .populate("user", "name username profilePic followersCount credibleRatio")
+      .populate(
+            "user",
+            "name username profilePic followersCount credibleRatio verifications isVerified",
+          )
       .populate({
         path: "quoteOf",
         populate: { path: "user", select: "name username profilePic verifications isVerified" },
