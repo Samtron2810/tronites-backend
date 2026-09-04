@@ -1,5 +1,4 @@
 import express from "express";
-
 import protect from "../middleware/authMiddleware.js";
 import requireModerator from "../middleware/requireModerator.js";
 import requirePermission from "../middleware/requirePermission.js";
@@ -12,23 +11,37 @@ import {
   submitVerificationRequestHandler,
   listMyVerificationRequestsHandler,
   checkEligibilityHandler,
+  getFeeInfoHandler,
+  initiatePaymentHandler,
+  verifyPaymentHandler,
   listVerificationRequestsHandler,
   resolveVerificationRequestHandler,
 } from "../controllers/verificationController.js";
 
 const router = express.Router();
 
-// Applicant-facing
+// ── Public ────────────────────────────────────────────────────────────
+// Fee info — no auth, so the badge picker can show "₦5,000 required"
+// before the user even starts.
+router.get("/fees", getFeeInfoHandler);
+
+// ── Applicant-facing ──────────────────────────────────────────────────
+router.get("/mine", protect, listMyVerificationRequestsHandler);
+router.get("/eligibility", protect, checkEligibilityHandler);
+
+// Payment (business badge)
+router.post("/payment/initiate", protect, initiatePaymentHandler);
+router.get("/payment/verify/:reference", protect, verifyPaymentHandler);
+
+// Submit application
 router.post(
   "/",
   protect,
   validate(submitVerificationRequestSchema),
   submitVerificationRequestHandler,
 );
-router.get("/mine", protect, listMyVerificationRequestsHandler);
-router.get("/eligibility", protect, checkEligibilityHandler);
 
-// Reviewer queue
+// ── Reviewer queue ────────────────────────────────────────────────────
 router.get(
   "/",
   protect,

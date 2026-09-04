@@ -85,6 +85,15 @@ const verificationRequestSchema = new mongoose.Schema(
       },
     },
 
+    // ── Payment (business badge only) ────────────────────────────────
+    // Reference to the VerificationPayment that funded this submission.
+    // Null for free-tier types (individual, government, creator).
+    paymentRef: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "VerificationPayment",
+      default: null,
+    },
+
     // ── Review state ──────────────────────────────────────────────────
     status: {
       type: String,

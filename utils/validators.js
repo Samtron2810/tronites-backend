@@ -477,6 +477,9 @@ export const submitVerificationRequestSchema = z.object({
     .max(3, "Maximum 3 public links allowed")
     .optional()
     .default([]),
+  // Required when type === "business" — the _id of a verified
+  // VerificationPayment. Ignored by the service for free-tier types.
+  paymentId: z.string().trim().optional(),
 });
 
 export const resolveVerificationRequestSchema = z.object({
