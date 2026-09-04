@@ -54,9 +54,9 @@ const verificationPaymentSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// Fast lookup by reference (verify flow) and by user+status (can I skip
-// the payment step? / list open payments).
-verificationPaymentSchema.index({ reference: 1 });
+// Fast lookup by user+status (can I skip the payment step? / list open
+// payments). `reference` doesn't need a schema.index() — its `unique: true`
+// field option above already creates the index for the verify flow.
 verificationPaymentSchema.index({ user: 1, status: 1 });
 
 const VerificationPayment = mongoose.model(

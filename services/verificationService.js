@@ -172,6 +172,13 @@ export const initiateVerificationPayment = async ({ userId, type }) => {
   // Prefix prevents collision with any other Paystack usage in future.
   const reference = `tronites_vbiz_${crypto.randomBytes(12).toString("hex")}`;
 
+  // PAYSTACK_CALLBACK_URL = your frontend origin, e.g. https://tronites.vercel.app
+  // Paystack appends ?trxref=<ref>&reference=<ref> to this URL automatically.
+  const callbackBase = process.env.PAYSTACK_CALLBACK_URL;
+  const callbackUrl = callbackBase
+    ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}`
+    : undefined;
+
   const paystackData = await initializeTransaction({
     email: user.email,
     amountKobo,
@@ -181,6 +188,7 @@ export const initiateVerificationPayment = async ({ userId, type }) => {
       badgeType: type,
       platform: "tronites",
     },
+    callbackUrl,
   });
 
   const payment = await VerificationPayment.create({

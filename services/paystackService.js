@@ -39,15 +39,17 @@ const paystackRequest = (method, path, body) =>
   });
 
 // Initialize a transaction. Returns { authorization_url, reference }.
-export const initializeTransaction = async ({ email, amountKobo, reference, metadata }) => {
+export const initializeTransaction = async ({ email, amountKobo, reference, metadata, callbackUrl }) => {
   if (!PAYSTACK_SECRET) throw new Error("PAYSTACK_SECRET_KEY not configured.");
-  const res = await paystackRequest("POST", "/transaction/initialize", {
+  const body = {
     email,
     amount: amountKobo,
     reference,
     currency: "NGN",
     metadata: metadata || {},
-  });
+  };
+  if (callbackUrl) body.callback_url = callbackUrl;
+  const res = await paystackRequest("POST", "/transaction/initialize", body);
   if (!res.status) throw new Error(res.message || "Paystack initialization failed.");
   return res.data; // { authorization_url, access_code, reference }
 };
