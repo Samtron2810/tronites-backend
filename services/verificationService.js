@@ -2,10 +2,9 @@ import crypto from "crypto";
 import User, { VERIFICATION_TYPES } from "../models/User.js";
 import VerificationRequest from "../models/VerificationRequest.js";
 import VerificationPayment from "../models/VerificationPayment.js";
-import {
-  initializeTransaction,
-  verifyTransaction,
-} from "./paystackService.js";
+import Notification from "../models/Notification.js";
+import { initializeTransaction, verifyTransaction } from "./paystackService.js";
+import { emitToUser } from "../socket/socket.js";
 
 const httpError = (statusCode, message) => {
   const err = new Error(message);
@@ -18,32 +17,48 @@ const ADMIN_TARGET_SELECT =
 
 const GRANTABLE_TYPES = ["individual", "business", "government", "creator"];
 
-// Paid badge types and their fees.
-// BUSINESS_BADGE_PRICE_NGN is read from env so pricing is a config
-// change, not a redeploy. Default 5000 NGN.
+// Business and creator badges expire annually; individual and government
+// are perpetual — identity established once.
+const EXPIRING_TYPES = new Set(["business", "creator"]);
+const EXPIRY_YEARS = 1;
+
 const PAID_TYPES = ["business"];
 const getBusinessFeeKobo = () => {
   const ngn = parseInt(process.env.BUSINESS_BADGE_PRICE_NGN || "5000", 10);
   return ngn * 100;
 };
 
-// Eligibility thresholds
 const ACCOUNT_MIN_AGE_DAYS = 30;
-const LAST_LOGIN_MAX_DAYS = 180; // 6 months
+const LAST_LOGIN_MAX_DAYS = 180;
 
-// ─── Single write path for User.verifications ─────────────────────────
+const BADGE_LABELS = {
+  individual: "Individual",
+  business: "Business",
+  government: "Government",
+  creator: "Creator",
+};
+
+// ─── Notification helper ──────────────────────────────────────────────
+const fireVerificationNotification = async ({ recipientId, type, message }) => {
+  try {
+    const notif = await Notification.create({
+      recipient: recipientId,
+      sender: null, // system-generated
+      type,
+      message: message || "",
+    });
+    emitToUser(recipientId, "newNotification", notif);
+  } catch (e) {
+    console.error(`[verificationNotification] ${type} failed:`, e.message);
+  }
+};
+
+// ─── Grant ────────────────────────────────────────────────────────────
 export const grantVerificationToUser = async ({
-  userId,
-  type,
-  entityName,
-  expiresAt,
-  reviewedBy,
+  userId, type, entityName, expiresAt, reviewedBy,
 }) => {
   if (type === "staff") {
-    throw httpError(
-      400,
-      "Staff badges derive from role and can't be granted directly.",
-    );
+    throw httpError(400, "Staff badges derive from role and can't be granted directly.");
   }
   if (!GRANTABLE_TYPES.includes(type)) {
     throw httpError(400, "Invalid verification type.");
@@ -58,13 +73,19 @@ export const grantVerificationToUser = async ({
   const target = await User.findById(userId).select(ADMIN_TARGET_SELECT);
   if (!target) throw httpError(404, "User not found.");
 
-  const existingIndex = (target.verifications || []).findIndex(
-    (v) => v.type === type,
-  );
+  // Auto-set expiry for annually-renewing types unless admin overrides.
+  let resolvedExpiry = expiresAt || null;
+  if (!expiresAt && EXPIRING_TYPES.has(type)) {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() + EXPIRY_YEARS);
+    resolvedExpiry = d;
+  }
+
+  const existingIndex = (target.verifications || []).findIndex((v) => v.type === type);
   const entry = {
     type,
     verifiedAt: new Date(),
-    expiresAt: expiresAt || null,
+    expiresAt: resolvedExpiry,
     method: "manual",
     providerRef: "",
     entityName: entityName || "",
@@ -81,6 +102,7 @@ export const grantVerificationToUser = async ({
   return target;
 };
 
+// ─── Revoke ───────────────────────────────────────────────────────────
 export const revokeVerificationFromUser = async ({ userId, type }) => {
   if (!VERIFICATION_TYPES.includes(type)) {
     throw httpError(400, "Invalid verification type.");
@@ -135,12 +157,26 @@ const checkEligibility = (user, type) => {
   if ((user.verifications || []).some((v) => v.type === type)) {
     throw httpError(409, `You already hold the ${type} badge.`);
   }
+
+  // Creator badge requires an active Individual badge first.
+  if (type === "creator") {
+    const hasActiveIndividual = (user.verifications || []).some(
+      (v) =>
+        v.type === "individual" &&
+        (!v.expiresAt || new Date(v.expiresAt) > new Date()),
+    );
+    if (!hasActiveIndividual) {
+      throw httpError(
+        403,
+        "The Creator badge requires an active Individual verification badge. Apply for Individual first.",
+      );
+    }
+  }
+
   return { eligible: true };
 };
 
 // ─── Payment: initiate ────────────────────────────────────────────────
-// Creates a VerificationPayment record and returns a Paystack checkout URL.
-// Called only for PAID_TYPES (currently "business").
 export const initiateVerificationPayment = async ({ userId, type }) => {
   if (!PAID_TYPES.includes(type)) {
     throw httpError(400, `${type} badge does not require payment.`);
@@ -153,27 +189,18 @@ export const initiateVerificationPayment = async ({ userId, type }) => {
 
   checkEligibility(user, type);
 
-  // Check no unconsumed verified payment already exists — lets the user
-  // reuse a successful payment if they closed the tab before submitting.
   const existing = await VerificationPayment.findOne({
     user: userId,
     status: "verified",
     consumedAt: null,
   });
   if (existing) {
-    return {
-      alreadyPaid: true,
-      paymentId: existing._id,
-      amountKobo: existing.amountKobo,
-    };
+    return { alreadyPaid: true, paymentId: existing._id, amountKobo: existing.amountKobo };
   }
 
   const amountKobo = getBusinessFeeKobo();
-  // Prefix prevents collision with any other Paystack usage in future.
   const reference = `tronites_vbiz_${crypto.randomBytes(12).toString("hex")}`;
 
-  // PAYSTACK_CALLBACK_URL = your frontend origin, e.g. https://tronites.vercel.app
-  // Paystack appends ?trxref=<ref>&reference=<ref> to this URL automatically.
   const callbackBase = process.env.PAYSTACK_CALLBACK_URL;
   const callbackUrl = callbackBase
     ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}`
@@ -183,11 +210,7 @@ export const initiateVerificationPayment = async ({ userId, type }) => {
     email: user.email,
     amountKobo,
     reference,
-    metadata: {
-      userId: userId.toString(),
-      badgeType: type,
-      platform: "tronites",
-    },
+    metadata: { userId: userId.toString(), badgeType: type, platform: "tronites" },
     callbackUrl,
   });
 
@@ -209,12 +232,10 @@ export const initiateVerificationPayment = async ({ userId, type }) => {
 };
 
 // ─── Payment: verify ──────────────────────────────────────────────────
-// Confirms Paystack's charge. Called by frontend after redirect/callback.
 export const verifyVerificationPayment = async ({ userId, reference }) => {
   const payment = await VerificationPayment.findOne({ reference, user: userId });
   if (!payment) throw httpError(404, "Payment record not found.");
 
-  // Already verified — idempotent, just return success.
   if (payment.status === "verified" && !payment.consumedAt) {
     return { verified: true, paymentId: payment._id };
   }
@@ -226,36 +247,22 @@ export const verifyVerificationPayment = async ({ userId, reference }) => {
   }
 
   const data = await verifyTransaction(reference);
-
-  // Paystack returns status "success" for a completed charge.
   const succeeded = data.status === "success";
-  const paystackStatus = data.status || "unknown";
 
   await VerificationPayment.findByIdAndUpdate(payment._id, {
-    $set: {
-      status: succeeded ? "verified" : "failed",
-      paystackStatus,
-    },
+    $set: { status: succeeded ? "verified" : "failed", paystackStatus: data.status || "unknown" },
   });
 
   if (!succeeded) {
-    throw httpError(402, `Payment not successful (status: ${paystackStatus}). Please try again.`);
+    throw httpError(402, `Payment not successful (status: ${data.status}). Please try again.`);
   }
-
   return { verified: true, paymentId: payment._id };
 };
 
 // ─── Submit application ───────────────────────────────────────────────
 export const submitVerificationRequest = async ({
-  userId,
-  type,
-  entityName,
-  legalName,
-  dateOfBirth,
-  country,
-  statement,
-  publicLinks,
-  paymentId, // required for business type
+  userId, type, entityName, legalName, dateOfBirth,
+  country, statement, publicLinks, paymentId,
 }) => {
   if (type === "staff") {
     throw httpError(400, "Staff badges can't be requested — they derive from role.");
@@ -274,23 +281,16 @@ export const submitVerificationRequest = async ({
 
   checkEligibility(user, type);
 
-  // Payment guard for paid types
   let paymentDoc = null;
   if (PAID_TYPES.includes(type)) {
     if (!paymentId) {
       throw httpError(402, "A verified payment is required to submit a business badge application.");
     }
     paymentDoc = await VerificationPayment.findOne({
-      _id: paymentId,
-      user: userId,
-      status: "verified",
-      consumedAt: null,
+      _id: paymentId, user: userId, status: "verified", consumedAt: null,
     });
     if (!paymentDoc) {
-      throw httpError(
-        402,
-        "No valid verified payment found. Please complete payment before submitting.",
-      );
+      throw httpError(402, "No valid verified payment found. Please complete payment before submitting.");
     }
   }
 
@@ -316,7 +316,6 @@ export const submitVerificationRequest = async ({
     throw err;
   }
 
-  // Mark payment consumed so it can't be reused.
   if (paymentDoc) {
     await VerificationPayment.findByIdAndUpdate(paymentDoc._id, {
       $set: { consumedAt: new Date() },
@@ -328,17 +327,11 @@ export const submitVerificationRequest = async ({
 
 // ─── Applicant's own requests ─────────────────────────────────────────
 export const listMyVerificationRequests = async (userId) => {
-  return VerificationRequest.find({ user: userId })
-    .sort({ createdAt: -1 })
-    .lean();
+  return VerificationRequest.find({ user: userId }).sort({ createdAt: -1 }).lean();
 };
 
 // ─── Reviewer queue ───────────────────────────────────────────────────
-export const listVerificationRequests = async ({
-  status = "pending",
-  page = 1,
-  limit = 25,
-} = {}) => {
+export const listVerificationRequests = async ({ status = "pending", page = 1, limit = 25 } = {}) => {
   const skip = (page - 1) * limit;
   const filter = status === "all" ? {} : { status };
 
@@ -348,7 +341,7 @@ export const listVerificationRequests = async ({
       .skip(skip)
       .limit(limit)
       .populate("user", "name username profilePic verifications isVerified createdAt")
-      .populate("paymentRef", "amountKobo paystackStatus verifiedAt")
+      .populate("paymentRef", "amountKobo paystackStatus createdAt")
       .lean(),
     VerificationRequest.countDocuments(filter),
   ]);
@@ -356,21 +349,13 @@ export const listVerificationRequests = async ({
   return { requests, total, page, totalPages: Math.ceil(total / limit) };
 };
 
-// ─── Resolve (approve / deny) ─────────────────────────────────────────
-export const resolveVerificationRequest = async ({
-  requestId,
-  reviewerId,
-  decision,
-  note,
-}) => {
+// ─── Resolve ──────────────────────────────────────────────────────────
+export const resolveVerificationRequest = async ({ requestId, reviewerId, decision, note }) => {
   if (!["approved", "denied"].includes(decision)) {
     throw httpError(400, "decision must be 'approved' or 'denied'.");
   }
 
-  const request = await VerificationRequest.findOne({
-    _id: requestId,
-    status: "pending",
-  });
+  const request = await VerificationRequest.findOne({ _id: requestId, status: "pending" });
   if (!request) throw httpError(404, "Request not found or already resolved.");
 
   let updatedUser = null;
@@ -379,25 +364,39 @@ export const resolveVerificationRequest = async ({
       userId: request.user,
       type: request.type,
       entityName: request.entityName,
-      expiresAt: null,
+      expiresAt: null, // auto-computed inside grant for expiring types
       reviewedBy: reviewerId,
     });
   }
 
   const updatedRequest = await VerificationRequest.findOneAndUpdate(
     { _id: requestId, status: "pending" },
-    {
-      $set: {
-        status: decision,
-        reviewedBy: reviewerId,
-        reviewedAt: new Date(),
-        decisionNote: note || "",
-      },
-    },
+    { $set: { status: decision, reviewedBy: reviewerId, reviewedAt: new Date(), decisionNote: note || "" } },
     { returnDocument: "after" },
   );
-
   if (!updatedRequest) throw httpError(404, "Request not found or already resolved.");
+
+  // Notify applicant — best effort, never blocks the response.
+  const label = BADGE_LABELS[request.type] || request.type;
+  if (decision === "approved") {
+    const expiryNote = EXPIRING_TYPES.has(request.type)
+      ? ` It is valid for ${EXPIRY_YEARS} year and will need renewal.`
+      : "";
+    await fireVerificationNotification({
+      recipientId: request.user,
+      type: "verification_approved",
+      message: `Your ${label} verification badge has been approved.${expiryNote}`,
+    });
+  } else {
+    const reason = note
+      ? ` Reason: ${note}`
+      : " You may reapply after addressing the feedback.";
+    await fireVerificationNotification({
+      recipientId: request.user,
+      type: "verification_denied",
+      message: `Your ${label} verification application was not approved.${reason}`,
+    });
+  }
 
   return { request: updatedRequest, user: updatedUser };
 };
@@ -416,10 +415,9 @@ export const checkVerificationEligibility = async ({ userId, type }) => {
   };
 };
 
-// ─── Expose fee info without eligibility check (used by frontend badge picker) ─
 export const getVerificationFeeInfo = () => ({
-  business: { requiresPayment: true, feeNgn: getBusinessFeeKobo() / 100 },
+  business:   { requiresPayment: true,  feeNgn: getBusinessFeeKobo() / 100 },
   individual: { requiresPayment: false, feeNgn: 0 },
   government: { requiresPayment: false, feeNgn: 0 },
-  creator: { requiresPayment: false, feeNgn: 0 },
+  creator:    { requiresPayment: false, feeNgn: 0 },
 });

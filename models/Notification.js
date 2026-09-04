@@ -11,7 +11,10 @@ const notificationSchema = new mongoose.Schema(
     sender: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      // Not required: system-generated notifications (verification
+      // lifecycle, expiry job) have no human sender. The notifications
+      // page branches on type rather than sender presence for these rows.
+      default: null,
     },
 
     type: {
@@ -44,6 +47,16 @@ const notificationSchema = new mongoose.Schema(
         // never displayed (the warned user sees "Moderation team", not
         // which moderator issued it).
         "moderator_warning",
+        // Phase 5 — verification badge lifecycle.
+        // verification_approved: fired when a reviewer approves an application.
+        // verification_denied: fired when a reviewer denies an application.
+        // verification_expired: fired by the nightly expiry job when a
+        //   time-limited badge (business, creator) lapses.
+        // All three have no human sender (sender: null) and carry the
+        // full human-readable message in `message`.
+        "verification_approved",
+        "verification_denied",
+        "verification_expired",
       ],
       required: true,
     },

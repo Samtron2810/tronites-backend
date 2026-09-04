@@ -43,6 +43,7 @@ import { cleanupAbandonedVideoShells } from "./jobs/cleanupAbandonedVideoShells.
 import { purgeDeletedAccounts } from "./jobs/purgeDeletedAccounts.js";
 import { flagRepeatOffenders } from "./jobs/flagRepeatOffenders.js";
 import { computeForYouSignals } from "./jobs/computeForYouSignals.js";
+import { expireVerifications } from "./jobs/expireVerifications.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -210,6 +211,16 @@ const startServer = async () => {
     FOR_YOU_SIGNALS_INTERVAL_MS,
   );
 
+  // Phase 5 — nightly badge expiry sweep. Strips business and creator
+  // badges whose expiresAt has passed and fires an in-app notification
+  // so the user knows to reapply. Runs at the same 24h cadence as the
+  // For You signals job — cheap no-op when nothing has lapsed.
+  expireVerifications();
+  const expireVerificationsInterval = setInterval(
+    expireVerifications,
+    FOR_YOU_SIGNALS_INTERVAL_MS,
+  );
+
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
   // up a second, unrelated http.Server and leave Socket.IO unreachable).
@@ -234,6 +245,7 @@ const startServer = async () => {
       clearInterval(purgeInterval);
       clearInterval(offenderInterval);
       clearInterval(forYouSignalsInterval);
+      clearInterval(expireVerificationsInterval);
 
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see
