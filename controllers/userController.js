@@ -6,7 +6,7 @@ import Block from "../models/Block.js";
 import bcrypt from "bcryptjs";
 import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache, invalidateFeedCache } from "../utils/redis.js";
-import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
+import cloudinary from "../utils/cloudinary.js";
 import { hasBlocked, isBlockedEitherWay } from "../services/blockService.js";
 import { getWhoToFollow } from "../services/suggestionService.js";
 import { autoPromoteIfMutual } from "../services/conversationService.js";
@@ -701,11 +701,75 @@ export const searchUsers = async (req, res) => {
   }
 };
 
-//UPDATE PROFILE IMAGE API
-export const updateProfilePicture = async (req, res) => {
-  // console.log(req.file);
+//UPDATE PROFILE IMAGE API — signed browser upload flow (same pattern as
+// post images, see createImageUploadSignature in postController.js): the
+// frontend asks for a signature, uploads the compressed avatar straight to
+// Cloudinary, then sends the finished asset's URL here. Nothing image-sized
+// ever passes through Express, and the BullMQ queue/Redis is no longer
+// involved — the avatar is the only upload that used it per-request, and a
+// slow queue/Cloudinary round trip was what the client's 15s axios timeout
+// kept cutting off.
+//
+// The folder/transformation below must stay in sync with what
+// createProfilePictureUploadSignature signs — the client sends them back
+// verbatim, and Cloudinary rejects the upload if they differ.
+const PROFILE_PICTURE_FOLDER = "tronites_profiles";
+const PROFILE_PICTURE_TRANSFORMATION =
+  "w_400,h_400,c_fill,g_face,q_auto,f_auto";
 
+// Signed browser upload: request a Cloudinary signature for the avatar.
+// Signing server-side keeps the API secret off the client and pins the
+// folder + transformation — a tampered client can't upload elsewhere or
+// change the crop, since any param mismatch invalidates the signature.
+export const createProfilePictureUploadSignature = async (req, res) => {
   try {
+    const timestamp = Math.round(Date.now() / 1000);
+
+    // Params that must be signed — Cloudinary rejects the upload if the
+    // signature doesn't match these exact values.
+    const paramsToSign = {
+      timestamp,
+      folder: PROFILE_PICTURE_FOLDER,
+      transformation: PROFILE_PICTURE_TRANSFORMATION,
+    };
+
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      process.env.CLOUDINARY_API_SECRET,
+    );
+
+    res.status(200).json({
+      signature,
+      timestamp,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      folder: PROFILE_PICTURE_FOLDER,
+      transformation: PROFILE_PICTURE_TRANSFORMATION,
+    });
+  } catch (error) {
+    console.error("CREATE PROFILE PICTURE SIGNATURE ERROR:", error.message);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Finalize the profile-picture change with an already-uploaded Cloudinary
+// asset. The URL is re-validated against our cloud + profile folder — the
+// same arbitrary-URL-injection defense as createPost/createVideoPost — so a
+// crafted request can't point profilePic at an arbitrary asset.
+export const updateProfilePicture = async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const allowedPrefix = `https://res.cloudinary.com/${cloudName}/image/upload/`;
+    if (
+      typeof url !== "string" ||
+      !url.startsWith(allowedPrefix) ||
+      !url.includes(`/${PROFILE_PICTURE_FOLDER}/`)
+    ) {
+      return res.status(400).json({ message: "Invalid image URL" });
+    }
+
     const user = await User.findById(req.user._id);
 
     if (!user) {
@@ -714,31 +778,7 @@ export const updateProfilePicture = async (req, res) => {
       });
     }
 
-    const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
-
-    // Same reasoning as post images: enqueue instead of calling
-    // Cloudinary directly, so this request doesn't block the event loop
-    // for the full upload duration. transformation is passed here (unlike
-    // the previous version) since avatars render small (~24-96px)
-    // everywhere in the app -- no reason to store/serve a raw,
-    // full-resolution upload. c_fill + g_face crops to a square framed on
-    // the detected face rather than a naive center-crop; g_face falls
-    // back to center automatically if no face is detected.
-    let result;
-    try {
-      result = await uploadImageAndWait("profile-image", {
-        base64Data: b64,
-        folder: "tronites_profiles",
-        transformation: "w_400,h_400,c_fill,g_face,q_auto,f_auto",
-      });
-    } catch (uploadError) {
-      return res.status(uploadError.httpStatus || 502).json({
-        message: uploadError.message,
-        code: uploadError.code || "UPLOAD_FAILED",
-      });
-    }
-
-    user.profilePic = result.secureUrl;
+    user.profilePic = url;
 
     await user.save();
 

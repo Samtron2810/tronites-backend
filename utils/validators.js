@@ -281,6 +281,18 @@ export const updateBioSchema = z.object({
     .default(""),
 });
 
+// Signed browser upload: the profile picture is uploaded straight to
+// Cloudinary (signed via POST /users/profile-picture/signature), then the
+// finished asset's URL is sent here. Shape only — the controller
+// re-validates that the URL belongs to our cloud + profile folder, the
+// same arbitrary-URL-injection defense as createVideoPostSchema.
+export const updateProfilePictureSchema = z.object({
+  url: z
+    .string()
+    .url("Invalid image URL")
+    .max(512, "Image URL is too long"),
+});
+
 export const searchQuerySchema = z.object({
   q: z.string().trim().optional().default(""),
 });

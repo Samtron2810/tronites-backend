@@ -1,16 +1,16 @@
 import express from "express";
 
 import protect from "../middleware/authMiddleware.js";
-import upload from "../middleware/uploadMiddleware.js";
 import { accountDeletionLimiter } from "../middleware/rateLimiter.js";
 import { validate } from "../utils/validators.js";
 import { deleteAccountSchema } from "../utils/validators.js";
-import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema } from "../utils/validators.js";
+import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema } from "../utils/validators.js";
 
 import {
   followUser,
   getUserProfile,
   searchUsers,
+  createProfilePictureUploadSignature,
   updateProfilePicture,
   updateName,
   updateBio,
@@ -47,10 +47,19 @@ router.post("/:id/mute", protect, muteUserHandler);
 router.delete("/:id/mute", protect, unmuteUserHandler);
 router.get("/profile/:id", protect, getUserProfile);
 router.get("/search", protect, searchUsers);
+// Signed browser upload (same flow as post images, see postRoutes.js):
+// POST /profile-picture/signature returns signed Cloudinary params, the
+// browser uploads the avatar directly to Cloudinary, then
+// PUT /profile-picture carries just the finished asset's URL as JSON.
+router.post(
+  "/profile-picture/signature",
+  protect,
+  createProfilePictureUploadSignature,
+);
 router.put(
   "/profile-picture",
   protect,
-  upload.single("image"),
+  validate(updateProfilePictureSchema),
   updateProfilePicture,
 );
 router.put("/bio", protect, validate(updateBioSchema), updateBio);
