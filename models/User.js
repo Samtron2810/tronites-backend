@@ -215,6 +215,7 @@ const userSchema = new mongoose.Schema(
         "manage_content",
         "view_audit_log",
         "manage_roles",
+        "manage_verification",
       ],
       default: [],
     },
