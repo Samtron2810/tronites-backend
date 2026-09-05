@@ -139,7 +139,7 @@ export const apiLimiter = rateLimit({
 // Auth limiter (register/login) — 10 requests per 15 minutes
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 20,
   message: {
     message: "Too many authentication attempts, please try again later.",
   },
