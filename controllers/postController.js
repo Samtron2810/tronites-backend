@@ -111,7 +111,7 @@ export const createPost = async (req, res) => {
       images: imageUrls,
       hashtags: extractHashtags(text),
     });
-    const populatedPost = await post.populate("user", "name profilePic verifications isVerified");
+    const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
 
     // Notify mentioned users (skip self-mentions, blocked relationships,
     // and anyone who's muted the poster). Best-effort — a failure here
@@ -375,7 +375,7 @@ export const createVideoPost = async (req, res) => {
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
 
-    const populatedPost = await post.populate("user", "name profilePic verifications isVerified");
+    const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
     res.status(201).json(populatedPost);
 
     // Real-time post feed update for followers. only-me posts never emit —
@@ -441,7 +441,7 @@ export const editPost = async (req, res) => {
     post.editedAt = new Date();
     await post.save();
 
-    const populatedPost = await post.populate("user", "name profilePic verifications isVerified");
+    const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
 
     // Notify newly-added mentions only — re-notifying every mention on
     // every edit would spam anyone already mentioned pre-edit.
