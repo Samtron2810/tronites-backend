@@ -32,11 +32,6 @@ import {
 } from "./socket/socket.js";
 import { apiLimiter } from "./middleware/rateLimiter.js";
 import csrfProtection from "./middleware/csrfProtection.js";
-import { startImageUploadWorker } from "./queues/imageUploadWorker.js";
-import {
-  imageUploadQueue,
-  imageUploadQueueEvents,
-} from "./queues/imageUploadQueue.js";
 import { connectRedis, isRedisReady, disconnectRedis } from "./utils/redis.js";
 import errorHandler from "./middleware/errorHandler.js";
 import { cleanupAbandonedVideoShells } from "./jobs/cleanupAbandonedVideoShells.js";
@@ -163,8 +158,6 @@ const startServer = async () => {
   await connectRedis();
   await initSocketRedisAdapter();
 
-  const worker = startImageUploadWorker();
-
   // Fallback cleanup for video post shells abandoned before the
   // Cloudinary Upload Widget's close/error/success callback ever fires
   // (crash, closed tab, lost network) — see jobs/cleanupAbandonedVideoShells.js.
@@ -252,13 +245,6 @@ const startServer = async () => {
       // socket/socket.js).
       await io.close();
       console.log("HTTP server and Socket.IO closed");
-
-      await Promise.allSettled([
-        worker ? worker.close() : Promise.resolve(),
-        imageUploadQueue.close(),
-        imageUploadQueueEvents.close(),
-      ]);
-      console.log("Image upload queue and worker closed");
 
       await disconnectSocketRedis();
       console.log("Socket Redis adapter disconnected");

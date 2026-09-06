@@ -5,12 +5,9 @@ import dotenv from "dotenv";
 // This file must stay the very first import in index.js. ES module
 // imports are evaluated in source order, and each import's full
 // dependency tree is fully evaluated before the next import runs —
-// verified empirically. utils/redis.js, socket/socket.js,
-// queues/imageUploadQueue.js, and queues/imageUploadWorker.js all read
+// verified empirically. utils/redis.js and socket/socket.js both read
 // process.env.REDIS_URL at their own top level (not inside a function),
-// so previously — with dotenv.config() called as a plain statement after
-// those had already been imported — they always saw an undefined
-// REDIS_URL locally and silently fell back to redis://localhost:6379.
+// so dotenv.config() must run before those modules are evaluated.
 // Making dotenv.config() run inside the first-imported module fixes this
 // for all of them at once, with no changes needed in those files.
 dotenv.config();
@@ -27,6 +24,6 @@ if (missing.length > 0) {
 
 if (!process.env.REDIS_URL) {
   console.warn(
-    "REDIS_URL is not set — Redis is optional, so the server will start, but caching, shared rate limiting, presence, and the image-upload queue will all run in local fallback mode.",
+    "REDIS_URL is not set — Redis is optional, so the server will start, but caching, shared rate limiting, and presence will run in local fallback mode.",
   );
 }

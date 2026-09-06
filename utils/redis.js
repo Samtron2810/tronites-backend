@@ -59,7 +59,7 @@ export const connectRedis = async () => {
     redisReady = false;
 
     console.warn(
-      "Redis did not connect at startup — continuing without Redis (caching, shared rate limiting, and the image-upload queue will run in fallback mode). It will connect automatically once reachable:",
+      "Redis did not connect at startup — continuing without Redis (caching, shared rate limiting, and presence will run in fallback mode). It will connect automatically once reachable:",
       err.message,
     );
   }

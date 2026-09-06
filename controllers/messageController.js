@@ -40,9 +40,28 @@ export const sendMessage = async (req, res) => {
     const senderId = req.user._id;
     const receiverId = req.params.userId;
     const { text } = req.body;
+    // Images now arrive as Cloudinary URLs uploaded directly by the browser
+    // (signed via POST /messages/signature/image). Validate they belong to
+    // our cloud before storing — same pattern as createPost.
+    const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
 
-    if ((!text || !text.trim()) && (!req.files || req.files.length === 0)) {
+    if ((!text || !text.trim()) && bodyImages.length === 0) {
       return res.status(400).json({ message: "Message cannot be empty." });
+    }
+
+    if (bodyImages.length > 4) {
+      return res.status(400).json({ message: "Max 4 images per message." });
+    }
+
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const allowedPrefix = `https://res.cloudinary.com/${cloudName}/`;
+    if (
+      bodyImages.length > 0 &&
+      !bodyImages.every(
+        (url) => typeof url === "string" && url.startsWith(allowedPrefix),
+      )
+    ) {
+      return res.status(400).json({ message: "Invalid image URL." });
     }
 
     if (senderId.toString() === receiverId.toString()) {
@@ -71,41 +90,11 @@ export const sendMessage = async (req, res) => {
       });
     }
 
-    let imageUrls = [];
-
-    // Upload up to 4 images to Cloudinary if provided
-    if (req.files && req.files.length > 0) {
-      try {
-        for (const file of req.files) {
-          const b64 = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
-          const result = await cloudinary.uploader.upload(b64, {
-            folder: "tronites_messages",
-            // Server-side safety net: even if a client sends an
-            // uncompressed image, cap dimensions and let Cloudinary
-            // auto-optimize quality/format (same pattern as post images).
-            transformation: [
-              {
-                width: 1280,
-                height: 1280,
-                crop: "limit",
-                quality: "auto",
-                fetch_format: "auto",
-              },
-            ],
-          });
-          imageUrls.push(result.secure_url);
-        }
-      } catch (uploadError) {
-        console.error("Image upload to Cloudinary failed:", uploadError);
-        return res.status(500).json({ message: "Image upload failed." });
-      }
-    }
-
     const message = await Message.create({
       sender: senderId,
       receiver: receiverId,
       text: text?.trim() || null,
-      images: imageUrls,
+      images: bodyImages,
       conversationId: getConversationId(senderId, receiverId),
     });
 
@@ -146,6 +135,37 @@ export const sendMessage = async (req, res) => {
     res.status(201).json(populatedMessage);
   } catch (error) {
     console.error("SEND MESSAGE ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Signed browser upload: request a Cloudinary signature for chat image
+// uploads. Mirrors postController.createImageUploadSignature — the browser
+// uploads directly to Cloudinary, then sends the resulting URLs in the
+// POST /:userId body. Express never touches the image bytes.
+export const createMessageImageUploadSignature = async (req, res) => {
+  try {
+    const timestamp = Math.round(Date.now() / 1000);
+    const folder = "tronites_messages";
+    const transformation = "w_1280,h_1280,c_limit,q_auto,f_auto";
+
+    const paramsToSign = { timestamp, folder, transformation };
+
+    const signature = cloudinary.utils.api_sign_request(
+      paramsToSign,
+      process.env.CLOUDINARY_API_SECRET,
+    );
+
+    res.status(200).json({
+      signature,
+      timestamp,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      folder,
+      transformation,
+    });
+  } catch (error) {
+    console.error("CREATE MESSAGE IMAGE SIGNATURE ERROR:", error.message);
     res.status(500).json({ message: error.message });
   }
 };

@@ -1,10 +1,10 @@
 import express from "express";
 import protect from "../middleware/authMiddleware.js";
-import { uploadMultiple } from "../middleware/uploadMiddleware.js";
 import { validate, validateQuery } from "../utils/validators.js";
 import {
   sendMessageSchema,
   paginationSchema,
+  messageImageSignatureSchema,
   messageVideoSignatureSchema,
   sendVideoMessageSchema,
   messageVoiceSignatureSchema,
@@ -20,6 +20,7 @@ import {
   reactToMessage,
   getMessageRequests,
   respondToRequest,
+  createMessageImageUploadSignature,
   createMessageVideoUploadSignature,
   sendVideoMessage,
   createMessageVoiceUploadSignature,
@@ -40,6 +41,17 @@ router.get(
 router.get("/search", protect, searchMessages);
 router.get("/requests", protect, getMessageRequests);
 router.put("/requests/:userId", protect, respondToRequest);
+
+// Signed browser upload: request a Cloudinary signature for chat image
+// uploads. Browser uploads directly then sends URLs in POST /:userId.
+// Registered before dynamic /:userId routes — same literal-segment reasoning.
+router.post(
+  "/signature/image",
+  protect,
+  messageLimiter,
+  validate(messageImageSignatureSchema),
+  createMessageImageUploadSignature,
+);
 
 // Signed browser upload: request a signature for a direct chat-video upload.
 // No message is created here — see POST /:userId/video below. Registered
@@ -89,7 +101,6 @@ router.post(
   "/:userId",
   protect,
   messageLimiter,
-  uploadMultiple.array("images", 4),
   validate(sendMessageSchema),
   sendMessage,
 );

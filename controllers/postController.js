@@ -11,7 +11,6 @@ import {
   getFeedCacheKey,
   invalidateFeedCache,
 } from "../utils/redis.js";
-import { uploadImageAndWait } from "../queues/imageUploadQueue.js";
 import { listFollowingIds } from "../services/followService.js";
 import {
   canViewPost,
@@ -73,34 +72,27 @@ import {
   removeAllRepostsForPost,
 } from "../services/repostService.js";
 
-// CREATE POST — images now arrive as Cloudinary URLs (signed browser
-// upload flow, see createImageUploadSignature). The frontend uploads
-// directly to Cloudinary, gets back secure_urls, and sends them here.
-// Legacy multer-file path is kept for backward compatibility with any
-// older client still posting that way.
+// CREATE POST — images arrive as Cloudinary URLs from the signed browser
+// upload flow (see createImageUploadSignature). The frontend uploads
+// directly to Cloudinary and sends the resulting secure_urls here.
 export const createPost = async (req, res) => {
   try {
     const { text, privacy } = req.body;
-    // New path: images come as an array of Cloudinary URLs in the body.
     const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
-    // Legacy path: multer files (upload.array). req.file: legacy single.
-    const files = req.files?.length ? req.files : req.file ? [req.file] : [];
 
-    if (!text?.trim() && bodyImages.length === 0 && files.length === 0) {
+    if (!text?.trim() && bodyImages.length === 0) {
       return res.status(400).json({
         message: "Post must contain text or image",
       });
     }
 
-    if (bodyImages.length + files.length > 4) {
+    if (bodyImages.length > 4) {
       return res.status(400).json({ message: "Max 4 images per post" });
     }
 
     let imageUrls = [];
 
     if (bodyImages.length > 0) {
-      // Validate the URLs come from our Cloudinary account to prevent
-      // arbitrary URL injection into the DB.
       const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
       const allowedPrefix = `https://res.cloudinary.com/${cloudName}/`;
       const valid = bodyImages.every(
@@ -110,35 +102,6 @@ export const createPost = async (req, res) => {
         return res.status(400).json({ message: "Invalid image URL" });
       }
       imageUrls = bodyImages;
-    } else if (files.length > 0) {
-      // Legacy multer path — upload via the image queue (kept for old
-      // clients). New clients use the signed browser upload instead.
-      try {
-        const results = await Promise.all(
-          files.map((file) => {
-            const b64 = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
-            return uploadImageAndWait("post-image", {
-              base64Data: b64,
-              folder: "tronites_posts",
-              transformation: [
-                {
-                  width: 1600,
-                  height: 1600,
-                  crop: "limit",
-                  quality: "auto",
-                  fetch_format: "auto",
-                },
-              ],
-            });
-          }),
-        );
-        imageUrls = results.map((r) => r.secureUrl);
-      } catch (uploadError) {
-        return res.status(uploadError.httpStatus || 502).json({
-          message: uploadError.message,
-          code: uploadError.code || "UPLOAD_FAILED",
-        });
-      }
     }
 
     const post = await Post.create({

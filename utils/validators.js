@@ -192,7 +192,14 @@ export const createCommentSchema = z.object({
 
 export const sendMessageSchema = z.object({
   text: z.string().trim().max(1000, "Message too long").optional().default(""),
+  // Cloudinary URLs uploaded directly by the browser (signed via
+  // POST /messages/signature/image). Controller re-validates the prefix.
+  images: z.array(z.string().url()).max(4).optional().default([]),
 });
+
+// Signed browser upload: request a signature for chat image uploads.
+// No body required — the schema is an empty-object check.
+export const messageImageSignatureSchema = z.object({});
 
 // Signed browser upload: request a signature for a chat-video upload. No
 // body needed — the message is created separately after the upload completes
