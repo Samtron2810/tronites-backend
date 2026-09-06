@@ -764,11 +764,29 @@ export const deleteMessage = async (req, res) => {
 
     // Delete the Cloudinary video/voice asset, if any. Best-effort, matching
     // the pattern postController.deletePost uses — an orphaned CDN asset is
-    // a cleanup task, not a reason to fail the delete. Message images are
-    // intentionally left alone here (consistent with the pre-existing
-    // behavior for legacy/multi-image messages). Voice notes live under the
-    // same `video` resource_type namespace as Cloudinary has no distinct
+    // a cleanup task, not a reason to fail the delete. Voice notes live under
+    // the same `video` resource_type namespace as Cloudinary has no distinct
     // "audio" type for uploads.
+    const imageUrls = [
+      ...(message.images || []),
+      ...(message.image ? [message.image] : []),
+    ];
+    await Promise.all(
+      imageUrls.map(async (url) => {
+        try {
+          // Extract the filename-based public ID. Cloudinary secure_urls from
+          // signed uploads look like:
+          //   .../upload/tronites_messages/abc123.jpg   (no version)
+          //   .../upload/v1234567890/tronites_messages/abc123.jpg  (with version)
+          // In both cases the last path segment is the filename; stripping
+          // the extension gives the public ID leaf, and we prefix the folder.
+          const leaf = url.split("/").pop().split(".")[0];
+          await cloudinary.uploader.destroy(`tronites_messages/${leaf}`);
+        } catch (err) {
+          console.log("Cloudinary message image delete failed:", err.message);
+        }
+      }),
+    );
     if (message.video?.publicId) {
       try {
         await cloudinary.uploader.destroy(message.video.publicId, {

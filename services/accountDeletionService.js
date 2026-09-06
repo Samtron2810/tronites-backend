@@ -133,32 +133,29 @@ export const hardDeleteAccount = async (userId) => {
   // preserve for the other participant the way, say, a public comment
   // thread might be, and there's no moderation-history argument for
   // keeping private message content the way there is for Reports below.
-  // Cloudinary cleanup for message images: best-effort, since (per
-  // messageController.js) nothing currently deletes these on individual
-  // message deletion either — this is strictly better than the status
-  // quo, not a promise of completeness elsewhere in the app.
+  // Cloudinary cleanup for message images (both legacy `image` field and
+  // the multi-image `images` array), videos, and voice notes — best-effort.
   const messages = await Message.find({
     $or: [{ sender: userId }, { receiver: userId }],
-  }).select("image");
+  }).select("image images video voice");
   await Promise.all(
-    messages
-      .filter((m) => m.image)
-      .map(async (m) => {
+    messages.map(async (m) => {
+      // Legacy single-image field
+      if (m.image) {
         const publicId = publicIdFromUrl(m.image);
         if (publicId) await destroyCloudinaryAsset(`tronites_messages/${publicId}`);
-      }),
-  );
-  // Chat videos live in their own folder with a proper publicId (uploaded
-  // directly to Cloudinary, not base64-through-Express like images), so
-  // cleanup is a straight destroy call — same as post videos.
-  const videoMessages = await Message.find({
-    $or: [{ sender: userId }, { receiver: userId }],
-    "video.publicId": { $ne: null },
-  }).select("video.publicId");
-  await Promise.all(
-    videoMessages.map(async (m) => {
+      }
+      // Multi-image array
+      for (const url of m.images || []) {
+        const publicId = publicIdFromUrl(url);
+        if (publicId) await destroyCloudinaryAsset(`tronites_messages/${publicId}`);
+      }
+      // Video and voice use stored publicId directly
       if (m.video?.publicId) {
         await destroyCloudinaryAsset(m.video.publicId, "video");
+      }
+      if (m.voice?.publicId) {
+        await destroyCloudinaryAsset(m.voice.publicId, "video");
       }
     }),
   );
