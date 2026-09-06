@@ -16,7 +16,7 @@ import {
   unconsumeChallenge,
 } from "../services/otpService.js";
 import { generateChallengeId } from "../utils/otp.js";
-import { passwordResetEmailTemplate } from "../utils/emailTemplate.js";
+import { passwordResetEmailTemplate, duplicateRegistrationAlertTemplate } from "../utils/emailTemplate.js";
 import { maybeSendNewDeviceAlert } from "../utils/newDeviceAlert.js";
 
 // REGISTER
@@ -37,22 +37,36 @@ export const sendOtp = async (req, res) => {
     const userExists = await User.findOne({ email }).select("_id");
 
     if (userExists) {
-      // Do NOT reveal existence. Do NOT start/send a real challenge for
-      // an address that's already an account — that would email an
-      // existing user an unsolicited registration code.
+      // Do NOT reveal existence to the registrant. Return a well-formed
+      // challengeId so the response shape is identical to the real-send
+      // path — the frontend navigates to /verify-otp either way.
       //
-      // Still return a well-formed challengeId matching the exact shape
-      // startChallenge() would (see utils/otp.js) — the frontend always
-      // expects one to navigate to /verify-otp. Because no Otp document
-      // exists with this id, any code submitted against it fails
-      // verifyChallenge()'s existence check with the same generic
-      // "Code not found, already used, or expired" message a truly
-      // wrong/expired code produces. Nothing in the response, or in
-      // what happens next, differs from the real-send path.
+      // Notify the real account owner so they know someone tried to
+      // register with their address. Fire-and-forget: an email failure
+      // must never change the response the registrant sees.
+      //
+      // The fake challengeId has no Otp document, so:
+      //   • verify-otp → "Code not found, already used, or expired"
+      //   • resend-otp → silently no-ops (see resendChallenge)
+      // The frontend uses the `_duplicate` flag to show a helpful hint
+      // on the OTP page without leaking existence in the HTTP response.
+      const fakeId = generateChallengeId();
+      import("../utils/brevoEmail.js")
+        .then(({ sendEmail }) =>
+          sendEmail({
+            to: email,
+            subject: "Someone tried to register with your Tronites email",
+            htmlContent: duplicateRegistrationAlertTemplate(),
+          }),
+        )
+        .catch((e) =>
+          console.error("[sendOtp] duplicate-alert email failed:", e.message),
+        );
       return res.status(200).json({
         message: "If this address can be registered, we've sent a code.",
-        challengeId: generateChallengeId(),
+        challengeId: fakeId,
         email,
+        _duplicate: true,
       });
     }
 
@@ -138,6 +152,10 @@ export const resendOtp = async (req, res) => {
       subject: "Your Tronites OTP (Resend)",
     });
 
+    // resendChallenge returns null for fake/non-existent challengeIds
+    // (duplicate-email path). The response is intentionally identical to
+    // a real resend so the caller gets no signal about whether a real
+    // OTP was sent.
     res.status(200).json({ message: "OTP resent" });
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });

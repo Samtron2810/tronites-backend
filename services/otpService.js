@@ -167,10 +167,13 @@ export const startChallenge = async ({
 export const resendChallenge = async ({ challengeId, subject }) => {
   const existing = await Otp.findOne({ challengeId });
   if (!existing) {
-    throw httpError(
-      400,
-      "This code has expired or doesn't exist. Please start again.",
-    );
+    // Silent no-op: returning without error keeps the resend response
+    // identical whether the challengeId is fake (duplicate-email path
+    // in sendOtp) or real. Throwing a distinct error here would let an
+    // attacker probe any email address — register it, then call resend
+    // and observe whether it succeeds or errors. Returning null signals
+    // to the caller (resendOtp controller) that nothing was sent.
+    return null;
   }
 
   const rate = checkAndBumpSendRate(existing);
