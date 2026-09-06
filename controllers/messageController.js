@@ -58,7 +58,12 @@ export const sendMessage = async (req, res) => {
     if (
       bodyImages.length > 0 &&
       !bodyImages.every(
-        (url) => typeof url === "string" && url.startsWith(allowedPrefix),
+        (item) =>
+          item &&
+          typeof item.url === "string" &&
+          item.url.startsWith(allowedPrefix) &&
+          typeof item.publicId === "string" &&
+          item.publicId.startsWith("tronites_messages/"),
       )
     ) {
       return res.status(400).json({ message: "Invalid image URL." });
@@ -94,7 +99,7 @@ export const sendMessage = async (req, res) => {
       sender: senderId,
       receiver: receiverId,
       text: text?.trim() || null,
-      images: bodyImages,
+      images: bodyImages.map((item) => item.url),
       conversationId: getConversationId(senderId, receiverId),
     });
 
@@ -217,6 +222,10 @@ export const sendVideoMessage = async (req, res) => {
     const senderId = req.user._id;
     const receiverId = req.params.userId;
     const { text, video } = req.body;
+
+    if (!video || typeof video.url !== "string") {
+      return res.status(400).json({ message: "Video is required." });
+    }
 
     if (senderId.toString() === receiverId.toString()) {
       return res
@@ -368,6 +377,10 @@ export const sendVoiceMessage = async (req, res) => {
     const senderId = req.user._id;
     const receiverId = req.params.userId;
     const { text, voice } = req.body;
+
+    if (!voice || typeof voice.url !== "string") {
+      return res.status(400).json({ message: "Voice note is required." });
+    }
 
     if (senderId.toString() === receiverId.toString()) {
       return res
@@ -1102,6 +1115,32 @@ export const searchMessages = async (req, res) => {
           }
         : null,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /messages/unread-count — returns the true total unread message
+// count across ALL conversations, not just the first 50. Used by the
+// nav badge so power users with 50+ threads see an accurate count.
+export const getTotalUnreadCount = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const result = await Message.aggregate([
+      {
+        $match: {
+          receiver: userId,
+          read: false,
+        },
+      },
+      {
+        $count: "total",
+      },
+    ]);
+
+    const total = result.length > 0 ? result[0].total : 0;
+    res.status(200).json({ total });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

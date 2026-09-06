@@ -95,13 +95,19 @@ export const createPost = async (req, res) => {
     if (bodyImages.length > 0) {
       const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
       const allowedPrefix = `https://res.cloudinary.com/${cloudName}/`;
+      const POST_IMAGE_FOLDER = "tronites_posts";
       const valid = bodyImages.every(
-        (url) => typeof url === "string" && url.startsWith(allowedPrefix),
+        (item) =>
+          item &&
+          typeof item.url === "string" &&
+          item.url.startsWith(allowedPrefix) &&
+          typeof item.publicId === "string" &&
+          item.publicId.startsWith(`${POST_IMAGE_FOLDER}/`),
       );
       if (!valid) {
         return res.status(400).json({ message: "Invalid image URL" });
       }
-      imageUrls = bodyImages;
+      imageUrls = bodyImages.map((item) => item.url);
     }
 
     const post = await Post.create({
@@ -425,6 +431,16 @@ export const editPost = async (req, res) => {
     }
 
     const { text } = req.body;
+
+    // images, video, and privacy are immutable after posting — reject
+    // explicitly so the client knows the update did NOT take effect,
+    // rather than silently succeeding with no change.
+    if (req.body.images !== undefined || req.body.video !== undefined || req.body.privacy !== undefined) {
+      return res.status(400).json({
+        message: "images, video, and privacy cannot be changed after posting",
+      });
+    }
+
     const hasImages = (post.images?.length || 0) > 0;
 
     if (!text?.trim() && !hasImages) {
@@ -2123,6 +2139,21 @@ export const deletePost = async (req, res) => {
     // will simply come back empty once this post is gone;
     // QuotedPostPreview already renders that as "This post is no
     // longer available." — no cascade needed here.
+
+    // If this post IS a quote, decrement the original's repostsCount —
+    // createQuotePost incremented it, so deletion must balance it.
+    // Best-effort: a missing original (already deleted) is not an error.
+    if (post.quoteOf) {
+      try {
+        await Post.updateOne(
+          { _id: post.quoteOf },
+          { $inc: { repostsCount: -1 } },
+        );
+      } catch (err) {
+        console.error("Quote repostsCount decrement failed:", err.message);
+      }
+    }
+
     await post.deleteOne();
 
     // Invalidate feed cache

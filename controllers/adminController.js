@@ -211,6 +211,15 @@ export const updateUserRole = async (req, res) => {
       detail: { toRole: role },
     });
 
+    // Force the affected client to re-fetch /auth/me immediately so
+    // the new role/permissions are reflected in their UI without waiting
+    // for the 15-minute JWT expiry. Best-effort — no error if offline.
+    try {
+      emitToUser(user._id, "permissionsChanged", { role: user.role });
+    } catch (socketError) {
+      console.error("permissionsChanged emit error:", socketError.message);
+    }
+
     res.status(200).json({ user: toAdminUserDTO(user) });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -666,6 +675,15 @@ export const updateUserPermissions = async (req, res) => {
         previousPermissions,
       },
     });
+
+    // Force client re-fetch of /auth/me so new permissions apply immediately.
+    try {
+      emitToUser(updated._id, "permissionsChanged", {
+        permissions: updated.permissions,
+      });
+    } catch (socketError) {
+      console.error("permissionsChanged emit error:", socketError.message);
+    }
 
     res.status(200).json({ user: toAdminUserDTO(updated) });
   } catch (error) {

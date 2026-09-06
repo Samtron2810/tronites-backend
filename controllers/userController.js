@@ -7,7 +7,7 @@ import bcrypt from "bcryptjs";
 import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
 import { getOrSetCache, invalidateCache, invalidateFeedCache } from "../utils/redis.js";
 import cloudinary from "../utils/cloudinary.js";
-import { hasBlocked, isBlockedEitherWay } from "../services/blockService.js";
+import { hasBlocked, isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockService.js";
 import { getWhoToFollow } from "../services/suggestionService.js";
 import { autoPromoteIfMutual } from "../services/conversationService.js";
 import { toPublicUserDTO, toPrivateSelfDTO } from "../dtos/userDTO.js";
@@ -891,36 +891,25 @@ export const getFollowers = async (req, res) => {
     );
     const skip = (page - 1) * limit;
 
-    const cacheKey = `followers:${req.params.id}:${page}:${limit}`;
-
-    const result = await getOrSetCache(
-      cacheKey,
-      async () => {
-        const userExists = await User.exists({ _id: req.params.id });
-        if (!userExists) {
-          return null;
-        }
-
-        const [followers, totalFollowers] = await Promise.all([
-          listFollowers(req.params.id, "name profilePic bio", { skip, limit }),
-          getFollowerCount(req.params.id),
-        ]);
-
-        return {
-          followers,
-          hasMore: skip + followers.length < totalFollowers,
-        };
-      },
-      180,
-    );
-
-    if (result === null) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+    const userExists = await User.exists({ _id: req.params.id });
+    if (!userExists) {
+      return res.status(404).json({ message: "User not found" });
     }
 
-    res.status(200).json(result);
+    const [followers, totalFollowers, blockedIds] = await Promise.all([
+      listFollowers(req.params.id, "name profilePic bio", { skip, limit }),
+      getFollowerCount(req.params.id),
+      getBlockedEitherWayIds(req.user._id),
+    ]);
+
+    const filtered = followers.filter(
+      (u) => !blockedIds.has(u._id.toString()),
+    );
+
+    res.status(200).json({
+      followers: filtered,
+      hasMore: skip + followers.length < totalFollowers,
+    });
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -938,36 +927,25 @@ export const getFollowing = async (req, res) => {
     );
     const skip = (page - 1) * limit;
 
-    const cacheKey = `following:${req.params.id}:${page}:${limit}`;
-
-    const result = await getOrSetCache(
-      cacheKey,
-      async () => {
-        const userExists = await User.exists({ _id: req.params.id });
-        if (!userExists) {
-          return null;
-        }
-
-        const [following, totalFollowing] = await Promise.all([
-          listFollowing(req.params.id, "name profilePic bio", { skip, limit }),
-          getFollowingCount(req.params.id),
-        ]);
-
-        return {
-          following,
-          hasMore: skip + following.length < totalFollowing,
-        };
-      },
-      180,
-    );
-
-    if (result === null) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+    const userExists = await User.exists({ _id: req.params.id });
+    if (!userExists) {
+      return res.status(404).json({ message: "User not found" });
     }
 
-    res.status(200).json(result);
+    const [following, totalFollowing, blockedIds] = await Promise.all([
+      listFollowing(req.params.id, "name profilePic bio", { skip, limit }),
+      getFollowingCount(req.params.id),
+      getBlockedEitherWayIds(req.user._id),
+    ]);
+
+    const filtered = following.filter(
+      (u) => !blockedIds.has(u._id.toString()),
+    );
+
+    res.status(200).json({
+      following: filtered,
+      hasMore: skip + following.length < totalFollowing,
+    });
   } catch (error) {
     res.status(500).json({
       message: error.message,

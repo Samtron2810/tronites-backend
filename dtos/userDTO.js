@@ -34,6 +34,12 @@ export const toPublicUserDTO = (user) => {
         verifiedAt: v.verifiedAt,
         entityName: v.entityName || undefined,
       })),
+    // Denormalized fast-path boolean — mirrors toAdminUserDTO. Needed by
+    // any code that checks user.isVerified directly on post authors or
+    // profile views shaped through this DTO (e.g. feed cards, comment
+    // authors). The verifications array above is the source of truth;
+    // this must stay in sync with the model's isVerified field.
+    isVerified: Boolean(u.isVerified),
   };
 };
 
