@@ -105,6 +105,8 @@ app.use("/api/verification-requests", verificationRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/push", pushRoutes);
+import analyticsRoutes from "./routes/analyticsRoutes.js";
+app.use("/api/analytics", analyticsRoutes);
 app.get("/", (req, res) => {
   res.send("API Running...");
 });
