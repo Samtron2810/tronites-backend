@@ -123,7 +123,9 @@ export const pushForNotification = async (recipientId, notif) => {
     if (user?.pushPrefs && user.pushPrefs[prefKey] === false) return;
   }
 
-  const { title, body } = buildNotificationCopy(notif);
+  // Jobs can pass _overrideCopy to bypass buildNotificationCopy for
+  // system-generated notifications that don't map to a standard type.
+  const { title, body } = notif._overrideCopy || buildNotificationCopy(notif);
   const url = notif.post ? `/post/${notif.post}` : "/notifications";
 
   await pushToUser(recipientId, {

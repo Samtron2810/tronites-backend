@@ -159,6 +159,16 @@ const postSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    // Creator tools — scheduled publishing. When set, the post is in
+    // "draft/scheduled" state and invisible to all feed/explore/profile
+    // queries until the publishScheduledPosts job flips it to null.
+    // The creator can edit or cancel it before the scheduled time.
+    // null = published immediately (the default for all existing posts).
+    scheduledFor: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );
@@ -181,6 +191,9 @@ postSchema.index({ text: "text" });
 // since its last run, and lets forYouService/getTrendingPosts exclude
 // flagged posts from ranking without a collection scan.
 postSchema.index({ velocityFlagged: 1, velocityFlaggedAt: -1 });
+// Lets the publishScheduledPosts job efficiently find posts whose
+// scheduled time has arrived without scanning the full collection.
+postSchema.index({ scheduledFor: 1 }, { sparse: true });
 
 const Post = mongoose.model("Post", postSchema);
 

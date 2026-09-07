@@ -57,6 +57,12 @@ const notificationSchema = new mongoose.Schema(
         "verification_approved",
         "verification_denied",
         "verification_expired",
+        // Creator tools — proactive renewal reminder sent 14 days
+        // before a creator badge's expiresAt. Distinct from
+        // verification_expired (which fires after lapse) so the UI
+        // can render it with a different CTA ("Renew now" vs "Apply
+        // again"). No human sender; message carries the days-left copy.
+        "badge_expiring",
       ],
       required: true,
     },

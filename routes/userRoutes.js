@@ -1,10 +1,11 @@
 import express from "express";
 
 import protect from "../middleware/authMiddleware.js";
+import requireCreator from "../middleware/requireCreator.js";
 import { accountDeletionLimiter } from "../middleware/rateLimiter.js";
 import { validate } from "../utils/validators.js";
 import { deleteAccountSchema } from "../utils/validators.js";
-import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema } from "../utils/validators.js";
+import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema, pinnedPostSchema, collabStatusSchema } from "../utils/validators.js";
 
 import {
   followUser,
@@ -25,6 +26,8 @@ import {
   getBlockStatus,
   deleteMyAccount,
   exportMyData,
+  setPinnedPost,
+  setCollabStatus,
 } from "../controllers/userController.js";
 import { getMuteStatus, muteUserHandler, unmuteUserHandler } from "../controllers/muteController.js";
 import {
@@ -77,5 +80,9 @@ router.get("/me/sessions", protect, listSessions);
 router.delete("/me/sessions/:id", protect, revokeSessionById);
 router.delete("/me/sessions", protect, revokeOtherSessions);
 router.delete("/me", protect, accountDeletionLimiter, validate(deleteAccountSchema), deleteMyAccount);
+
+// ── Creator-only profile tools ───────────────────────────────────────────────
+router.put("/pinned-post", protect, requireCreator, validate(pinnedPostSchema), setPinnedPost);
+router.put("/collab-status", protect, requireCreator, validate(collabStatusSchema), setCollabStatus);
 
 export default router;

@@ -118,6 +118,23 @@ const userSchema = new mongoose.Schema(
     // Default false (public) — same convention as most social platforms.
     // Used as an eligibility gate for verification requests (account must
     // be public to apply).
+    // Creator tools — pinned post shown at top of the creator's profile
+    // timeline regardless of post order. Only populated by creators via
+    // PUT /users/pinned-post. Nullable — null means no pin is active.
+    pinnedPost: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Post",
+      default: null,
+    },
+
+    // Creator discoverability signal — shown as a chip on their profile
+    // so brands/other creators can see they're open to collaboration.
+    // Only writable by verified creators via PUT /users/collab-status.
+    openToCollabs: {
+      type: Boolean,
+      default: false,
+    },
+
     isPrivate: {
       type: Boolean,
       default: false,

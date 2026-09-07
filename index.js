@@ -39,6 +39,9 @@ import { purgeDeletedAccounts } from "./jobs/purgeDeletedAccounts.js";
 import { flagRepeatOffenders } from "./jobs/flagRepeatOffenders.js";
 import { computeForYouSignals } from "./jobs/computeForYouSignals.js";
 import { expireVerifications } from "./jobs/expireVerifications.js";
+import { publishScheduledPosts } from "./jobs/publishScheduledPosts.js";
+import { runPostPerformanceNudge } from "./jobs/postPerformanceNudge.js";
+import { runBadgeRenewalReminder } from "./jobs/badgeRenewalReminder.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -216,6 +219,23 @@ const startServer = async () => {
     FOR_YOU_SIGNALS_INTERVAL_MS,
   );
 
+  // Creator tools — publish scheduled posts every 60 seconds. Finds
+  // any Post with scheduledFor <= now and flips it to null (live).
+  publishScheduledPosts();
+  const scheduledPostsInterval = setInterval(publishScheduledPosts, 60_000);
+
+  // Creator tools — post performance nudge every 6 hours. Finds
+  // creators whose most recent post is underperforming vs their avg
+  // and sends a push notification + in-app alert.
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+  runPostPerformanceNudge();
+  const performanceNudgeInterval = setInterval(runPostPerformanceNudge, SIX_HOURS_MS);
+
+  // Creator tools — badge renewal reminder once per day. Notifies
+  // creators whose badge expires within 14 days.
+  runBadgeRenewalReminder();
+  const badgeRenewalInterval = setInterval(runBadgeRenewalReminder, FOR_YOU_SIGNALS_INTERVAL_MS);
+
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
   // up a second, unrelated http.Server and leave Socket.IO unreachable).
@@ -241,6 +261,9 @@ const startServer = async () => {
       clearInterval(offenderInterval);
       clearInterval(forYouSignalsInterval);
       clearInterval(expireVerificationsInterval);
+      clearInterval(scheduledPostsInterval);
+      clearInterval(performanceNudgeInterval);
+      clearInterval(badgeRenewalInterval);
 
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see

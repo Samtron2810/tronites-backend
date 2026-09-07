@@ -40,6 +40,9 @@ export const toPublicUserDTO = (user) => {
     // authors). The verifications array above is the source of truth;
     // this must stay in sync with the model's isVerified field.
     isVerified: Boolean(u.isVerified),
+    // Creator tools — publicly visible on profile.
+    openToCollabs: Boolean(u.openToCollabs),
+    pinnedPost: u.pinnedPost || null,
   };
 };
 

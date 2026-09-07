@@ -593,3 +593,26 @@ export const validateQuery = (schema) => (req, res, next) => {
   Object.assign(req.query, result.data);
   next();
 };
+
+// ── Creator tools ────────────────────────────────────────────────────────────
+
+export const scheduledPostSchema = z.object({
+  scheduledFor: z
+    .string()
+    .datetime({ message: "scheduledFor must be a valid ISO 8601 datetime" })
+    .refine((v) => new Date(v) > new Date(), {
+      message: "scheduledFor must be in the future",
+    }),
+});
+
+export const pinnedPostSchema = z.object({
+  postId: z
+    .string()
+    .regex(/^[a-f\d]{24}$/i, "Invalid post ID")
+    .nullable()
+    .optional(),
+});
+
+export const collabStatusSchema = z.object({
+  openToCollabs: z.boolean(),
+});

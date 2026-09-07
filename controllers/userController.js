@@ -1005,3 +1005,50 @@ export const exportMyData = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// ── Creator tools ──────────────────────────────────────────────────────────
+
+// PUT /users/pinned-post  { postId }
+// Sets or clears the creator's pinned post. Only the post owner can pin
+// one of their own posts. Pass postId: null to unpin.
+export const setPinnedPost = async (req, res) => {
+  try {
+    const { postId } = req.body;
+
+    if (postId) {
+      const post = await Post.findById(postId).select("user removedAt");
+      if (!post || post.removedAt) {
+        return res.status(404).json({ message: "Post not found." });
+      }
+      if (post.user.toString() !== req.user._id.toString()) {
+        return res.status(403).json({ message: "You can only pin your own posts." });
+      }
+    }
+
+    await User.findByIdAndUpdate(req.user._id, {
+      pinnedPost: postId || null,
+    });
+
+    invalidateCache(`profile:${req.user._id}:*`);
+    res.status(200).json({ pinnedPost: postId || null });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// PUT /users/collab-status  { openToCollabs: boolean }
+// Toggles the "open to collabs" flag on the creator's public profile.
+export const setCollabStatus = async (req, res) => {
+  try {
+    const { openToCollabs } = req.body;
+    if (typeof openToCollabs !== "boolean") {
+      return res.status(400).json({ message: "openToCollabs must be a boolean." });
+    }
+
+    await User.findByIdAndUpdate(req.user._id, { openToCollabs });
+    invalidateCache(`profile:${req.user._id}:*`);
+    res.status(200).json({ openToCollabs });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
