@@ -2175,11 +2175,25 @@ export const deletePost = async (req, res) => {
       }
     }
 
+    // If this post was the creator's pinned post, clear the pin so their
+    // profile never references a deleted post. Only the owner can delete
+    // their own post AND only the owner can pin it (see setPinnedPost),
+    // so at most one User row can match — updateMany is just defensive.
+    await User.updateMany(
+      { pinnedPost: post._id },
+      { $set: { pinnedPost: null } },
+    );
+
     await post.deleteOne();
 
     // Invalidate feed cache
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
+    // The user DTO (which carries the pinnedPost id) is cached under
+    // `profile:<ownerId>:*` too — drop it as well, in case the deleted
+    // post was the pinned one. Otherwise the stale pinnedPost id lingers
+    // for the full cache TTL.
+    invalidateCache(`profile:${req.user._id}:*`);
 
     res.status(200).json({ message: "Post deleted" });
   } catch (error) {

@@ -379,8 +379,8 @@ export const getUserProfile = async (req, res) => {
         // through the DTO, a public-view query that never fetched email
         // in the first place still can't leak it.
         const selectFields = isSelf
-          ? "name username bio profilePic email verifications isVerified"
-          : "name username bio profilePic verifications isVerified";
+          ? "name username bio profilePic email verifications isVerified openToCollabs pinnedPost"
+          : "name username bio profilePic verifications isVerified openToCollabs pinnedPost";
         const user = await User.findById(req.params.id).select(selectFields);
 
         if (!user) {
@@ -557,6 +557,31 @@ export const getUserProfile = async (req, res) => {
       180,
     );
 
+    // ── Pinned post (hydrated separately from the paginated timeline) ──
+    // The creator's pinned post is fetched on its own — NOT looked up in
+    // `posts` — so the banner at the top of the profile renders even when
+    // a pinned post is old enough to have fallen off page 1. It must
+    // satisfy the same visibility rules as the timeline: a pinned post
+    // that was deleted, privatized past the viewer's tier, or never
+    // published degrades to "no pin" instead of leaking a hidden post.
+    // Returned as a top-level `pinnedPost` field (full post object or
+    // null); `user.pinnedPost` on the DTO remains the bare _id.
+    const pinnedPostId = userResult.user?.pinnedPost || null;
+    const pinnedDoc = pinnedPostId
+      ? await Post.findOne({
+          _id: pinnedPostId,
+          removedAt: null,
+          ...PUBLISHED_FILTER,
+          ...postsVisibilityFilter,
+        }).populate({
+          path: "quoteOf",
+          populate: {
+            path: "user",
+            select: "name username profilePic verifications isVerified",
+          },
+        })
+      : null;
+
     // Bulk-check like/bookmark/repost state for every post shown AND
     // every embedded original (quoteOf) — each is an independent Post
     // document with its own state now.
@@ -564,7 +589,16 @@ export const getUserProfile = async (req, res) => {
     const quoteOfIds = postsResult.items
       .filter((item) => item.post.quoteOf)
       .map((item) => item.post.quoteOf._id);
-    const allIds = [...postIds, ...quoteOfIds];
+    // Fold the pinned post (and its embedded original, if any) into the
+    // same bulk state check — PostCard renders the banner with the same
+    // isLiked/isBookmarked/reaction fields it needs everywhere else.
+    const pinnedQuoteOfIds = pinnedDoc?.quoteOf ? [pinnedDoc.quoteOf._id] : [];
+    const allIds = [
+      ...postIds,
+      ...quoteOfIds,
+      ...(pinnedDoc ? [pinnedDoc._id] : []),
+      ...pinnedQuoteOfIds,
+    ];
     const [
       likedPostIds,
       bookmarkedPostIds,
@@ -616,10 +650,27 @@ export const getUserProfile = async (req, res) => {
         : null,
     }));
 
+    const pinnedPost = pinnedDoc
+      ? {
+          ...(pinnedDoc._doc || pinnedDoc),
+          isLiked: likedPostIds.has(pinnedDoc._id.toString()),
+          isBookmarked: bookmarkedPostIds.has(pinnedDoc._id.toString()),
+          isReposted: repostedPostIds.has(pinnedDoc._id.toString()),
+          reactionSummary: reactionSummaries.get(pinnedDoc._id.toString()) || {},
+          myReaction: myReactions.get(pinnedDoc._id.toString()) || null,
+          isQuotePost: Boolean(pinnedDoc.quoteOf),
+          quoteOf: pinnedDoc.quoteOf ? formatQuoteOf(pinnedDoc.quoteOf) : null,
+          // Only the owner's own posts are pinnable (setPinnedPost
+          // enforces ownership), so the banner is never a repost edge.
+          repostedBy: null,
+        }
+      : null;
+
     res.status(200).json({
       ...userResult,
       ...postsResult,
       posts: postsWithLikeState,
+      pinnedPost,
     });
   } catch (error) {
     res.status(500).json({
