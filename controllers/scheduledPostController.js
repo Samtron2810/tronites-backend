@@ -61,6 +61,13 @@ export const unschedulePost = async (req, res) => {
       return res.status(403).json({ message: "Not your post." });
     }
 
+    // The post becomes visible the moment this runs — stamp createdAt so
+    // its displayed time / feed position reflect the actual publish
+    // instant ("Publish now"), matching what the cron job does for
+    // auto-published scheduled posts. Mongoose 9's timestamps plugin
+    // marks createdAt immutable, so the overwriteImmutable option is
+    // required — otherwise the set() is ignored on save().
+    post.set("createdAt", new Date(), { overwriteImmutable: true });
     post.scheduledFor = null;
     await post.save();
 
