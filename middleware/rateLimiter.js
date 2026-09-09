@@ -148,10 +148,10 @@ export const authLimiter = rateLimit({
   store: makeStore("rl:auth:"),
 });
 
-// Post creation limiter — 30 posts per hour
+// Post creation limiter — 20 posts per hour
 export const postLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10,
+  max: 20,
   message: {
     message: "Too many posts created, please slow down.",
   },

@@ -97,9 +97,16 @@ export const createPostSchema = z.object({
     .max(280, "Post text must be at most 280 characters")
     .optional()
     .default(""),
-  // Signed browser upload: images arrive as Cloudinary URLs.
+  // Signed browser upload: images arrive as { url, publicId } objects —
+  // shape only (like createVideoPostSchema); the controller re-validates
+  // url/publicId against our cloud + folder.
   images: z
-    .array(z.string().url("Invalid image URL"))
+    .array(
+      z.object({
+        url: z.string().url("Invalid image URL"),
+        publicId: z.string().trim().min(1, "Missing image publicId").max(255),
+      }),
+    )
     .max(4, "Max 4 images per post")
     .optional()
     .default([]),
