@@ -113,6 +113,16 @@ export const createPostSchema = z.object({
   // Post audience — who can see this post. Optional; absent defaults
   // to "public" server-side.
   privacy: z.enum(POST_PRIVACY_VALUES).optional().default("public"),
+  // Optional scheduled publish time. When present the post is created in
+  // a hidden state and published by the publishScheduledPosts cron job.
+  scheduledFor: z
+    .string()
+    .datetime({ message: "scheduledFor must be a valid ISO 8601 datetime" })
+    .refine((v) => new Date(v) > new Date(), {
+      message: "scheduledFor must be in the future",
+    })
+    .optional()
+    .nullable(),
 });
 
 // Signed browser upload: request a signature for image uploads.
@@ -143,6 +153,15 @@ export const createVideoPostSchema = z.object({
   }),
   // Post audience — same as createPostSchema.
   privacy: z.enum(POST_PRIVACY_VALUES).optional().default("public"),
+  // Optional scheduled publish time — same as createPostSchema.
+  scheduledFor: z
+    .string()
+    .datetime({ message: "scheduledFor must be a valid ISO 8601 datetime" })
+    .refine((v) => new Date(v) > new Date(), {
+      message: "scheduledFor must be in the future",
+    })
+    .optional()
+    .nullable(),
 });
 
 // Edit is text-only (images are fixed after posting). Empty text is

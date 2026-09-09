@@ -30,6 +30,7 @@ import {
 } from "../services/reactionService.js";
 import {
   PUBLIC_ONLY_FILTER,
+  PUBLISHED_FILTER,
   FOLLOWERS_VISIBLE_FILTER,
 } from "../services/postVisibilityService.js";
 import { softDeleteAccount } from "../services/accountDeletionService.js";
@@ -467,6 +468,7 @@ export const getUserProfile = async (req, res) => {
         const postFilter = {
           user: req.params.id,
           removedAt: null,
+          ...PUBLISHED_FILTER, // exclude scheduled-but-not-yet-published posts
           ...postsVisibilityFilter,
         };
         const repostFilter = { user: req.params.id };
@@ -496,7 +498,7 @@ export const getUserProfile = async (req, res) => {
           Repost.find(repostFilter)
             .populate({
               path: "post",
-              match: { removedAt: null, ...PUBLIC_ONLY_FILTER },
+              match: { removedAt: null, ...PUBLISHED_FILTER, ...PUBLIC_ONLY_FILTER },
               populate: [
                 { path: "user", select: "name username profilePic verifications isVerified" },
                 {

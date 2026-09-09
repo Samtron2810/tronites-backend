@@ -14,6 +14,11 @@ import { isFollowing } from "./followService.js";
 // documents, so stored rows can legitimately lack `privacy`. All the
 // Mongo fragments below treat "missing" exactly like "public" via
 // `$exists: false`, so no migration is required for correctness.
+// Mongo filter fragment: posts that have been published (not waiting for
+// a scheduled publish time). Add this to every feed/discovery query so
+// scheduled posts are invisible until the cron job publishes them.
+export const PUBLISHED_FILTER = { scheduledFor: null };
+
 export const POST_PRIVACY = Object.freeze({
   PUBLIC: "public",
   FOLLOWERS: "followers",

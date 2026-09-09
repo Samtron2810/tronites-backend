@@ -16,6 +16,7 @@ import {
   canViewPost,
   isRepostable,
   PUBLIC_ONLY_FILTER,
+  PUBLISHED_FILTER,
   feedVisibilityFilter,
   POST_PRIVACY,
 } from "../services/postVisibilityService.js";
@@ -77,7 +78,7 @@ import {
 // directly to Cloudinary and sends the resulting secure_urls here.
 export const createPost = async (req, res) => {
   try {
-    const { text, privacy } = req.body;
+    const { text, privacy, scheduledFor } = req.body;
     const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
 
     if (!text?.trim() && bodyImages.length === 0) {
@@ -110,12 +111,15 @@ export const createPost = async (req, res) => {
       imageUrls = bodyImages.map((item) => item.url);
     }
 
+    const scheduledForDate = scheduledFor ? new Date(scheduledFor) : null;
+
     const post = await Post.create({
       user: req.user._id,
       text,
       privacy,
       images: imageUrls,
       hashtags: extractHashtags(text),
+      ...(scheduledForDate ? { scheduledFor: scheduledForDate } : {}),
     });
     const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
 
@@ -164,8 +168,14 @@ export const createPost = async (req, res) => {
     }
 
     // Invalidate feed cache for author's followers
-    invalidateFeedCache(req.user._id);
-    invalidateCache(`profile-posts:${req.user._id}:*`);
+    // Scheduled posts are hidden until the cron publishes them — do not
+    // invalidate caches or emit to followers yet. The response still
+    // carries the full post so the frontend can show it on the
+    // Scheduled Posts page immediately.
+    if (!scheduledForDate) {
+      invalidateFeedCache(req.user._id);
+      invalidateCache(`profile-posts:${req.user._id}:*`);
+    }
 
     // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass. Never
     // awaited: a slow or failed heuristics check must not delay the
@@ -178,21 +188,21 @@ export const createPost = async (req, res) => {
       console.error("Pre-moderation dispatch failed:", err.message),
     );
 
-    // Send response FIRST before real-time socket emissions
-    res.status(201).json(populatedPost);
+    // Send response FIRST before real-time socket emissions.
+    // Wrap in { post } so the frontend can access postRes.data.post._id
+    // for both scheduled and immediate posts consistently.
+    res.status(201).json({ post: populatedPost });
 
-    // Real-time post feed update for followers — single room emit instead
-    // of looping through every follower individually. Followers join this
-    // room automatically on socket connect (see socket/socket.js).
-    // only-me posts never emit — a follower's live feed shouldn't prepend
-    // a post their DB feed query would never have returned in the first
-    // place.
-    try {
-      if (post.privacy !== POST_PRIVACY.ONLY_ME) {
-        emitToFollowersOf(req.user._id, "newPost", populatedPost);
+    // Real-time post feed update for followers — skip entirely for
+    // scheduled posts (they are not live yet).
+    if (!scheduledForDate) {
+      try {
+        if (post.privacy !== POST_PRIVACY.ONLY_ME) {
+          emitToFollowersOf(req.user._id, "newPost", populatedPost);
+        }
+      } catch (socketError) {
+        console.error("Real-time feed emission error:", socketError);
       }
-    } catch (socketError) {
-      console.error("Real-time feed emission error:", socketError);
     }
   } catch (error) {
     console.error("CREATE POST ERROR NAME:", error.name);
@@ -295,7 +305,7 @@ export const createVideoUploadSignature = async (req, res) => {
 // and therefore no way for a post to get stuck or be orphaned.
 export const createVideoPost = async (req, res) => {
   try {
-    const { text, video, privacy } = req.body;
+    const { text, video, privacy, scheduledFor } = req.body;
     const { publicId, url, durationSeconds } = video;
 
     // Validate the asset belongs to our Cloudinary account and folder —
@@ -326,6 +336,8 @@ export const createVideoPost = async (req, res) => {
     }
     thumbnailUrl = thumbnailUrl.replace(/\.mp4$/, ".jpg");
 
+    const scheduledForDate = scheduledFor ? new Date(scheduledFor) : null;
+
     const post = await Post.create({
       user: req.user._id,
       text,
@@ -338,6 +350,7 @@ export const createVideoPost = async (req, res) => {
         durationSeconds: durationSeconds || null,
         status: "ready",
       },
+      ...(scheduledForDate ? { scheduledFor: scheduledForDate } : {}),
     });
 
     // Notify mentioned users (skip self-mentions, blocked relationships,
@@ -378,15 +391,18 @@ export const createVideoPost = async (req, res) => {
       console.error("Mention notification error:", mentionError.message);
     }
 
-    invalidateFeedCache(req.user._id);
-    invalidateCache(`profile-posts:${req.user._id}:*`);
+    // Scheduled posts are hidden until the cron publishes them — same
+    // reasoning as createPost above.
+    if (!scheduledForDate) {
+      invalidateFeedCache(req.user._id);
+      invalidateCache(`profile-posts:${req.user._id}:*`);
+    }
 
     const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
-    res.status(201).json(populatedPost);
+    res.status(201).json({ post: populatedPost });
 
-    // Real-time post feed update for followers. only-me posts never emit —
-    // same reasoning as createPost above.
-    try {
+    // Real-time post feed update for followers. Skip for scheduled posts.
+    if (!scheduledForDate) try {
       if (post.privacy !== POST_PRIVACY.ONLY_ME) {
         emitToFollowersOf(req.user._id, "newPost", populatedPost);
       }
@@ -615,6 +631,7 @@ export const getFeedPosts = async (req, res) => {
         const postFilter = {
           user: { $in: feedUsers },
           removedAt: null, // moderator soft-takedown — see reportService
+          ...PUBLISHED_FILTER, // exclude scheduled-but-not-yet-published posts
           ...feedVisibilityFilter(req.user._id),
           ...(cursorDate ? { createdAt: { $lt: cursorDate } } : {}),
         };
@@ -644,7 +661,7 @@ export const getFeedPosts = async (req, res) => {
           .populate("user", "name username profilePic verifications isVerified")
           .populate({
             path: "post",
-            match: { removedAt: null, ...PUBLIC_ONLY_FILTER },
+            match: { removedAt: null, ...PUBLISHED_FILTER, ...PUBLIC_ONLY_FILTER },
             populate: [
               { path: "user", select: "name username profilePic verifications isVerified" },
               {
@@ -936,6 +953,7 @@ export const getTrendingPosts = async (req, res) => {
 
     const filter = {
       removedAt: null, // moderator soft-takedown — see reportService
+      ...PUBLISHED_FILTER, // exclude scheduled-but-not-yet-published posts
       createdAt: { $gte: since },
       // Trending is a global discovery surface — only public posts
       // qualify (the shared cache must stay viewer-independent).
@@ -1056,6 +1074,7 @@ export const getTrendingHashtags = async (req, res) => {
           {
             $match: {
               removedAt: null,
+              ...PUBLISHED_FILTER,
               createdAt: { $gte: since },
               hashtags: { $exists: true, $ne: [] },
               ...PUBLIC_ONLY_FILTER,
@@ -1125,6 +1144,7 @@ export const getPostsByHashtag = async (req, res) => {
         const filter = {
           hashtags: tag,
           removedAt: null, // moderator soft-takedown — see reportService
+          ...PUBLISHED_FILTER, // exclude scheduled-but-not-yet-published posts
           // Hashtag browsing is a global discovery surface — public
           // posts only (shared cache stays viewer-independent).
           ...PUBLIC_ONLY_FILTER,
@@ -1306,6 +1326,7 @@ export const searchPosts = async (req, res) => {
     const filter = {
       ...(query.length >= 2 ? { $text: { $search: query } } : {}),
       removedAt: null, // moderator soft-takedown — see reportService
+      ...PUBLISHED_FILTER, // exclude scheduled-but-not-yet-published posts
       // Content search is a global discovery surface — public posts
       // only (and results can't vary by the searcher's follow graph).
       ...PUBLIC_ONLY_FILTER,

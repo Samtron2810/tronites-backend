@@ -3,7 +3,7 @@ import User from "../models/User.js";
 import Follow from "../models/Follow.js";
 import { listFollowingIds, listFriendsOfFollowsIds } from "./followService.js";
 import { listFollowedHashtags } from "./hashtagFollowService.js";
-import { PUBLIC_ONLY_FILTER, feedVisibilityFilter } from "./postVisibilityService.js";
+import { PUBLIC_ONLY_FILTER, PUBLISHED_FILTER, feedVisibilityFilter } from "./postVisibilityService.js";
 
 // ── For You ranking ─────────────────────────────────────────────────
 // Implements TRONITES_RANKING_FAIRNESS.md exactly: engagement RATE
@@ -107,6 +107,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
 
   const baseFilter = {
     removedAt: null,
+    ...PUBLISHED_FILTER, // exclude scheduled-but-not-yet-published posts
     createdAt: { $gte: since },
   };
 
