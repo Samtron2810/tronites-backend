@@ -241,9 +241,17 @@ export const updateUserRole = async (req, res) => {
 const RESTRICTION_TARGET_SELECT =
   "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason verifications isVerified";
 
-// Phase 4 -- crossing this many strikes makes the FRONTEND suggest a
-// suspension; the backend never auto-suspends (human in the loop).
-const STRIKE_THRESHOLD = 3;
+// Auto-escalation thresholds for repeated warnings (see warnUser). At
+// AUTO_SUSPEND_STRIKES the account is automatically suspended for
+// AUTO_SUSPEND_MS; at AUTO_BAN_STRIKES it's permanently banned. The
+// moderator can still override afterwards via the manual suspend/ban/
+// unrestrict endpoints.
+const AUTO_SUSPEND_STRIKES = 3;
+const AUTO_BAN_STRIKES = 5;
+const AUTO_SUSPEND_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Backwards-compatible alias for any callers still reading the old name.
+const STRIKE_THRESHOLD = AUTO_SUSPEND_STRIKES;
 
 // Shared target guards. Returns an error message string, or null if the
 // action may proceed.
@@ -523,10 +531,9 @@ export const listAuditLogs = async (req, res) => {
 // Phase 4 -- formal warnings/strikes. POST /admin/users/:id/warn --
 // requireModerator. Appends a strike, notifies the user in-app (reason
 // included; neither the reporter NOR the issuing moderator is identified
-// in what the user sees), writes user_warned to the Phase 3 audit trail,
-// and reports whether STRIKE_THRESHOLD was crossed so the UI can prompt
-// the moderator to consider a suspension. Deliberately NO auto-suspend:
-// a human decides what repeated warnings mean.
+// in what the user sees), writes user_warned to the Phase 3 audit trail.
+// Crossing AUTO_SUSPEND_STRIKES auto-suspends for 7 days; reaching
+// AUTO_BAN_STRIKES auto-bans permanently.
 export const warnUser = async (req, res) => {
   try {
     const target = await User.findById(req.params.id).select(
@@ -577,7 +584,61 @@ export const warnUser = async (req, res) => {
     ).select(RESTRICTION_TARGET_SELECT + " strikes");
 
     const strikeCount = updated.strikes.length;
-    const strikeThresholdReached = strikeCount >= STRIKE_THRESHOLD;
+
+    // Auto-escalation: crossings apply automatically instead of prompting
+    // the moderator. ban (5) takes precedence over suspend (3) so the 5th
+    // strike always bans rather than re-suspending.
+    let autoRestriction = null;
+    let autoSuspendUntil = null;
+    let autoBanned = false;
+
+    if (strikeCount >= AUTO_BAN_STRIKES) {
+      autoRestriction = "banned";
+      autoBanned = true;
+    } else if (strikeCount >= AUTO_SUSPEND_STRIKES) {
+      autoRestriction = "suspended";
+      autoSuspendUntil = new Date(Date.now() + AUTO_SUSPEND_MS);
+    }
+
+    if (autoRestriction) {
+      if (autoBanned) {
+        updated.set("banned", true);
+      } else {
+        updated.set("suspendedUntil", autoSuspendUntil);
+      }
+      updated.set("restrictionReason", req.body.reason || "");
+      await updated.save();
+
+      applyRestrictionSideEffects(target._id, {
+        code: autoBanned ? "ACCOUNT_BANNED" : "ACCOUNT_SUSPENDED",
+        reason: req.body.reason || "",
+        ...(autoSuspendUntil ? { suspendedUntil: autoSuspendUntil } : {}),
+        message: autoBanned
+          ? "Your account has been banned after repeated warnings."
+          : "Your account has been auto-suspended for 7 days after repeated warnings.",
+      });
+
+      logAudit({
+        action: autoBanned ? "user_auto_banned" : "user_auto_suspended",
+        actor: req.user,
+        req,
+        target: {
+          type: "user",
+          ref: target._id,
+          snapshot: {
+            name: target.name,
+            username: target.username,
+            role: target.role,
+          },
+        },
+        detail: {
+          reason: req.body.reason,
+          reportId: reportId || null,
+          strikeCount,
+          ...(autoSuspendUntil ? { suspendedUntil: autoSuspendUntil } : {}),
+        },
+      });
+    }
 
     logAudit({
       action: "user_warned",
@@ -613,7 +674,9 @@ export const warnUser = async (req, res) => {
 
     res.status(200).json({
       strikeCount,
-      strikeThresholdReached,
+      autoRestriction,
+      banned: autoBanned,
+      suspendedUntil: autoSuspendUntil,
       user: toAdminUserDTO(updated),
     });
   } catch (error) {

@@ -11,7 +11,9 @@ const postSchema = new mongoose.Schema(
     text: {
       type: String,
       default: "",
-      maxlength: 280,
+      // Tier-based ceiling enforced by the controller (utils/tierLimits.js);
+      // this is the hard storage cap for the highest tier (staff = 5000).
+      maxlength: 5000,
     },
 
     // Quote post support — set only when this Post IS a quote. A quote
@@ -169,6 +171,21 @@ const postSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    // Paid promotion (business tier) — when set and in the future, the post
+    // is considered promoted (see promotedPostController.js). Set after the
+    // Paystack charge verifies.
+    promotedUntil: {
+      type: Date,
+      default: null,
+    },
+    // Paystack reference of the promotion charge, stamped at initiation and
+    // cleared after verification — ties the charge to this specific post and
+    // guarantees one charge can't promote multiple posts.
+    promotionReference: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true },
 );
@@ -194,6 +211,10 @@ postSchema.index({ velocityFlagged: 1, velocityFlaggedAt: -1 });
 // Lets the publishScheduledPosts job efficiently find posts whose
 // scheduled time has arrived without scanning the full collection.
 postSchema.index({ scheduledFor: 1 }, { sparse: true });
+// Lets promoters/readers find currently-promoted posts without a scan.
+postSchema.index({ promotedUntil: 1 }, { sparse: true });
+// Fast unique-ish lookup by promotion charge reference.
+postSchema.index({ promotionReference: 1 }, { sparse: true });
 
 const Post = mongoose.model("Post", postSchema);
 

@@ -118,13 +118,14 @@ const userSchema = new mongoose.Schema(
     // Default false (public) — same convention as most social platforms.
     // Used as an eligibility gate for verification requests (account must
     // be public to apply).
-    // Creator tools — pinned post shown at top of the creator's profile
-    // timeline regardless of post order. Only populated by creators via
-    // PUT /users/pinned-post. Nullable — null means no pin is active.
-    pinnedPost: {
-      type: mongoose.Schema.Types.ObjectId,
+    // Creator tools — pinned posts shown at top of the profile timeline
+    // regardless of post order, up to a tier-based limit (see
+    // utils/tierLimits.js). Populated via PUT /users/pinned-post.
+    // Empty array = no pins are active.
+    pinnedPosts: {
+      type: [mongoose.Schema.Types.ObjectId],
       ref: "Post",
-      default: null,
+      default: [],
     },
 
     // Creator discoverability signal — shown as a chip on their profile

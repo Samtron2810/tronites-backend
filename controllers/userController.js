@@ -36,6 +36,7 @@ import {
 import { softDeleteAccount } from "../services/accountDeletionService.js";
 import { buildUserDataExport } from "../services/dataExportService.js";
 import { clearAuthCookies } from "../utils/tokens.js";
+import { getPinnedLimit } from "../utils/tierLimits.js";
 
 // CHECK USERNAME AVAILABILITY (live check while typing)
 export const checkUsername = async (req, res) => {
@@ -379,8 +380,8 @@ export const getUserProfile = async (req, res) => {
         // through the DTO, a public-view query that never fetched email
         // in the first place still can't leak it.
         const selectFields = isSelf
-          ? "name username bio profilePic email verifications isVerified openToCollabs pinnedPost"
-          : "name username bio profilePic verifications isVerified openToCollabs pinnedPost";
+          ? "name username bio profilePic email verifications isVerified openToCollabs pinnedPosts"
+          : "name username bio profilePic verifications isVerified openToCollabs pinnedPosts";
         const user = await User.findById(req.params.id).select(selectFields);
 
         if (!user) {
@@ -557,19 +558,19 @@ export const getUserProfile = async (req, res) => {
       180,
     );
 
-    // ── Pinned post (hydrated separately from the paginated timeline) ──
-    // The creator's pinned post is fetched on its own — NOT looked up in
-    // `posts` — so the banner at the top of the profile renders even when
-    // a pinned post is old enough to have fallen off page 1. It must
-    // satisfy the same visibility rules as the timeline: a pinned post
-    // that was deleted, privatized past the viewer's tier, or never
-    // published degrades to "no pin" instead of leaking a hidden post.
-    // Returned as a top-level `pinnedPost` field (full post object or
-    // null); `user.pinnedPost` on the DTO remains the bare _id.
-    const pinnedPostId = userResult.user?.pinnedPost || null;
-    const pinnedDoc = pinnedPostId
-      ? await Post.findOne({
-          _id: pinnedPostId,
+    // ── Pinned posts (hydrated separately from the paginated timeline) ──
+    // Each pinned post is fetched on its own — NOT looked up in `posts` —
+    // so the banner at the top of the profile renders even when a pinned
+    // post is old enough to have fallen off page 1. Each must satisfy the
+    // same visibility rules as the timeline: a pinned post that was
+    // deleted, privatized past the viewer's tier, or never published
+    // degrades out of the list instead of leaking a hidden post.
+    // Returned as a top-level `pinnedPosts` array (full post objects);
+    // `user.pinnedPosts` on the DTO remains bare _ids.
+    const pinnedPostIds = userResult.user?.pinnedPosts || [];
+    const pinnedDocs = pinnedPostIds.length
+      ? await Post.find({
+          _id: { $in: pinnedPostIds },
           removedAt: null,
           ...PUBLISHED_FILTER,
           ...postsVisibilityFilter,
@@ -580,7 +581,7 @@ export const getUserProfile = async (req, res) => {
             select: "name username profilePic verifications isVerified",
           },
         })
-      : null;
+      : [];
 
     // Bulk-check like/bookmark/repost state for every post shown AND
     // every embedded original (quoteOf) — each is an independent Post
@@ -589,14 +590,17 @@ export const getUserProfile = async (req, res) => {
     const quoteOfIds = postsResult.items
       .filter((item) => item.post.quoteOf)
       .map((item) => item.post.quoteOf._id);
-    // Fold the pinned post (and its embedded original, if any) into the
-    // same bulk state check — PostCard renders the banner with the same
-    // isLiked/isBookmarked/reaction fields it needs everywhere else.
-    const pinnedQuoteOfIds = pinnedDoc?.quoteOf ? [pinnedDoc.quoteOf._id] : [];
+    // Fold the pinned posts (and their embedded originals, if any) into
+    // the same bulk state check — PostCard renders the banners with the
+    // same isLiked/isBookmarked/reaction fields it needs everywhere else.
+    const pinnedDocIds = pinnedDocs.map((doc) => doc._id);
+    const pinnedQuoteOfIds = pinnedDocs
+      .filter((doc) => doc.quoteOf)
+      .map((doc) => doc.quoteOf._id);
     const allIds = [
       ...postIds,
       ...quoteOfIds,
-      ...(pinnedDoc ? [pinnedDoc._id] : []),
+      ...pinnedDocIds,
       ...pinnedQuoteOfIds,
     ];
     const [
@@ -650,27 +654,35 @@ export const getUserProfile = async (req, res) => {
         : null,
     }));
 
-    const pinnedPost = pinnedDoc
-      ? {
-          ...(pinnedDoc._doc || pinnedDoc),
-          isLiked: likedPostIds.has(pinnedDoc._id.toString()),
-          isBookmarked: bookmarkedPostIds.has(pinnedDoc._id.toString()),
-          isReposted: repostedPostIds.has(pinnedDoc._id.toString()),
-          reactionSummary: reactionSummaries.get(pinnedDoc._id.toString()) || {},
-          myReaction: myReactions.get(pinnedDoc._id.toString()) || null,
-          isQuotePost: Boolean(pinnedDoc.quoteOf),
-          quoteOf: pinnedDoc.quoteOf ? formatQuoteOf(pinnedDoc.quoteOf) : null,
-          // Only the owner's own posts are pinnable (setPinnedPost
-          // enforces ownership), so the banner is never a repost edge.
-          repostedBy: null,
-        }
-      : null;
+    // Preserve the owner's pinned order (pinnedPosts array order) in the
+    // response — the banner list mirrors exactly what was pinned, in order.
+    const pinnedOrder = pinnedPostIds.map((id) => id.toString());
+    const pinnedPosts = pinnedDocs
+      .slice()
+      .sort(
+        (a, b) =>
+          pinnedOrder.indexOf(a._id.toString()) -
+          pinnedOrder.indexOf(b._id.toString()),
+      )
+      .map((pinnedDoc) => ({
+        ...(pinnedDoc._doc || pinnedDoc),
+        isLiked: likedPostIds.has(pinnedDoc._id.toString()),
+        isBookmarked: bookmarkedPostIds.has(pinnedDoc._id.toString()),
+        isReposted: repostedPostIds.has(pinnedDoc._id.toString()),
+        reactionSummary: reactionSummaries.get(pinnedDoc._id.toString()) || {},
+        myReaction: myReactions.get(pinnedDoc._id.toString()) || null,
+        isQuotePost: Boolean(pinnedDoc.quoteOf),
+        quoteOf: pinnedDoc.quoteOf ? formatQuoteOf(pinnedDoc.quoteOf) : null,
+        // Only the owner's own posts are pinnable (togglePinnedPost
+        // enforces ownership), so a banner is never a repost edge.
+        repostedBy: null,
+      }));
 
     res.status(200).json({
       ...userResult,
       ...postsResult,
       posts: postsWithLikeState,
-      pinnedPost,
+      pinnedPosts,
     });
   } catch (error) {
     res.status(500).json({
@@ -1062,28 +1074,65 @@ export const exportMyData = async (req, res) => {
 // ── Creator tools ──────────────────────────────────────────────────────────
 
 // PUT /users/pinned-post  { postId }
-// Sets or clears the creator's pinned post. Only the post owner can pin
-// one of their own posts. Pass postId: null to unpin.
-export const setPinnedPost = async (req, res) => {
+// Toggles a post on/off the owner's pinned list. Only the post owner can
+// pin one of their own posts; posting a postId that's already pinned
+// removes it. The number of simultaneous pins is tier-based (see
+// utils/tierLimits.js).
+export const togglePinnedPost = async (req, res) => {
   try {
     const { postId } = req.body;
 
-    if (postId) {
-      const post = await Post.findById(postId).select("user removedAt");
-      if (!post || post.removedAt) {
-        return res.status(404).json({ message: "Post not found." });
+    const pinLimit = getPinnedLimit(req.user);
+    if (pinLimit <= 0) {
+      return res.status(403).json({
+        message: "Pinning posts requires a verified account.",
+        code: "PINNING_UNAVAILABLE",
+      });
+    }
+
+    const user = await User.findById(req.user._id).select("pinnedPosts");
+    const current = Array.isArray(user?.pinnedPosts)
+      ? user.pinnedPosts.map(String)
+      : [];
+    const alreadyPinned = Boolean(postId && current.includes(String(postId)));
+
+    let nextPinnedPosts = current;
+    try {
+      if (postId && !alreadyPinned) {
+        // Pinning a NEW post.
+        const post = await Post.findById(postId).select("user removedAt");
+        if (!post || post.removedAt) {
+          return res.status(404).json({ message: "Post not found." });
+        }
+        if (post.user.toString() !== req.user._id.toString()) {
+          return res
+            .status(403)
+            .json({ message: "You can only pin your own posts." });
+        }
+        if (current.length >= pinLimit) {
+          return res.status(403).json({
+            message: `You've reached your pin limit of ${pinLimit}.`,
+            code: "PIN_LIMIT_REACHED",
+            pinLimit,
+          });
+        }
+        nextPinnedPosts = [...current, String(postId)];
+      } else if (alreadyPinned) {
+        // Unpinning — this card is currently pinned.
+        nextPinnedPosts = current.filter((id) => id !== String(postId));
       }
-      if (post.user.toString() !== req.user._id.toString()) {
-        return res.status(403).json({ message: "You can only pin your own posts." });
-      }
+      // postId null/undefined with nothing pinned → no-op, returns current.
+    } catch (error) {
+      return res.status(500).json({ message: error.message });
     }
 
     await User.findByIdAndUpdate(req.user._id, {
-      pinnedPost: postId || null,
+      pinnedPosts: nextPinnedPosts,
     });
 
     invalidateCache(`profile:${req.user._id}:*`);
-    res.status(200).json({ pinnedPost: postId || null });
+    invalidateCache(`profile-posts:${req.user._id}:*`);
+    res.status(200).json({ pinnedPosts: nextPinnedPosts });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

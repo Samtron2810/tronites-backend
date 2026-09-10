@@ -41,6 +41,13 @@ import {
 } from "../services/searchService.js";
 import { extractHashtags, extractMentions } from "../utils/textParser.js";
 import {
+  getCharLimit,
+  canSchedule,
+  canEditPost,
+  getEditWindowMs,
+  POST_EDIT_COOLDOWN_MS,
+} from "../utils/tierLimits.js";
+import {
   hasLiked,
   getLikedPostIds,
   createLikeEdge,
@@ -80,6 +87,23 @@ export const createPost = async (req, res) => {
   try {
     const { text, privacy, scheduledFor } = req.body;
     const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
+
+    // Tier-based char limit — the zod schema only caps at the staff
+    // ceiling; the user's real limit depends on their verification tier.
+    const charLimit = getCharLimit(req.user);
+    if (text && text.length > charLimit) {
+      return res.status(400).json({
+        message: `Your account tier allows posts up to ${charLimit} characters.`,
+      });
+    }
+
+    // Scheduling is a verified-tier feature.
+    if (scheduledFor && !canSchedule(req.user)) {
+      return res.status(403).json({
+        message: "Scheduling posts requires a verified account.",
+        code: "SCHEDULING_UNAVAILABLE",
+      });
+    }
 
     if (!text?.trim() && bodyImages.length === 0) {
       return res.status(400).json({
@@ -308,6 +332,22 @@ export const createVideoPost = async (req, res) => {
     const { text, video, privacy, scheduledFor } = req.body;
     const { publicId, url, durationSeconds } = video;
 
+    // Tier-based char limit (see createPost).
+    const charLimit = getCharLimit(req.user);
+    if (text && text.length > charLimit) {
+      return res.status(400).json({
+        message: `Your account tier allows posts up to ${charLimit} characters.`,
+      });
+    }
+
+    // Scheduling is a verified-tier feature.
+    if (scheduledFor && !canSchedule(req.user)) {
+      return res.status(403).json({
+        message: "Scheduling posts requires a verified account.",
+        code: "SCHEDULING_UNAVAILABLE",
+      });
+    }
+
     // Validate the asset belongs to our Cloudinary account and folder —
     // same arbitrary-URL-injection defense as image posts in createPost.
     const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
@@ -416,11 +456,13 @@ export const createVideoPost = async (req, res) => {
 };
 
 // EDIT POST (text-only — images are fixed after posting)
-// 1-hour cooldown between post edits, gated from the 2nd edit onward —
-// editedAt starts null so the first edit is always allowed with no
-// special-casing needed.
-const POST_EDIT_COOLDOWN_MS = 60 * 60 * 1000;
-
+// Two tier-aware gates:
+//   1. Editing is a VERIFIED-tier feature — unverified accounts can't edit
+//      at all (canEditPost).
+//   2. Each tier has an edit WINDOW measured from post creation (staff =
+//      unlimited). On top of that, a flat 5-minute cooldown runs between
+//      successive edits — editedAt starts null so the first edit of any
+//      given post is never blocked by the cooldown.
 export const editPost = async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -433,6 +475,24 @@ export const editPost = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
+    if (!canEditPost(req.user)) {
+      return res.status(403).json({
+        message: "Editing posts requires a verified account.",
+        code: "EDITING_UNAVAILABLE",
+      });
+    }
+
+    const editWindowMs = getEditWindowMs(req.user);
+    if (
+      editWindowMs !== Infinity &&
+      Date.now() - post.createdAt.getTime() >= editWindowMs
+    ) {
+      return res.status(403).json({
+        message: "The edit window for this post has closed.",
+        code: "EDIT_WINDOW_CLOSED",
+      });
+    }
+
     if (post.editedAt) {
       const elapsed = Date.now() - post.editedAt.getTime();
       if (elapsed < POST_EDIT_COOLDOWN_MS) {
@@ -440,13 +500,21 @@ export const editPost = async (req, res) => {
           post.editedAt.getTime() + POST_EDIT_COOLDOWN_MS,
         );
         return res.status(429).json({
-          message: "You can only edit a post once every hour",
+          message: "You can only edit a post once every 5 minutes",
           nextAllowedAt: nextAllowed,
         });
       }
     }
 
     const { text } = req.body;
+
+    // Real per-tier char limit on the edited text too.
+    const charLimit = getCharLimit(req.user);
+    if (text && text.length > charLimit) {
+      return res.status(400).json({
+        message: `Your account tier allows posts up to ${charLimit} characters.`,
+      });
+    }
 
     // images, video, and privacy are immutable after posting — reject
     // explicitly so the client knows the update did NOT take effect,
@@ -1922,6 +1990,15 @@ export const createQuotePost = async (req, res) => {
     }
 
     const { text } = req.body;
+
+    // Quotes are authored posts too — the quoter's own tier limit applies.
+    const charLimit = getCharLimit(req.user);
+    if (text && text.length > charLimit) {
+      return res.status(400).json({
+        message: `Your account tier allows posts up to ${charLimit} characters.`,
+      });
+    }
+
     const hashtags = extractHashtags(text);
 
     const quotePost = await Post.create({
@@ -2175,13 +2252,12 @@ export const deletePost = async (req, res) => {
       }
     }
 
-    // If this post was the creator's pinned post, clear the pin so their
-    // profile never references a deleted post. Only the owner can delete
-    // their own post AND only the owner can pin it (see setPinnedPost),
-    // so at most one User row can match — updateMany is just defensive.
+    // If this post was pinned, clear it from every pinners' pinnedPosts
+    // array so their profiles never reference a deleted post. $pull leaves
+    // the pinner's OTHER pins intact (pins are now a tier-limited array).
     await User.updateMany(
-      { pinnedPost: post._id },
-      { $set: { pinnedPost: null } },
+      { pinnedPosts: post._id },
+      { $pull: { pinnedPosts: post._id } },
     );
 
     await post.deleteOne();

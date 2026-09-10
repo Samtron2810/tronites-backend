@@ -42,7 +42,7 @@ export const toPublicUserDTO = (user) => {
     isVerified: Boolean(u.isVerified),
     // Creator tools — publicly visible on profile.
     openToCollabs: Boolean(u.openToCollabs),
-    pinnedPost: u.pinnedPost || null,
+    pinnedPosts: Array.isArray(u.pinnedPosts) ? u.pinnedPosts : [],
   };
 };
 

@@ -26,7 +26,7 @@ import {
   getBlockStatus,
   deleteMyAccount,
   exportMyData,
-  setPinnedPost,
+  togglePinnedPost,
   setCollabStatus,
 } from "../controllers/userController.js";
 import { getMuteStatus, muteUserHandler, unmuteUserHandler } from "../controllers/muteController.js";
@@ -81,8 +81,11 @@ router.delete("/me/sessions/:id", protect, revokeSessionById);
 router.delete("/me/sessions", protect, revokeOtherSessions);
 router.delete("/me", protect, accountDeletionLimiter, validate(deleteAccountSchema), deleteMyAccount);
 
-// ── Creator-only profile tools ───────────────────────────────────────────────
-router.put("/pinned-post", protect, requireCreator, validate(pinnedPostSchema), setPinnedPost);
+// ── Creator/verified profile tools ─────────────────────────────────────────
+// Pinning is tier-based now (see utils/tierLimits.js and
+// togglePinnedPost) — the controller enforces the per-tier limit, so the
+// route itself is plain protect. Collab status stays creator-only.
+router.put("/pinned-post", protect, validate(pinnedPostSchema), togglePinnedPost);
 router.put("/collab-status", protect, requireCreator, validate(collabStatusSchema), setCollabStatus);
 
 export default router;

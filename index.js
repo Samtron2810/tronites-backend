@@ -11,6 +11,7 @@ import getAllowedOrigins from "./config/allowedOrigins.js";
 //routes importing
 import authRoutes from "./routes/authRoutes.js";
 import postRoutes from "./routes/postRoutes.js";
+import promotedPostRoutes from "./routes/promotedPostRoutes.js";
 import commentRoutes from "./routes/commentRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
@@ -97,6 +98,10 @@ app.use("/api", apiLimiter);
 
 //routes usage
 app.use("/api/auth", authRoutes);
+// Promotion routes must mount BEFORE /api/posts so the literal
+// /fees, /initiate and /verify/:reference segments aren't captured by a
+// post :id param (same reasoning as the webhook mount above).
+app.use("/api/posts/promote", promotedPostRoutes);
 app.use("/api/posts", postRoutes);
 app.use("/api/comments", commentRoutes);
 app.use("/api/users", userRoutes);

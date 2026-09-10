@@ -94,7 +94,9 @@ export const createPostSchema = z.object({
   text: z
     .string()
     .trim()
-    .max(280, "Post text must be at most 280 characters")
+    // Hard ceiling for the top tier (staff). The REAL per-tier limit is
+    // enforced in the controller via getCharLimit(req.user).
+    .max(5000, "Post text must be at most 5000 characters")
     .optional()
     .default(""),
   // Signed browser upload: images arrive as { url, publicId } objects —
@@ -143,7 +145,7 @@ export const createVideoPostSchema = z.object({
   text: z
     .string()
     .trim()
-    .max(280, "Post text must be at most 280 characters")
+    .max(5000, "Post text must be at most 5000 characters")
     .optional()
     .default(""),
   video: z.object({
@@ -173,7 +175,7 @@ export const editPostSchema = z.object({
   text: z
     .string()
     .trim()
-    .max(280, "Post text must be at most 280 characters")
+    .max(5000, "Post text must be at most 5000 characters")
     .optional()
     .default(""),
 });
@@ -185,7 +187,7 @@ export const createQuoteSchema = z.object({
   text: z
     .string()
     .trim()
-    .max(280, "Quote text must be at most 280 characters")
+    .max(5000, "Quote text must be at most 5000 characters")
     .optional()
     .default(""),
 });
@@ -637,6 +639,11 @@ export const pinnedPostSchema = z.object({
     .regex(/^[a-f\d]{24}$/i, "Invalid post ID")
     .nullable()
     .optional(),
+});
+
+// Paid-post promotion (business tier) — the post being promoted.
+export const promotePostSchema = z.object({
+  postId: z.string().regex(/^[a-f\d]{24}$/i, "Invalid post ID"),
 });
 
 export const collabStatusSchema = z.object({

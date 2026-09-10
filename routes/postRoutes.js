@@ -1,6 +1,6 @@
 import express from "express";
 import protect from "../middleware/authMiddleware.js";
-import requireCreator from "../middleware/requireCreator.js";
+import requireScheduling from "../middleware/canSchedule.js";
 import {
   createPost,
   createImageUploadSignature,
@@ -128,11 +128,11 @@ router.get(
 router.get("/hashtag-follows", protect, getFollowedHashtags);
 router.put("/hashtag-follows/:tag", protect, toggleHashtagFollow);
 
-// ── Creator: scheduled posts ─────────────────────────────────────────────────
+// ── Scheduling (any verified tier; unverified can't schedule) ──────────────
 // Must sit above /:id param routes.
-router.get("/scheduled", protect, requireCreator, getScheduledPosts);
-router.put("/:id/schedule", protect, requireCreator, validate(scheduledPostSchema), schedulePost);
-router.delete("/:id/schedule", protect, requireCreator, unschedulePost);
+router.get("/scheduled", protect, requireScheduling, getScheduledPosts);
+router.put("/:id/schedule", protect, requireScheduling, validate(scheduledPostSchema), schedulePost);
+router.delete("/:id/schedule", protect, requireScheduling, unschedulePost);
 
 // Single-post fetch by id — kept below every other literal GET route
 // above (feed/trending/trending-hashtags/search/hashtag/bookmarks) so
