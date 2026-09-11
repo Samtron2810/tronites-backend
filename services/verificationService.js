@@ -201,7 +201,12 @@ export const initiateVerificationPayment = async ({ userId, type }) => {
   const amountKobo = getBusinessFeeKobo();
   const reference = `tronites_vbiz_${crypto.randomBytes(12).toString("hex")}`;
 
-  const callbackBase = process.env.PAYSTACK_CALLBACK_URL;
+  // PAYSTACK_VERIFY_CALLBACK_URL is the dedicated env var for badge-verification
+  // payments — lands on /settings where VerificationSection reads ?paystack_ref.
+  // Falls back to PAYSTACK_CALLBACK_URL for backwards compat.
+  const callbackBase =
+    process.env.PAYSTACK_VERIFY_CALLBACK_URL ||
+    process.env.PAYSTACK_CALLBACK_URL;
   const callbackUrl = callbackBase
     ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}`
     : undefined;

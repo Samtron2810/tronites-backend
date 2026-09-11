@@ -71,7 +71,14 @@ export const initiatePromotion = async (req, res) => {
     }
 
     const reference = `${PROMO_REFERENCE_PREFIX}${crypto.randomBytes(12).toString("hex")}`;
-    const callbackBase = process.env.PAYSTACK_CALLBACK_URL;
+
+    // PAYSTACK_PROMO_CALLBACK_URL is the dedicated env var for post-promotion
+    // payments — lands on /paystack-return which runs verifyPromotion.
+    // Falls back to PAYSTACK_CALLBACK_URL for backwards compat, then undefined
+    // (Paystack uses its dashboard default).
+    const callbackBase =
+      process.env.PAYSTACK_PROMO_CALLBACK_URL ||
+      process.env.PAYSTACK_CALLBACK_URL;
     const callbackUrl = callbackBase
       ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}`
       : undefined;
@@ -140,4 +147,59 @@ export const verifyPromotion = async (req, res) => {
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
+};
+
+// DELETE /posts/promote/cancel/:postId
+// Clears a stuck promotionReference so the user can retry payment after a
+// failed/abandoned Paystack session. Only the post owner can cancel, and only
+// when the post isn't already successfully promoted (promotedUntil still in
+// the future means the charge went through — no cancel needed there).
+export const cancelPromotion = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const post = await Post.findById(postId).select(
+      "user removedAt promotedUntil promotionReference",
+    );
+    if (!post || post.removedAt) {
+      return res.status(404).json({ message: "Post not found." });
+    }
+    if (post.user.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "You can only cancel your own post's promotion." });
+    }
+    // Don't let them cancel a promotion that already succeeded.
+    if (post.promotedUntil && new Date(post.promotedUntil) > new Date()) {
+      return res.status(409).json({
+        message: "This post is already promoted and cannot be cancelled.",
+        promotedUntil: post.promotedUntil,
+      });
+    }
+    if (!post.promotionReference) {
+      return res.status(409).json({ message: "No pending promotion to cancel." });
+    }
+
+    await post.updateOne({ $set: { promotionReference: null } });
+    res.status(200).json({ cancelled: true });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /posts/promote/promoted — returns currently-promoted posts for feed
+// injection. Used internally by getFeedPosts / getForYouFeed; also exported
+// so the route can expose it as a standalone endpoint if needed later.
+// Limit is capped at 3 so the feed never becomes ad-heavy; posts are ordered
+// by promotedUntil desc so the most recently promoted surfaces first.
+export const getPromotedPostsForFeed = async (excludeIds = []) => {
+  const now = new Date();
+  return Post.find({
+    promotedUntil: { $gt: now },
+    removedAt: null,
+    ...(excludeIds.length ? { _id: { $nin: excludeIds } } : {}),
+  })
+    .populate("user", "name username profilePic verifications isVerified")
+    .sort({ promotedUntil: -1 })
+    .limit(3)
+    .lean();
 };

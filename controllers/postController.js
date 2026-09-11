@@ -1,5 +1,6 @@
 import Post from "../models/Post.js";
 import Repost from "../models/Repost.js";
+import { getPromotedPostsForFeed } from "../controllers/promotedPostController.js";
 import User from "../models/User.js";
 import Comment from "../models/Comment.js";
 import Notification from "../models/Notification.js";
@@ -668,7 +669,8 @@ export const getFeedPosts = async (req, res) => {
 
     const cacheKey = await getFeedCacheKey(req.user._id, cursor || "start", limit);
 
-    const result = await getOrSetCache(
+    // `let` — may be reassigned below when promoted posts are injected.
+    let result = await getOrSetCache(
       cacheKey,
       async () => {
         // Current logged in user
@@ -847,6 +849,64 @@ export const getFeedPosts = async (req, res) => {
       30,
     );
 
+    // ── Promoted post injection ────────────────────────────────────────────
+    // Inject up to 2 promoted posts into page 1 of the Following feed
+    // (cursor === undefined means first page). Promoted posts are excluded
+    // from the cache block above because: (a) promotedUntil is real-time
+    // and can expire between requests, (b) they're viewer-independent so
+    // they don't belong in a per-viewer cache entry. Each promoted post is
+    // inserted at position 3 and position 8 so it sits naturally in the
+    // scroll rather than pinned at the very top. Already-visible post ids
+    // are passed to avoid surfacing a promoted post that also appears
+    // organically in this viewer's feed.
+    if (!cursor && result.posts.length > 0) {
+      try {
+        const organicIds = result.posts.map((p) => p._id.toString());
+        const promoted = await getPromotedPostsForFeed(organicIds);
+        if (promoted.length > 0) {
+          // Bulk-fetch like/bookmark/repost state for promoted posts —
+          // same pattern as the organic posts above.
+          const promotedIds = promoted.map((p) => p._id);
+          const [pLikedIds, pBookmarkedIds, pRepostedIds, pReactionSummaries, pMyReactions] =
+            await Promise.all([
+              getLikedPostIds(req.user._id, promotedIds),
+              getBookmarkedPostIds(req.user._id, promotedIds),
+              getRepostedPostIds(req.user._id, promotedIds),
+              getReactionSummaries("post", promotedIds),
+              getUserReactions(req.user._id, "post", promotedIds),
+            ]);
+
+          const formattedPromoted = promoted.map((p) => ({
+            ...p,
+            isLiked: pLikedIds.has(p._id.toString()),
+            isBookmarked: pBookmarkedIds.has(p._id.toString()),
+            isReposted: pRepostedIds.has(p._id.toString()),
+            isQuotePost: Boolean(p.quoteOf),
+            reactionSummary: pReactionSummaries.get(p._id.toString()) || {},
+            myReaction: pMyReactions.get(p._id.toString()) || null,
+            repostedBy: null,
+            // Signals to the frontend to render the "Sponsored" badge.
+            isPromoted: true,
+          }));
+
+          // Insert at position 3 and 8 (0-indexed), clamped to list length.
+          const withPromoted = [...result.posts];
+          const insertPositions = [3, 8];
+          let offset = 0;
+          for (let i = 0; i < formattedPromoted.length; i++) {
+            const pos = Math.min(insertPositions[i] + offset, withPromoted.length);
+            withPromoted.splice(pos, 0, formattedPromoted[i]);
+            offset++;
+          }
+          result = { ...result, posts: withPromoted };
+        }
+      } catch (promoErr) {
+        // Promoted post injection is best-effort — a failure here must
+        // never break the feed response.
+        console.error("Promoted post injection error:", promoErr.message);
+      }
+    }
+
     res.status(200).json(result);
   } catch (error) {
     res.status(500).json({
@@ -934,8 +994,57 @@ export const getForYouFeed = async (req, res) => {
       forYouSource: source,
     }));
 
+    // ── Promoted post injection (For You, page 1 only) ────────────────────
+    // Same pattern as getFeedPosts: inject on first page only (no prior
+    // excludePostIds from the caller) so users don't see the same promoted
+    // posts on every "load more". Already-visible organic ids are passed to
+    // avoid duplicating a post that the For You ranking also surfaced.
+    let finalPosts = formattedPosts;
+    if (!excludePostIds.length && formattedPosts.length > 0) {
+      try {
+        const organicIds = formattedPosts.map((p) => p._id.toString());
+        const promoted = await getPromotedPostsForFeed(organicIds);
+        if (promoted.length > 0) {
+          const promotedIds = promoted.map((p) => p._id);
+          const [pLikedIds, pBookmarkedIds, pRepostedIds, pReactionSummaries, pMyReactions] =
+            await Promise.all([
+              getLikedPostIds(req.user._id, promotedIds),
+              getBookmarkedPostIds(req.user._id, promotedIds),
+              getRepostedPostIds(req.user._id, promotedIds),
+              getReactionSummaries("post", promotedIds),
+              getUserReactions(req.user._id, "post", promotedIds),
+            ]);
+
+          const formattedPromoted = promoted.map((p) => ({
+            ...p,
+            isLiked: pLikedIds.has(p._id.toString()),
+            isBookmarked: pBookmarkedIds.has(p._id.toString()),
+            isReposted: pRepostedIds.has(p._id.toString()),
+            isQuotePost: Boolean(p.quoteOf),
+            reactionSummary: pReactionSummaries.get(p._id.toString()) || {},
+            myReaction: pMyReactions.get(p._id.toString()) || null,
+            repostedBy: null,
+            forYouSource: undefined,
+            isPromoted: true,
+          }));
+
+          const withPromoted = [...formattedPosts];
+          const insertPositions = [3, 8];
+          let offset = 0;
+          for (let i = 0; i < formattedPromoted.length; i++) {
+            const pos = Math.min(insertPositions[i] + offset, withPromoted.length);
+            withPromoted.splice(pos, 0, formattedPromoted[i]);
+            offset++;
+          }
+          finalPosts = withPromoted;
+        }
+      } catch (promoErr) {
+        console.error("Promoted post injection error (ForYou):", promoErr.message);
+      }
+    }
+
     res.status(200).json({
-      posts: formattedPosts,
+      posts: finalPosts,
       hasMore,
       nextCursor: hasMore
         ? [...excludePostIds, ...postIds.map((id) => id.toString())].join(",")
