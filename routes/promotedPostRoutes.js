@@ -7,6 +7,7 @@ import {
   initiatePromotion,
   verifyPromotion,
   cancelPromotion,
+  getMyPromotions,
 } from "../controllers/promotedPostController.js";
 
 // Paid post promotion (business tier). Mounted by index.js at
@@ -16,6 +17,7 @@ import {
 const router = express.Router();
 
 router.get("/fees", protect, getPromotionFees);
+router.get("/my-promotions", protect, getMyPromotions);
 router.post("/initiate", protect, validate(promotePostSchema), initiatePromotion);
 router.get("/verify/:reference", protect, verifyPromotion);
 // Clears a stuck promotionReference after a failed/abandoned payment so the

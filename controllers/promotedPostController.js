@@ -186,6 +186,65 @@ export const cancelPromotion = async (req, res) => {
   }
 };
 
+// GET /posts/promote/my-promotions — paginated list of the authenticated
+// user's posts that have been promoted or are pending promotion.
+// Returns: { promotions: [...], total: Number }
+export const getMyPromotions = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(20, parseInt(req.query.limit) || 10);
+    const skip = (page - 1) * limit;
+    const now = new Date();
+
+    const filter = {
+      user: req.user._id,
+      removedAt: null,
+      $or: [
+        { promotedUntil: { $ne: null } },  // was / is promoted
+        { promotionReference: { $ne: null } }, // payment pending
+      ],
+    };
+
+    const [posts, total] = await Promise.all([
+      Post.find(filter)
+        .select("text images video createdAt promotedUntil promotionReference likesCount commentsCount repostsCount")
+        .sort({ updatedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Post.countDocuments(filter),
+    ]);
+
+    const promotions = posts.map((p) => {
+      let status;
+      if (p.promotionReference && (!p.promotedUntil || new Date(p.promotedUntil) <= now)) {
+        status = "pending";  // payment initiated but not verified yet
+      } else if (p.promotedUntil && new Date(p.promotedUntil) > now) {
+        status = "active";   // currently in feed
+      } else {
+        status = "expired";  // promotion period ended
+      }
+      return {
+        _id: p._id,
+        text: p.text,
+        images: p.images,
+        video: p.video,
+        createdAt: p.createdAt,
+        promotedUntil: p.promotedUntil,
+        promotionReference: p.promotionReference,
+        likesCount: p.likesCount,
+        commentsCount: p.commentsCount,
+        repostsCount: p.repostsCount,
+        status,
+      };
+    });
+
+    res.status(200).json({ promotions, total, page, limit });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // GET /posts/promote/promoted — returns currently-promoted posts for feed
 // injection. Used internally by getFeedPosts / getForYouFeed; also exported
 // so the route can expose it as a standalone endpoint if needed later.
