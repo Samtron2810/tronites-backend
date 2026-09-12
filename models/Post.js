@@ -55,9 +55,19 @@ const postSchema = new mongoose.Schema(
       default: "public",
     },
 
-    // Carousel images (max 4).
+    // Carousel images (max 4). Each entry is now an object { url, altText }
+    // for accessibility. Legacy posts stored as plain strings are transparently
+    // read by postController helpers that normalise to the object shape.
     images: {
-      type: [String],
+      type: [
+        new mongoose.Schema(
+          {
+            url: { type: String, required: true },
+            altText: { type: String, default: "", trim: true, maxlength: 200 },
+          },
+          { _id: false },
+        ),
+      ],
       default: [],
       validate: {
         validator: (arr) => arr.length <= 4,

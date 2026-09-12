@@ -82,7 +82,7 @@ export const computeForYouScore = (post, ctx) => {
 // hashtags", which is the natural signal for it and doesn't exist yet).
 // Each candidate is tagged with the source it was found through so the
 // caller can apply sourceWeight and the author cap/floor.
-const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
+const gatherCandidates = async (viewerId, { excludeUserIds, since, viewerInterests = [] }) => {
   const followingIds = await listFollowingIds(viewerId);
   const followingSet = new Set(followingIds);
 
@@ -120,6 +120,14 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
   // an unexplained stealth removal from their own chosen feed.
   const discoveryFilter = { ...baseFilter, velocityFlagged: { $ne: true } };
 
+  // Feature 3 — user topic interests (interests[] on User) boost posts
+  // with matching hashtags into the interest slot when the viewer has
+  // no followed hashtags yet, or supplement them when they do.
+  const combinedInterestTags = Array.from(new Set([
+    ...followedTags,
+    ...viewerInterests,
+  ]));
+
   const [followedPosts, fofPosts, interestPosts, trendingPosts] = await Promise.all([
     followedAuthorIds.length
       ? Post.find({
@@ -129,7 +137,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
         })
           .populate(
             "user",
-            "name username profilePic followersCount credibleRatio verifications isVerified",
+            "name username profilePic followersCount credibleRatio verifications isVerified shadowRanked",
           )
           .populate({
             path: "quoteOf",
@@ -146,7 +154,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
         })
           .populate(
             "user",
-            "name username profilePic followersCount credibleRatio verifications isVerified",
+            "name username profilePic followersCount credibleRatio verifications isVerified shadowRanked",
           )
           .populate({
             path: "quoteOf",
@@ -155,16 +163,16 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
           .sort({ createdAt: -1 })
           .limit(MAX_CANDIDATES_PER_SOURCE)
       : [],
-    followedTags.length
+    combinedInterestTags.length
       ? Post.find({
           ...discoveryFilter,
-          hashtags: { $in: followedTags },
+          hashtags: { $in: combinedInterestTags },
           user: { $nin: [...excludeAuthors, ...followedAuthorIds] },
           ...PUBLIC_ONLY_FILTER, // interest is a discovery source — public only
         })
           .populate(
             "user",
-            "name username profilePic followersCount credibleRatio verifications isVerified",
+            "name username profilePic followersCount credibleRatio verifications isVerified shadowRanked",
           )
           .populate({
             path: "quoteOf",
@@ -180,7 +188,7 @@ const gatherCandidates = async (viewerId, { excludeUserIds, since }) => {
     })
       .populate(
             "user",
-            "name username profilePic followersCount credibleRatio verifications isVerified",
+            "name username profilePic followersCount credibleRatio verifications isVerified shadowRanked",
           )
       .populate({
         path: "quoteOf",
@@ -306,9 +314,15 @@ export const getForYouCandidates = async ({
   limit,
 }) => {
   const since = new Date(Date.now() - CANDIDATE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+  // Feature 3 — fetch the viewer's interest topics to boost matching content.
+  const viewer = await User.findById(viewerId).select("interests").lean();
+  const viewerInterests = Array.isArray(viewer?.interests) ? viewer.interests : [];
+
   const { candidates, followingSet } = await gatherCandidates(viewerId, {
     excludeUserIds,
     since,
+    viewerInterests,
   });
 
   const excludeSet = new Set(excludePostIds.map((id) => id.toString()));
@@ -323,7 +337,10 @@ export const getForYouCandidates = async ({
       affinity: computeAffinity(post, followingSet),
       sourceWeight: SOURCE_WEIGHT[item.source] ?? 0.5,
     };
-    return { ...item, score: computeForYouScore(post, ctx) };
+    // Feature 9 — shadow-ranked authors get 0.05× score so their posts
+    // functionally disappear from discovery without a visible ban.
+    const shadowPenalty = author.shadowRanked ? 0.05 : 1;
+    return { ...item, score: computeForYouScore(post, ctx) * shadowPenalty };
   });
 
   scored.sort((a, b) => {

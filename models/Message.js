@@ -86,6 +86,14 @@ const messageSchema = new mongoose.Schema(
         default: "ready",
       },
     },
+    // Feature 5 — reply-to-message: reference to the message being quoted.
+    // Populated on read so the bubble can render a mini preview above the text.
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+
     conversationId: {
       type: String,
       required: true,

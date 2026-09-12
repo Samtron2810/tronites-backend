@@ -5,7 +5,7 @@ import requireCreator from "../middleware/requireCreator.js";
 import { accountDeletionLimiter } from "../middleware/rateLimiter.js";
 import { validate } from "../utils/validators.js";
 import { deleteAccountSchema } from "../utils/validators.js";
-import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema, pinnedPostSchema, collabStatusSchema } from "../utils/validators.js";
+import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema, pinnedPostSchema, collabStatusSchema, updateInterestsSchema, updateLocationSchema, updateReadReceiptsSchema } from "../utils/validators.js";
 
 import {
   followUser,
@@ -28,6 +28,9 @@ import {
   exportMyData,
   togglePinnedPost,
   setCollabStatus,
+  updateInterests,
+  updateLocation,
+  updateReadReceipts,
 } from "../controllers/userController.js";
 import { getMuteStatus, muteUserHandler, unmuteUserHandler } from "../controllers/muteController.js";
 import {
@@ -87,5 +90,12 @@ router.delete("/me", protect, accountDeletionLimiter, validate(deleteAccountSche
 // route itself is plain protect. Collab status stays creator-only.
 router.put("/pinned-post", protect, validate(pinnedPostSchema), togglePinnedPost);
 router.put("/collab-status", protect, requireCreator, validate(collabStatusSchema), setCollabStatus);
+
+// Feature 3 — Topics/Interests
+router.put("/interests", protect, validate(updateInterestsSchema), updateInterests);
+// Feature 4 — Location
+router.put("/location", protect, validate(updateLocationSchema), updateLocation);
+// Feature 6 — Read receipts
+router.put("/read-receipts", protect, validate(updateReadReceiptsSchema), updateReadReceipts);
 
 export default router;

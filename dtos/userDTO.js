@@ -43,6 +43,13 @@ export const toPublicUserDTO = (user) => {
     // Creator tools — publicly visible on profile.
     openToCollabs: Boolean(u.openToCollabs),
     pinnedPosts: Array.isArray(u.pinnedPosts) ? u.pinnedPosts : [],
+    // Feature 8 — account age badge. Join date is public so profiles can
+    // show "Joined January 2024" trust signal. Not a sensitive field.
+    createdAt: u.createdAt || null,
+    // Feature 4 — location for trending near you
+    location: u.location || "",
+    // Feature 9 — shadow rank is public-visible (no sensitive reason needed)
+    shadowRanked: Boolean(u.shadowRanked),
   };
 };
 
@@ -78,10 +85,14 @@ export const toPrivateSelfDTO = (user) => {
     // can compute the 6-month activity requirement client-side before
     // the user fills out the form.
     lastLoginAt: u.lastLoginAt || null,
-    // Account creation date — surfaced so VerificationSection can compute
-    // the 30-day minimum age requirement client-side. Deliberately absent
-    // from toPublicUserDTO (another user's join date is not their business).
+    // Account creation date — now in public DTO too (for join badge).
     createdAt: u.createdAt || null,
+    // Feature 3 — interests for feed personalisation
+    interests: Array.isArray(u.interests) ? u.interests : [],
+    // Feature 6 — read receipts preference
+    showReadReceipts: u.showReadReceipts !== false,
+    // Feature 9 — shadow rank reason visible to self only
+    shadowRankedReason: u.shadowRankedReason || "",
   };
 };
 
@@ -122,5 +133,9 @@ export const toAdminUserDTO = (user) => {
       reviewedBy: v.reviewedBy || null,
     })),
     isVerified: Boolean(u.isVerified),
+    // Feature 9 — shadow rank fields for admin panel display and toggle
+    shadowRanked: Boolean(u.shadowRanked),
+    shadowRankedAt: u.shadowRankedAt || null,
+    shadowRankedReason: u.shadowRankedReason || "",
   };
 };

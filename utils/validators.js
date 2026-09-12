@@ -649,3 +649,69 @@ export const promotePostSchema = z.object({
 export const collabStatusSchema = z.object({
   openToCollabs: z.boolean(),
 });
+
+// ── Feature 3: Topics/Interests ───────────────────────────────────────────
+export const AVAILABLE_TOPICS_LIST = [
+  "technology", "music", "art", "sports", "gaming", "science",
+  "politics", "food", "travel", "fashion", "finance", "health",
+  "education", "entertainment", "news", "business", "nature",
+  "photography", "fitness", "books",
+];
+
+export const updateInterestsSchema = z.object({
+  interests: z
+    .array(z.enum(AVAILABLE_TOPICS_LIST))
+    .min(0, "Select at least 0 topics")
+    .max(10, "Select at most 10 topics"),
+});
+
+// ── Feature 4: Location ────────────────────────────────────────────────────
+export const updateLocationSchema = z.object({
+  location: z.string().trim().max(100, "Location too long").optional().default(""),
+});
+
+// ── Feature 6: Read receipts toggle ───────────────────────────────────────
+export const updateReadReceiptsSchema = z.object({
+  showReadReceipts: z.boolean(),
+});
+
+// ── Feature 5: Reply-to-message — adds optional replyTo field ─────────────
+export const sendMessageWithReplySchema = z.object({
+  text: z.string().trim().max(1000, "Message too long").optional().default(""),
+  images: z.array(z.string().url()).max(4).optional().default([]),
+  replyToId: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/i, "Invalid message ID")
+    .optional()
+    .nullable(),
+});
+
+// ── Feature 9: Shadow-rank throttle (admin) ────────────────────────────────
+export const shadowRankSchema = z.object({
+  shadowRanked: z.boolean(),
+  reason: z.string().trim().max(500).optional().default(""),
+});
+
+// ── Feature 2: Alt text — extend createPostSchema images ──────────────────
+// createPostSchema images: { url, publicId, altText? }
+export const createPostWithAltSchema = z.object({
+  text: z.string().trim().max(5000).optional().default(""),
+  images: z
+    .array(
+      z.object({
+        url: z.string().url("Invalid image URL"),
+        publicId: z.string().trim().min(1).max(255),
+        altText: z.string().trim().max(200).optional().default(""),
+      }),
+    )
+    .max(4, "Max 4 images per post")
+    .optional()
+    .default([]),
+  privacy: z.enum(["public", "followers", "only-me"]).optional().default("public"),
+  scheduledFor: z
+    .string()
+    .datetime({ message: "scheduledFor must be a valid ISO 8601 datetime" })
+    .refine((v) => new Date(v) > new Date(), { message: "scheduledFor must be in the future" })
+    .optional()
+    .nullable(),
+});

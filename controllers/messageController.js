@@ -95,9 +95,20 @@ export const sendMessage = async (req, res) => {
       });
     }
 
+    // Feature 5 — reply-to-message
+    const replyToId = req.body.replyToId || null;
+    let replyToDoc = null;
+    if (replyToId) {
+      replyToDoc = await Message.findOne({
+        _id: replyToId,
+        conversationId: [senderId.toString(), receiverId.toString()].sort().join("_"),
+      }).select("_id sender text images voice video").lean();
+    }
+
     const message = await Message.create({
       sender: senderId,
       receiver: receiverId,
+      ...(replyToDoc ? { replyTo: replyToDoc._id } : {}),
       text: text?.trim() || null,
       images: bodyImages.map((item) => item.url),
       conversationId: getConversationId(senderId, receiverId),
@@ -282,9 +293,20 @@ export const sendVideoMessage = async (req, res) => {
     }
     thumbnailUrl = thumbnailUrl.replace(/\.mp4$/, ".jpg");
 
+    // Feature 5 — reply-to-message
+    const replyToId = req.body.replyToId || null;
+    let replyToDoc = null;
+    if (replyToId) {
+      replyToDoc = await Message.findOne({
+        _id: replyToId,
+        conversationId: [senderId.toString(), receiverId.toString()].sort().join("_"),
+      }).select("_id sender text images voice video").lean();
+    }
+
     const message = await Message.create({
       sender: senderId,
       receiver: receiverId,
+      ...(replyToDoc ? { replyTo: replyToDoc._id } : {}),
       text: text?.trim() || null,
       video: {
         publicId: video.publicId,
@@ -423,9 +445,20 @@ export const sendVoiceMessage = async (req, res) => {
       return res.status(400).json({ message: "Invalid voice note URL" });
     }
 
+    // Feature 5 — reply-to-message
+    const replyToId = req.body.replyToId || null;
+    let replyToDoc = null;
+    if (replyToId) {
+      replyToDoc = await Message.findOne({
+        _id: replyToId,
+        conversationId: [senderId.toString(), receiverId.toString()].sort().join("_"),
+      }).select("_id sender text images voice video").lean();
+    }
+
     const message = await Message.create({
       sender: senderId,
       receiver: receiverId,
+      ...(replyToDoc ? { replyTo: replyToDoc._id } : {}),
       text: text?.trim() || null,
       voice: {
         publicId: voice.publicId,
@@ -697,6 +730,13 @@ export const getMessages = async (req, res) => {
       .populate("sender", "_id name profilePic verifications isVerified")
       .populate("receiver", "_id name profilePic");
 
+    // Feature 5 — populate replyTo preview for each message
+    await Message.populate(recentMessages, {
+      path: "replyTo",
+      select: "sender text images voice video",
+      populate: { path: "sender", select: "name username profilePic" },
+    });
+
     const messages = recentMessages.reverse();
 
     // Bulk-attach reaction state the same way postController does for
@@ -707,8 +747,17 @@ export const getMessages = async (req, res) => {
       getReactionSummaries("message", messageIds),
       getUserReactions(currentUserId, "message", messageIds),
     ]);
+    // Feature 6 — fetch other user's read-receipts preference to decide
+    // whether to expose the `read` boolean to the current user's client.
+    const otherUserPrefDoc = await User.findById(otherUserId).select("showReadReceipts").lean();
+    const otherShowsReceipts = otherUserPrefDoc?.showReadReceipts !== false;
+
     const messagesWithReactions = messages.map((m) => ({
       ...m._doc,
+      // Mask read status when the recipient has opted out of read receipts
+      read: m.sender.toString() === currentUserId.toString()
+        ? (otherShowsReceipts ? m.read : false)
+        : m.read,
       reactionSummary: reactionSummaries.get(m._id.toString()) || {},
       myReaction: myReactions.get(m._id.toString()) || null,
     }));
@@ -722,8 +771,14 @@ export const getMessages = async (req, res) => {
       { read: true },
     );
 
+    // Feature 6 — only emit "messagesRead" if the current user has read receipts on.
+    // DB mark-as-read always happens (it drives unread counts); only the
+    // real-time bubble update is gated so the opt-out stays invisible.
     if (unreadMessages.modifiedCount > 0) {
-      emitToUser(otherUserId, "messagesRead", { conversationId });
+      const currentUserDoc = await User.findById(currentUserId).select("showReadReceipts").lean();
+      if (currentUserDoc?.showReadReceipts !== false) {
+        emitToUser(otherUserId, "messagesRead", { conversationId });
+      }
       emitToUser(currentUserId, "messagesRead", { conversationId });
     }
 

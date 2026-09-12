@@ -29,6 +29,10 @@ export const AUDIT_ACTIONS = [
   "user_verification_revoked",
   "verification_request_approved",
   "verification_request_denied",
+  "user_shadow_ranked",
+  "user_shadow_rank_lifted",
+  "user_auto_suspended",
+  "user_auto_banned",
 ];
 
 const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];

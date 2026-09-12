@@ -48,7 +48,7 @@ export const listUsersForAdmin = async (req, res) => {
       const [users, totalUsers] = await Promise.all([
         User.find(filter)
           .select(
-            "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason strikes permissions verifications isVerified",
+            "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason strikes permissions verifications isVerified shadowRanked shadowRankedAt shadowRankedReason",
           )
           .sort({ createdAt: -1 })
           .skip(skip)
@@ -239,7 +239,7 @@ export const updateUserRole = async (req, res) => {
 // access simply resumes with no cleanup job.
 
 const RESTRICTION_TARGET_SELECT =
-  "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason verifications isVerified";
+  "_id name username email profilePic role createdAt banned suspendedUntil restrictionReason verifications isVerified shadowRanked shadowRankedAt shadowRankedReason";
 
 // Auto-escalation thresholds for repeated warnings (see warnUser). At
 // AUTO_SUSPEND_STRIKES the account is automatically suspended for
@@ -969,5 +969,55 @@ export const revokeVerification = async (req, res) => {
     res.status(200).json({ user: toAdminUserDTO(target) });
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// ── Feature 9: Shadow-rank throttle ─────────────────────────────────────────
+// PUT /admin/users/:id/shadow-rank { shadowRanked: boolean, reason: string }
+// Reduces algorithmic reach for flagged accounts without suspending them.
+// Posts still appear in Following feed (chronological) — only For You /
+// Trending discovery is throttled (0.05× score multiplier in forYouService).
+export const setShadowRank = async (req, res) => {
+  try {
+    const { shadowRanked, reason } = req.body;
+    const target = await User.findById(req.params.id).select(
+      "_id name username role banned deletedAt"
+    );
+    if (!target) return res.status(404).json({ message: "User not found." });
+    if (target.role === "admin") {
+      return res.status(403).json({ message: "Admin accounts can't be shadow-ranked." });
+    }
+    if (target.deletedAt) {
+      return res.status(400).json({ message: "This account is pending deletion." });
+    }
+
+    const update = shadowRanked
+      ? { shadowRanked: true, shadowRankedAt: new Date(), shadowRankedReason: reason || "" }
+      : { shadowRanked: false, shadowRankedAt: null, shadowRankedReason: "" };
+
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: update },
+      { returnDocument: "after" }
+    ).select(RESTRICTION_TARGET_SELECT + " shadowRanked shadowRankedAt shadowRankedReason");
+
+    logAudit({
+      action: shadowRanked ? "user_shadow_ranked" : "user_shadow_rank_lifted",
+      actor: req.user,
+      req,
+      target: {
+        type: "user",
+        ref: target._id,
+        snapshot: { name: target.name, username: target.username },
+      },
+      detail: { reason: reason || "", shadowRanked },
+    });
+
+    // Invalidate feed caches so the change takes effect immediately
+    invalidateFeedCache(target._id);
+
+    res.status(200).json({ user: toAdminUserDTO(updated), shadowRanked });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };

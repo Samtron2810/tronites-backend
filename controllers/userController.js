@@ -1154,3 +1154,41 @@ export const setCollabStatus = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// ── Feature 3: Topics/Interests ──────────────────────────────────────────────
+// PUT /users/interests  { interests: string[] }
+export const updateInterests = async (req, res) => {
+  try {
+    const { interests } = req.body;
+    await User.findByIdAndUpdate(req.user._id, { interests });
+    invalidateCache(`profile:${req.user._id}:*`);
+    res.status(200).json({ interests });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── Feature 4: Location ────────────────────────────────────────────────────
+// PUT /users/location  { location: string }
+export const updateLocation = async (req, res) => {
+  try {
+    const { location } = req.body;
+    await User.findByIdAndUpdate(req.user._id, { location: location || "" });
+    invalidateCache(`profile:${req.user._id}:*`);
+    res.status(200).json({ location: location || "" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── Feature 6: Read receipts toggle ──────────────────────────────────────────
+// PUT /users/read-receipts  { showReadReceipts: boolean }
+export const updateReadReceipts = async (req, res) => {
+  try {
+    const { showReadReceipts } = req.body;
+    await User.findByIdAndUpdate(req.user._id, { showReadReceipts });
+    res.status(200).json({ showReadReceipts });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

@@ -3,6 +3,7 @@ import protect from "../middleware/authMiddleware.js";
 import { validate, validateQuery } from "../utils/validators.js";
 import {
   sendMessageSchema,
+  sendMessageWithReplySchema,
   paginationSchema,
   messageImageSignatureSchema,
   messageVideoSignatureSchema,
@@ -103,7 +104,7 @@ router.post(
   "/:userId",
   protect,
   messageLimiter,
-  validate(sendMessageSchema),
+  validate(sendMessageWithReplySchema),
   sendMessage,
 );
 router.delete("/:messageId", protect, deleteMessage);

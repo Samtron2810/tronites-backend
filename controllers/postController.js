@@ -133,7 +133,10 @@ export const createPost = async (req, res) => {
       if (!valid) {
         return res.status(400).json({ message: "Invalid image URL" });
       }
-      imageUrls = bodyImages.map((item) => item.url);
+      imageUrls = bodyImages.map((item) => ({
+        url: item.url,
+        altText: (item.altText || "").trim().slice(0, 200),
+      }));
     }
 
     const scheduledForDate = scheduledFor ? new Date(scheduledFor) : null;
@@ -1238,7 +1241,20 @@ const TRENDING_HASHTAGS_CACHE_TTL_SECONDS = 300; // 5 min
 export const getTrendingHashtags = async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
-    const cacheKey = `trending-hashtags:${limit}`;
+    // Feature 4 — location-aware trending. When ?near=cityname, restrict to
+    // users who have set that location. Falls back to global when absent.
+    const near = (req.query.near || "").trim().toLowerCase();
+    const cacheKey = `trending-hashtags:${limit}:${near || "global"}`;
+
+    // Feature 4 — if location requested, get user ids from that location.
+    let locationUserIds = null;
+    if (near) {
+      const locUsers = await User.find({
+        location: { $regex: near, $options: "i" },
+        deletedAt: null,
+      }).select("_id").lean();
+      locationUserIds = locUsers.map((u) => u._id);
+    }
 
     const result = await getOrSetCache(
       cacheKey,
@@ -1255,6 +1271,7 @@ export const getTrendingHashtags = async (req, res) => {
               createdAt: { $gte: since },
               hashtags: { $exists: true, $ne: [] },
               ...PUBLIC_ONLY_FILTER,
+              ...(locationUserIds ? { user: { $in: locationUserIds } } : {}),
             },
           },
           // One row per (post, tag) pair — a post using the same tag
