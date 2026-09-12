@@ -250,13 +250,45 @@ export const getMyPromotions = async (req, res) => {
 // so the route can expose it as a standalone endpoint if needed later.
 // Limit is capped at 3 so the feed never becomes ad-heavy; posts are ordered
 // by promotedUntil desc so the most recently promoted surfaces first.
-export const getPromotedPostsForFeed = async (excludeIds = []) => {
+//
+// viewer* args are required: promoted posts must respect the same privacy,
+// block, and mute gates as organic posts. A business account promoting a
+// followers-only or only-me post must NOT have it injected into every
+// viewer's feed — that would be a paid privacy bypass.
+export const getPromotedPostsForFeed = async (
+  excludeIds = [],
+  { viewerId, blockedIds = new Set(), mutedIds = new Set() } = {},
+) => {
   const now = new Date();
-  return Post.find({
+
+  // Build the excluded-user set: blocked (either direction) + muted.
+  const excludedUsers = new Set([...blockedIds, ...mutedIds]);
+
+  // Only public posts may be promoted into stranger feeds — same rule
+  // as trending/search (PUBLIC_ONLY_FILTER). A promoted followers-only
+  // post would let the author pay to bypass their own privacy setting.
+  // Imported inline to avoid circular deps with postController.
+  const publicFilter = {
+    $or: [{ privacy: "public" }, { privacy: { $exists: false } }],
+  };
+
+  const query = {
     promotedUntil: { $gt: now },
     removedAt: null,
+    ...publicFilter,
     ...(excludeIds.length ? { _id: { $nin: excludeIds } } : {}),
-  })
+    ...(excludedUsers.size ? { user: { $nin: [...excludedUsers] } } : {}),
+  };
+
+  // Exclude the viewer's own promoted posts — they already appear
+  // organically in their own feed, so a second sponsored copy is noisy.
+  if (viewerId) {
+    query.user = query.user
+      ? { ...query.user, $ne: viewerId }
+      : { $ne: viewerId };
+  }
+
+  return Post.find(query)
     .populate("user", "name username profilePic verifications isVerified")
     .sort({ promotedUntil: -1 })
     .limit(3)

@@ -116,11 +116,18 @@ export const sendMessage = async (req, res) => {
 
     // Reflect the permission outcome in the Conversation record.
     if (permission.isNewRequest) {
+      // Guard against double-tap race: two concurrent sends can both
+      // land here before either Conversation.create commits. The unique
+      // index on conversationId will reject the second with E11000;
+      // treat that as a no-op (the first create already won the race and
+      // the message itself was already persisted above).
       await Conversation.create({
         conversationId: permission.conversationId,
         participants: [senderId, receiverId],
         status: "pending",
         initiator: senderId,
+      }).catch((err) => {
+        if (err.code !== 11000) throw err;
       });
     } else if (permission.implicitAccept) {
       await Conversation.updateOne(
@@ -326,6 +333,8 @@ export const sendVideoMessage = async (req, res) => {
         participants: [senderId, receiverId],
         status: "pending",
         initiator: senderId,
+      }).catch((err) => {
+        if (err.code !== 11000) throw err;
       });
     } else if (permission.implicitAccept) {
       await Conversation.updateOne(
@@ -478,6 +487,8 @@ export const sendVoiceMessage = async (req, res) => {
         participants: [senderId, receiverId],
         status: "pending",
         initiator: senderId,
+      }).catch((err) => {
+        if (err.code !== 11000) throw err;
       });
     } else if (permission.implicitAccept) {
       await Conversation.updateOne(
@@ -916,7 +927,17 @@ export const reactToMessage = async (req, res) => {
       return res.status(403).json({ message: "Not authorized." });
     }
 
-    if (await isBlockedEitherWay(userId, message.sender)) {
+    // Check against the OTHER participant of the conversation, not
+    // blindly against message.sender. When the reacting user IS the
+    // sender, `message.sender === userId` so the original check always
+    // passed (isBlockedEitherWay(userId, userId) is always false), but
+    // it also never caught the case where the receiver is blocked by
+    // the sender. Derive the other side correctly.
+    const otherParticipant =
+      message.sender.toString() === userId.toString()
+        ? message.receiver
+        : message.sender;
+    if (await isBlockedEitherWay(userId, otherParticipant)) {
       return res
         .status(403)
         .json({ message: "You can't interact with this message." });
@@ -1042,6 +1063,44 @@ export const respondToRequest = async (req, res) => {
     res.status(200).json({ status: conversation.status });
   } catch (error) {
     console.error("RESPOND TO REQUEST ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// MARK CONVERSATION READ — lightweight alternative to GET /:userId that
+// only marks unread messages read and emits the socket event. Called by
+// the Chat frontend when a new message arrives via socket while the
+// thread is already open, so the receiver's unread badge stays at zero
+// without re-fetching the entire message list.
+export const markConversationRead = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const otherUserId = req.params.userId;
+
+    if (currentUserId.toString() === otherUserId.toString()) {
+      return res.status(400).json({ message: "Invalid conversation." });
+    }
+
+    const conversationId = getConversationId(currentUserId, otherUserId);
+
+    const result = await Message.updateMany(
+      { conversationId, receiver: currentUserId, read: false },
+      { read: true },
+    );
+
+    if (result.modifiedCount > 0) {
+      const currentUserDoc = await User.findById(currentUserId)
+        .select("showReadReceipts")
+        .lean();
+      if (currentUserDoc?.showReadReceipts !== false) {
+        emitToUser(otherUserId, "messagesRead", { conversationId });
+      }
+      emitToUser(currentUserId, "messagesRead", { conversationId });
+    }
+
+    res.status(200).json({ marked: result.modifiedCount });
+  } catch (error) {
+    console.error("MARK CONVERSATION READ ERROR:", error);
     res.status(500).json({ message: error.message });
   }
 };

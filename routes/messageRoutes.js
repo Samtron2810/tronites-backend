@@ -28,6 +28,7 @@ import {
   sendVoiceMessage,
   searchMessages,
   getTotalUnreadCount,
+  markConversationRead,
 } from "../controllers/messageController.js";
 
 const router = express.Router();
@@ -76,6 +77,13 @@ router.post(
   validate(messageVoiceSignatureSchema),
   createMessageVoiceUploadSignature,
 );
+
+// PATCH /:userId/read — mark all unread messages in this thread as read
+// without fetching the full message list. Called by the Chat frontend
+// whenever a new message socket event arrives while the thread is open,
+// so live incoming messages are marked read immediately instead of
+// staying unread until the next full GET /:userId load.
+router.patch("/:userId/read", protect, markConversationRead);
 
 router.get("/:userId", protect, validateQuery(paginationSchema), getMessages);
 

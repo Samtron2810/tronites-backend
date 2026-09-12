@@ -18,6 +18,12 @@ import {
 import { generateChallengeId } from "../utils/otp.js";
 import { passwordResetEmailTemplate, duplicateRegistrationAlertTemplate } from "../utils/emailTemplate.js";
 import { maybeSendNewDeviceAlert } from "../utils/newDeviceAlert.js";
+import redisClient, { isRedisReady } from "../utils/redis.js";
+
+// TTL for the duplicate-registration alert rate-limit key. One alert per
+// email address per window, so an attacker can't spam a victim's inbox
+// by looping POST /api/auth/send-otp with the same address.
+const SIGNUP_ALERT_TTL_SECONDS = 300; // 5 minutes
 
 // REGISTER
 // SEND OTP (used for registration)
@@ -45,23 +51,45 @@ export const sendOtp = async (req, res) => {
       // register with their address. Fire-and-forget: an email failure
       // must never change the response the registrant sees.
       //
+      // Rate-limited via Redis: at most one alert per email address per
+      // SIGNUP_ALERT_TTL_SECONDS window. Without this, an attacker can
+      // flood any inbox by looping this endpoint — one request per email
+      // arrives at Brevo, and Brevo delivers every one of them.
+      //
       // The fake challengeId has no Otp document, so:
       //   • verify-otp → "Code not found, already used, or expired"
       //   • resend-otp → silently no-ops (see resendChallenge)
       // The frontend uses the `_duplicate` flag to show a helpful hint
       // on the OTP page without leaking existence in the HTTP response.
       const fakeId = generateChallengeId();
-      import("../utils/brevoEmail.js")
-        .then(({ sendEmail }) =>
-          sendEmail({
-            to: email,
-            subject: "Someone tried to register with your Tronites email",
-            htmlContent: duplicateRegistrationAlertTemplate(),
-          }),
-        )
-        .catch((e) =>
-          console.error("[sendOtp] duplicate-alert email failed:", e.message),
-        );
+      (async () => {
+        try {
+          const rateLimitKey = `signup-alert:${email.toLowerCase()}`;
+          // setEx returns null when the key already exists (NX flag not
+          // available in node-redis v4 setEx). Use SET with NX + EX instead.
+          const set = isRedisReady()
+            ? await redisClient.set(rateLimitKey, "1", {
+                NX: true,
+                EX: SIGNUP_ALERT_TTL_SECONDS,
+              })
+            : "OK"; // Redis down → allow the email; better noisy than silent
+          if (!set) return; // already sent an alert this window
+        } catch (redisErr) {
+          // Redis error → allow the email (fail open for the recipient's benefit)
+          console.warn("[sendOtp] rate-limit Redis error:", redisErr.message);
+        }
+        import("../utils/brevoEmail.js")
+          .then(({ sendEmail }) =>
+            sendEmail({
+              to: email,
+              subject: "Someone tried to register with your Tronites email",
+              htmlContent: duplicateRegistrationAlertTemplate(),
+            }),
+          )
+          .catch((e) =>
+            console.error("[sendOtp] duplicate-alert email failed:", e.message),
+          );
+      })();
       return res.status(200).json({
         message: "If this address can be registered, we've sent a code.",
         challengeId: fakeId,

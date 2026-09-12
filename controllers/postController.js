@@ -865,7 +865,19 @@ export const getFeedPosts = async (req, res) => {
     if (!cursor && result.posts.length > 0) {
       try {
         const organicIds = result.posts.map((p) => p._id.toString());
-        const promoted = await getPromotedPostsForFeed(organicIds);
+        // Pass viewer context so promoted posts respect privacy/block/mute.
+        // blockedIds and mutedIds are already resolved inside the cache block
+        // above but are not in scope here. Re-resolve them; they are fast
+        // Set lookups backed by Redis so the extra await is cheap.
+        const [promoBlockedIds, promoMutedIds] = await Promise.all([
+          getBlockedEitherWayIds(req.user._id),
+          getMutedIds(req.user._id),
+        ]);
+        const promoted = await getPromotedPostsForFeed(organicIds, {
+          viewerId: req.user._id,
+          blockedIds: promoBlockedIds,
+          mutedIds: promoMutedIds,
+        });
         if (promoted.length > 0) {
           // Bulk-fetch like/bookmark/repost state for promoted posts —
           // same pattern as the organic posts above.
@@ -1006,7 +1018,12 @@ export const getForYouFeed = async (req, res) => {
     if (!excludePostIds.length && formattedPosts.length > 0) {
       try {
         const organicIds = formattedPosts.map((p) => p._id.toString());
-        const promoted = await getPromotedPostsForFeed(organicIds);
+        // blockedIds and mutedIds already resolved above for For You — reuse.
+        const promoted = await getPromotedPostsForFeed(organicIds, {
+          viewerId: req.user._id,
+          blockedIds,
+          mutedIds,
+        });
         if (promoted.length > 0) {
           const promotedIds = promoted.map((p) => p._id);
           const [pLikedIds, pBookmarkedIds, pRepostedIds, pReactionSummaries, pMyReactions] =

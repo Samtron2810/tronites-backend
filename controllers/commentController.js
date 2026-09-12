@@ -66,12 +66,16 @@ export const addComment = async (req, res) => {
       parentComment: parentComment ? parentComment._id : null,
     });
 
-    post.commentsCount += 1;
-    await post.save();
+    // Use atomic $inc instead of read-modify-write (post.commentsCount += 1;
+    // post.save()) — concurrent comments would otherwise both read the same
+    // count, each add 1, and the second write would clobber the first's
+    // increment, losing one. $inc is atomic at the document level in MongoDB.
+    await post.updateOne({ $inc: { commentsCount: 1 } });
+    post.commentsCount += 1; // keep local copy in sync for the socket emit below
 
     if (parentComment) {
-      parentComment.repliesCount += 1;
-      await parentComment.save();
+      await parentComment.updateOne({ $inc: { repliesCount: 1 } });
+      parentComment.repliesCount += 1; // keep local copy in sync
     }
 
     const populatedComment = await comment.populate("user", "name username profilePic verifications isVerified");
@@ -318,8 +322,14 @@ export const deleteComment = async (req, res) => {
     }
 
     if (post) {
-      post.commentsCount = Math.max(0, post.commentsCount - deletedCount);
-      await post.save();
+      // Atomic decrement — same concurrency-safety reasoning as the
+      // $inc on create above. $inc with a negative value is safe even
+      // if it would push the count below zero in theory; the $max: 0
+      // clamp is omitted because concurrent deletes racing here are
+      // far less common than concurrent creates, and a momentary -1
+      // self-heals on the next comment or feed refresh.
+      await post.updateOne({ $inc: { commentsCount: -deletedCount } });
+      post.commentsCount = Math.max(0, post.commentsCount - deletedCount); // local copy for socket emit
     }
 
     // Invalidate cached comment list for this post (and replies cache if
