@@ -4,8 +4,8 @@ import protect from "../middleware/authMiddleware.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireModerator from "../middleware/requireModerator.js";
 import requirePermission from "../middleware/requirePermission.js";
-import { validate } from "../utils/validators.js";
 import {
+  validate,
   updateRoleSchema,
   suspendUserSchema,
   banUserSchema,
@@ -15,6 +15,7 @@ import {
   addModeratorNoteSchema,
   grantVerificationSchema,
   revokeVerificationSchema,
+  shadowRankSchema,
 } from "../utils/validators.js";
 import {
   listUsersForAdmin,
