@@ -22,6 +22,7 @@ import {
   getFollowingCount,
 } from "../services/followService.js";
 import { getLikedPostIds } from "../services/likeService.js";
+import { normalizeImages } from "./postController.js";
 import { getBookmarkedPostIds } from "../services/bookmarkService.js";
 import { getRepostedPostIds } from "../services/repostService.js";
 import {
@@ -617,42 +618,50 @@ export const getUserProfile = async (req, res) => {
       getUserReactions(req.user._id, "post", allIds),
     ]);
 
-    const formatQuoteOf = (quoteOfDoc) => ({
-      ...(quoteOfDoc._doc || quoteOfDoc),
-      isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
-      isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
-      isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
-      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
-      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
-    });
+    const formatQuoteOf = (quoteOfDoc) => {
+      const raw = quoteOfDoc._doc || quoteOfDoc;
+      return {
+        ...raw,
+        images: normalizeImages(raw.images),
+        isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+        isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+        isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+        reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+        myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
+      };
+    };
 
-    const postsWithLikeState = postsResult.items.map((item) => ({
-      ...(item.post._doc || item.post),
-      isLiked: likedPostIds.has(item.post._id.toString()),
-      isBookmarked: bookmarkedPostIds.has(item.post._id.toString()),
-      isReposted: repostedPostIds.has(item.post._id.toString()),
-      // Same reaction fields the feed endpoints send (see postController)
-      // — PostCard's reaction bar needs them; omitting them leaves
-      // reactionSummary undefined on profile posts.
-      reactionSummary: reactionSummaries.get(item.post._id.toString()) || {},
-      myReaction: myReactions.get(item.post._id.toString()) || null,
-      isQuotePost: Boolean(item.post.quoteOf),
-      quoteOf: item.post.quoteOf ? formatQuoteOf(item.post.quoteOf) : null,
-      // On a profile page, "repostedBy" is redundant with "whose
-      // profile am I on" for a repost — the header ("🔁 Reposted")
-      // doesn't need to name the owner again the way the follow-feed's
-      // cross-author header does. Still set it (rather than always
-      // null) so PostCard's existing repost-header rendering works
-      // unmodified; the frontend can choose to suppress the name on
-      // this surface if desired.
-      repostedBy: item.reposter
-        ? {
-            _id: item.reposter._id,
-            name: item.reposter.name,
-            username: item.reposter.username,
-          }
-        : null,
-    }));
+    const postsWithLikeState = postsResult.items.map((item) => {
+      const raw = item.post._doc || item.post;
+      return {
+        ...raw,
+        images: normalizeImages(raw.images),
+        isLiked: likedPostIds.has(item.post._id.toString()),
+        isBookmarked: bookmarkedPostIds.has(item.post._id.toString()),
+        isReposted: repostedPostIds.has(item.post._id.toString()),
+        // Same reaction fields the feed endpoints send (see postController)
+        // — PostCard's reaction bar needs them; omitting them leaves
+        // reactionSummary undefined on profile posts.
+        reactionSummary: reactionSummaries.get(item.post._id.toString()) || {},
+        myReaction: myReactions.get(item.post._id.toString()) || null,
+        isQuotePost: Boolean(item.post.quoteOf),
+        quoteOf: item.post.quoteOf ? formatQuoteOf(item.post.quoteOf) : null,
+        // On a profile page, "repostedBy" is redundant with "whose
+        // profile am I on" for a repost — the header ("🔁 Reposted")
+        // doesn't need to name the owner again the way the follow-feed's
+        // cross-author header does. Still set it (rather than always
+        // null) so PostCard's existing repost-header rendering works
+        // unmodified; the frontend can choose to suppress the name on
+        // this surface if desired.
+        repostedBy: item.reposter
+          ? {
+              _id: item.reposter._id,
+              name: item.reposter.name,
+              username: item.reposter.username,
+            }
+          : null,
+      };
+    });
 
     // Preserve the owner's pinned order (pinnedPosts array order) in the
     // response — the banner list mirrors exactly what was pinned, in order.
@@ -664,19 +673,23 @@ export const getUserProfile = async (req, res) => {
           pinnedOrder.indexOf(a._id.toString()) -
           pinnedOrder.indexOf(b._id.toString()),
       )
-      .map((pinnedDoc) => ({
-        ...(pinnedDoc._doc || pinnedDoc),
-        isLiked: likedPostIds.has(pinnedDoc._id.toString()),
-        isBookmarked: bookmarkedPostIds.has(pinnedDoc._id.toString()),
-        isReposted: repostedPostIds.has(pinnedDoc._id.toString()),
-        reactionSummary: reactionSummaries.get(pinnedDoc._id.toString()) || {},
-        myReaction: myReactions.get(pinnedDoc._id.toString()) || null,
-        isQuotePost: Boolean(pinnedDoc.quoteOf),
-        quoteOf: pinnedDoc.quoteOf ? formatQuoteOf(pinnedDoc.quoteOf) : null,
-        // Only the owner's own posts are pinnable (togglePinnedPost
-        // enforces ownership), so a banner is never a repost edge.
-        repostedBy: null,
-      }));
+      .map((pinnedDoc) => {
+        const raw = pinnedDoc._doc || pinnedDoc;
+        return {
+          ...raw,
+          images: normalizeImages(raw.images),
+          isLiked: likedPostIds.has(pinnedDoc._id.toString()),
+          isBookmarked: bookmarkedPostIds.has(pinnedDoc._id.toString()),
+          isReposted: repostedPostIds.has(pinnedDoc._id.toString()),
+          reactionSummary: reactionSummaries.get(pinnedDoc._id.toString()) || {},
+          myReaction: myReactions.get(pinnedDoc._id.toString()) || null,
+          isQuotePost: Boolean(pinnedDoc.quoteOf),
+          quoteOf: pinnedDoc.quoteOf ? formatQuoteOf(pinnedDoc.quoteOf) : null,
+          // Only the owner's own posts are pinnable (togglePinnedPost
+          // enforces ownership), so a banner is never a repost edge.
+          repostedBy: null,
+        };
+      });
 
     res.status(200).json({
       ...userResult,

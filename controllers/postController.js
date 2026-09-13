@@ -81,6 +81,19 @@ import {
   removeAllRepostsForPost,
 } from "../services/repostService.js";
 
+// ── normalizeImages ────────────────────────────────────────────────────────
+// Legacy posts stored images as plain strings; the schema now expects
+// { url, altText } subdocuments. Mongoose silently drops string elements
+// when it tries to cast them into the subdocument shape, so we must
+// normalize at serialization time (after spreading _doc) rather than
+// relying on schema coercion. Safe to call on already-migrated arrays.
+export const normalizeImages = (images) => {
+  if (!Array.isArray(images)) return [];
+  return images.map((img) =>
+    typeof img === "string" ? { url: img, altText: "" } : { url: img?.url ?? "", altText: img?.altText ?? "" }
+  );
+};
+
 // CREATE POST — images arrive as Cloudinary URLs from the signed browser
 // upload flow (see createImageUploadSignature). The frontend uploads
 // directly to Cloudinary and sends the resulting secure_urls here.
@@ -804,6 +817,7 @@ export const getFeedPosts = async (req, res) => {
 
         const formatPost = (post) => ({
           ...post._doc,
+          images: normalizeImages(post._doc.images),
           isLiked: likedPostIds.has(post._id.toString()),
           isBookmarked: bookmarkedPostIds.has(post._id.toString()),
           isReposted: repostedPostIds.has(post._id.toString()),
@@ -817,6 +831,7 @@ export const getFeedPosts = async (req, res) => {
         // quoteOf (one level of embedding only), so no recursion here.
         const formatQuoteOf = (quoteOfDoc) => ({
           ...quoteOfDoc._doc,
+          images: normalizeImages(quoteOfDoc._doc.images),
           isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
           isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
           isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
@@ -986,6 +1001,7 @@ export const getForYouFeed = async (req, res) => {
 
     const formatQuoteOf = (quoteOfDoc) => ({
       ...quoteOfDoc._doc,
+      images: normalizeImages(quoteOfDoc._doc.images),
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
@@ -995,6 +1011,7 @@ export const getForYouFeed = async (req, res) => {
 
     const formattedPosts = page.map(({ post, source }) => ({
       ...post._doc,
+      images: normalizeImages(post._doc.images),
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
@@ -1210,6 +1227,7 @@ export const getTrendingPosts = async (req, res) => {
 
     const formatQuoteOf = (quoteOfDoc) => ({
       ...quoteOfDoc._doc,
+      images: normalizeImages(quoteOfDoc._doc.images),
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
@@ -1219,6 +1237,7 @@ export const getTrendingPosts = async (req, res) => {
 
     const formattedPosts = page.map(({ post }) => ({
       ...post._doc,
+      images: normalizeImages(post._doc.images),
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
@@ -1396,25 +1415,33 @@ export const getPostsByHashtag = async (req, res) => {
       getUserReactions(req.user._id, 'post', allIds),
     ]);
 
-    const formatQuoteOf = (quoteOfDoc) => ({
-      ...(quoteOfDoc._doc || quoteOfDoc),
-      isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
-      isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
-      isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
-      reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
-      myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
-    });
+    const formatQuoteOf = (quoteOfDoc) => {
+      const raw = quoteOfDoc._doc || quoteOfDoc;
+      return {
+        ...raw,
+        images: normalizeImages(raw.images),
+        isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
+        isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
+        isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
+        reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+        myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
+      };
+    };
 
-    const formattedPosts = result.posts.map((post) => ({
-      ...(post._doc || post),
-      isLiked: likedPostIds.has(post._id.toString()),
-      isBookmarked: bookmarkedPostIds.has(post._id.toString()),
-      isReposted: repostedPostIds.has(post._id.toString()),
-      isQuotePost: Boolean(post.quoteOf),
-      quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
-      reactionSummary: reactionSummaries.get(post._id.toString()) || {},
-      myReaction: myReactions.get(post._id.toString()) || null,
-    }));
+    const formattedPosts = result.posts.map((post) => {
+      const raw = post._doc || post;
+      return {
+        ...raw,
+        images: normalizeImages(raw.images),
+        isLiked: likedPostIds.has(post._id.toString()),
+        isBookmarked: bookmarkedPostIds.has(post._id.toString()),
+        isReposted: repostedPostIds.has(post._id.toString()),
+        isQuotePost: Boolean(post.quoteOf),
+        quoteOf: post.quoteOf ? formatQuoteOf(post.quoteOf) : null,
+        reactionSummary: reactionSummaries.get(post._id.toString()) || {},
+        myReaction: myReactions.get(post._id.toString()) || null,
+      };
+    });
 
     res.status(200).json({ ...result, posts: formattedPosts });
   } catch (error) {
@@ -1607,6 +1634,7 @@ export const searchPosts = async (req, res) => {
 
     const formatQuoteOf = (quoteOfDoc) => ({
       ...quoteOfDoc._doc,
+      images: normalizeImages(quoteOfDoc._doc.images),
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
@@ -1616,6 +1644,7 @@ export const searchPosts = async (req, res) => {
 
     const formattedPosts = posts.map((post) => ({
       ...post._doc,
+      images: normalizeImages(post._doc.images),
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
@@ -1946,6 +1975,7 @@ export const getBookmarkedPosts = async (req, res) => {
 
     const formatQuoteOf = (quoteOfDoc) => ({
       ...quoteOfDoc._doc,
+      images: normalizeImages(quoteOfDoc._doc.images),
       isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
       isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
       isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
@@ -1955,6 +1985,7 @@ export const getBookmarkedPosts = async (req, res) => {
 
     const formattedPosts = posts.map((post) => ({
       ...post._doc,
+      images: normalizeImages(post._doc.images),
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: true,
       isReposted: repostedPostIds.has(post._id.toString()),
@@ -2221,12 +2252,14 @@ export const createQuotePost = async (req, res) => {
 
     const responseBody = {
       ...populatedQuote._doc,
+      images: normalizeImages(populatedQuote._doc.images),
       isQuotePost: true,
       isLiked: false,
       isBookmarked: false,
       isReposted: false,
       quoteOf: {
         ...populatedOriginal._doc,
+        images: normalizeImages(populatedOriginal._doc.images),
         isLiked: false,
         isBookmarked: false,
         isReposted: false,
@@ -2295,6 +2328,7 @@ export const getPostById = async (req, res) => {
 
     const formatted = {
       ...post._doc,
+      images: normalizeImages(post._doc.images),
       isLiked: likedPostIds.has(post._id.toString()),
       isBookmarked: bookmarkedPostIds.has(post._id.toString()),
       isReposted: repostedPostIds.has(post._id.toString()),
@@ -2304,6 +2338,7 @@ export const getPostById = async (req, res) => {
       quoteOf: post.quoteOf
         ? {
             ...post.quoteOf._doc,
+            images: normalizeImages(post.quoteOf._doc.images),
             isLiked: likedPostIds.has(post.quoteOf._id.toString()),
             isBookmarked: bookmarkedPostIds.has(post.quoteOf._id.toString()),
             isReposted: repostedPostIds.has(post.quoteOf._id.toString()),
