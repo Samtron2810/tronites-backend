@@ -90,7 +90,9 @@ import {
 export const normalizeImages = (images) => {
   if (!Array.isArray(images)) return [];
   return images.map((img) =>
-    typeof img === "string" ? { url: img, altText: "" } : { url: img?.url ?? "", altText: img?.altText ?? "" }
+    typeof img === "string"
+      ? { url: img, altText: "" }
+      : { url: img?.url ?? "", altText: img?.altText ?? "" },
   );
 };
 
@@ -162,7 +164,10 @@ export const createPost = async (req, res) => {
       hashtags: extractHashtags(text),
       ...(scheduledForDate ? { scheduledFor: scheduledForDate } : {}),
     });
-    const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
+    const populatedPost = await post.populate(
+      "user",
+      "name username profilePic verifications isVerified",
+    );
 
     // Notify mentioned users (skip self-mentions, blocked relationships,
     // and anyone who's muted the poster). Best-effort — a failure here
@@ -216,6 +221,7 @@ export const createPost = async (req, res) => {
     if (!scheduledForDate) {
       invalidateFeedCache(req.user._id);
       invalidateCache(`profile-posts:${req.user._id}:*`);
+      invalidateCache(`mediakit:${req.user._id}`);
     }
 
     // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass. Never
@@ -455,17 +461,21 @@ export const createVideoPost = async (req, res) => {
       invalidateCache(`profile-posts:${req.user._id}:*`);
     }
 
-    const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
+    const populatedPost = await post.populate(
+      "user",
+      "name username profilePic verifications isVerified",
+    );
     res.status(201).json({ post: populatedPost });
 
     // Real-time post feed update for followers. Skip for scheduled posts.
-    if (!scheduledForDate) try {
-      if (post.privacy !== POST_PRIVACY.ONLY_ME) {
-        emitToFollowersOf(req.user._id, "newPost", populatedPost);
+    if (!scheduledForDate)
+      try {
+        if (post.privacy !== POST_PRIVACY.ONLY_ME) {
+          emitToFollowersOf(req.user._id, "newPost", populatedPost);
+        }
+      } catch (socketError) {
+        console.error("Real-time feed emission error:", socketError);
       }
-    } catch (socketError) {
-      console.error("Real-time feed emission error:", socketError);
-    }
   } catch (error) {
     console.error("CREATE VIDEO POST ERROR:", error.message);
     res.status(500).json({ message: error.message });
@@ -536,7 +546,11 @@ export const editPost = async (req, res) => {
     // images, video, and privacy are immutable after posting — reject
     // explicitly so the client knows the update did NOT take effect,
     // rather than silently succeeding with no change.
-    if (req.body.images !== undefined || req.body.video !== undefined || req.body.privacy !== undefined) {
+    if (
+      req.body.images !== undefined ||
+      req.body.video !== undefined ||
+      req.body.privacy !== undefined
+    ) {
       return res.status(400).json({
         message: "images, video, and privacy cannot be changed after posting",
       });
@@ -558,7 +572,10 @@ export const editPost = async (req, res) => {
     post.editedAt = new Date();
     await post.save();
 
-    const populatedPost = await post.populate("user", "name username profilePic verifications isVerified");
+    const populatedPost = await post.populate(
+      "user",
+      "name username profilePic verifications isVerified",
+    );
 
     // Notify newly-added mentions only — re-notifying every mention on
     // every edit would spam anyone already mentioned pre-edit.
@@ -602,6 +619,7 @@ export const editPost = async (req, res) => {
 
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
+    invalidateCache(`mediakit:${req.user._id}`);
 
     res.status(200).json(populatedPost);
 
@@ -683,7 +701,11 @@ export const getFeedPosts = async (req, res) => {
     // Fire-and-forget — don't block the feed response on cleanup.
     markStaleProcessingVideosAsFailed();
 
-    const cacheKey = await getFeedCacheKey(req.user._id, cursor || "start", limit);
+    const cacheKey = await getFeedCacheKey(
+      req.user._id,
+      cursor || "start",
+      limit,
+    );
 
     // `let` — may be reassigned below when promoted posts are injected.
     let result = await getOrSetCache(
@@ -725,7 +747,10 @@ export const getFeedPosts = async (req, res) => {
           .populate("user", "name username profilePic verifications isVerified")
           .populate({
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic verifications isVerified" },
+            populate: {
+              path: "user",
+              select: "name username profilePic verifications isVerified",
+            },
           })
           .sort({ createdAt: -1 })
           .limit(limit + 1);
@@ -747,12 +772,22 @@ export const getFeedPosts = async (req, res) => {
           .populate("user", "name username profilePic verifications isVerified")
           .populate({
             path: "post",
-            match: { removedAt: null, ...PUBLISHED_FILTER, ...PUBLIC_ONLY_FILTER },
+            match: {
+              removedAt: null,
+              ...PUBLISHED_FILTER,
+              ...PUBLIC_ONLY_FILTER,
+            },
             populate: [
-              { path: "user", select: "name username profilePic verifications isVerified" },
+              {
+                path: "user",
+                select: "name username profilePic verifications isVerified",
+              },
               {
                 path: "quoteOf",
-                populate: { path: "user", select: "name username profilePic verifications isVerified" },
+                populate: {
+                  path: "user",
+                  select: "name username profilePic verifications isVerified",
+                },
               },
             ],
           })
@@ -807,7 +842,13 @@ export const getFeedPosts = async (req, res) => {
           .filter((item) => item.post.quoteOf)
           .map((item) => item.post.quoteOf._id);
         const allIds = [...postIds, ...quoteOfIds];
-        const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+        const [
+          likedPostIds,
+          bookmarkedPostIds,
+          repostedPostIds,
+          reactionSummaries,
+          myReactions,
+        ] = await Promise.all([
           getLikedPostIds(req.user._id, allIds),
           getBookmarkedPostIds(req.user._id, allIds),
           getRepostedPostIds(req.user._id, allIds),
@@ -835,7 +876,8 @@ export const getFeedPosts = async (req, res) => {
           isLiked: likedPostIds.has(quoteOfDoc._id.toString()),
           isBookmarked: bookmarkedPostIds.has(quoteOfDoc._id.toString()),
           isReposted: repostedPostIds.has(quoteOfDoc._id.toString()),
-          reactionSummary: reactionSummaries.get(quoteOfDoc._id.toString()) || {},
+          reactionSummary:
+            reactionSummaries.get(quoteOfDoc._id.toString()) || {},
           myReaction: myReactions.get(quoteOfDoc._id.toString()) || null,
         });
 
@@ -897,14 +939,19 @@ export const getFeedPosts = async (req, res) => {
           // Bulk-fetch like/bookmark/repost state for promoted posts —
           // same pattern as the organic posts above.
           const promotedIds = promoted.map((p) => p._id);
-          const [pLikedIds, pBookmarkedIds, pRepostedIds, pReactionSummaries, pMyReactions] =
-            await Promise.all([
-              getLikedPostIds(req.user._id, promotedIds),
-              getBookmarkedPostIds(req.user._id, promotedIds),
-              getRepostedPostIds(req.user._id, promotedIds),
-              getReactionSummaries("post", promotedIds),
-              getUserReactions(req.user._id, "post", promotedIds),
-            ]);
+          const [
+            pLikedIds,
+            pBookmarkedIds,
+            pRepostedIds,
+            pReactionSummaries,
+            pMyReactions,
+          ] = await Promise.all([
+            getLikedPostIds(req.user._id, promotedIds),
+            getBookmarkedPostIds(req.user._id, promotedIds),
+            getRepostedPostIds(req.user._id, promotedIds),
+            getReactionSummaries("post", promotedIds),
+            getUserReactions(req.user._id, "post", promotedIds),
+          ]);
 
           const formattedPromoted = promoted.map((p) => ({
             ...p,
@@ -924,7 +971,10 @@ export const getFeedPosts = async (req, res) => {
           const insertPositions = [3, 8];
           let offset = 0;
           for (let i = 0; i < formattedPromoted.length; i++) {
-            const pos = Math.min(insertPositions[i] + offset, withPromoted.length);
+            const pos = Math.min(
+              insertPositions[i] + offset,
+              withPromoted.length,
+            );
             withPromoted.splice(pos, 0, formattedPromoted[i]);
             offset++;
           }
@@ -991,7 +1041,13 @@ export const getForYouFeed = async (req, res) => {
       .filter(({ post }) => post.quoteOf)
       .map(({ post }) => post.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+    const [
+      likedPostIds,
+      bookmarkedPostIds,
+      repostedPostIds,
+      reactionSummaries,
+      myReactions,
+    ] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
@@ -1043,14 +1099,19 @@ export const getForYouFeed = async (req, res) => {
         });
         if (promoted.length > 0) {
           const promotedIds = promoted.map((p) => p._id);
-          const [pLikedIds, pBookmarkedIds, pRepostedIds, pReactionSummaries, pMyReactions] =
-            await Promise.all([
-              getLikedPostIds(req.user._id, promotedIds),
-              getBookmarkedPostIds(req.user._id, promotedIds),
-              getRepostedPostIds(req.user._id, promotedIds),
-              getReactionSummaries("post", promotedIds),
-              getUserReactions(req.user._id, "post", promotedIds),
-            ]);
+          const [
+            pLikedIds,
+            pBookmarkedIds,
+            pRepostedIds,
+            pReactionSummaries,
+            pMyReactions,
+          ] = await Promise.all([
+            getLikedPostIds(req.user._id, promotedIds),
+            getBookmarkedPostIds(req.user._id, promotedIds),
+            getRepostedPostIds(req.user._id, promotedIds),
+            getReactionSummaries("post", promotedIds),
+            getUserReactions(req.user._id, "post", promotedIds),
+          ]);
 
           const formattedPromoted = promoted.map((p) => ({
             ...p,
@@ -1069,14 +1130,20 @@ export const getForYouFeed = async (req, res) => {
           const insertPositions = [3, 8];
           let offset = 0;
           for (let i = 0; i < formattedPromoted.length; i++) {
-            const pos = Math.min(insertPositions[i] + offset, withPromoted.length);
+            const pos = Math.min(
+              insertPositions[i] + offset,
+              withPromoted.length,
+            );
             withPromoted.splice(pos, 0, formattedPromoted[i]);
             offset++;
           }
           finalPosts = withPromoted;
         }
       } catch (promoErr) {
-        console.error("Promoted post injection error (ForYou):", promoErr.message);
+        console.error(
+          "Promoted post injection error (ForYou):",
+          promoErr.message,
+        );
       }
     }
 
@@ -1120,10 +1187,11 @@ const MAX_TRENDING_CANDIDATES = 500;
 const TRENDING_WINDOW_DAYS = 7;
 
 const computeTrendingScore = (post) => {
-  const ageHours =
-    (Date.now() - post.createdAt.getTime()) / (1000 * 60 * 60);
+  const ageHours = (Date.now() - post.createdAt.getTime()) / (1000 * 60 * 60);
   const engagement = post.likesCount * 2 + post.commentsCount * 3;
-  return engagement / Math.pow(ageHours + TRENDING_ORIGIN_HOURS, TRENDING_GRAVITY);
+  return (
+    engagement / Math.pow(ageHours + TRENDING_ORIGIN_HOURS, TRENDING_GRAVITY)
+  );
 };
 
 export const getTrendingPosts = async (req, res) => {
@@ -1179,16 +1247,17 @@ export const getTrendingPosts = async (req, res) => {
       // push is trying to reach, so this is the highest-value place to
       // enforce the flag.
       velocityFlagged: { $ne: true },
-      ...(excludedUserIds.size
-        ? { user: { $nin: [...excludedUserIds] } }
-        : {}),
+      ...(excludedUserIds.size ? { user: { $nin: [...excludedUserIds] } } : {}),
     };
 
     const candidates = await Post.find(filter)
       .populate("user", "name username profilePic verifications isVerified")
       .populate({
         path: "quoteOf",
-        populate: { path: "user", select: "name username profilePic verifications isVerified" },
+        populate: {
+          path: "user",
+          select: "name username profilePic verifications isVerified",
+        },
       })
       .sort({ createdAt: -1 })
       .limit(MAX_TRENDING_CANDIDATES);
@@ -1217,12 +1286,18 @@ export const getTrendingPosts = async (req, res) => {
       .filter(({ post }) => post.quoteOf)
       .map(({ post }) => post.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+    const [
+      likedPostIds,
+      bookmarkedPostIds,
+      repostedPostIds,
+      reactionSummaries,
+      myReactions,
+    ] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
-      getReactionSummaries('post', allIds),
-      getUserReactions(req.user._id, 'post', allIds),
+      getReactionSummaries("post", allIds),
+      getUserReactions(req.user._id, "post", allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -1288,7 +1363,9 @@ export const getTrendingHashtags = async (req, res) => {
       const locUsers = await User.find({
         location: { $regex: near, $options: "i" },
         deletedAt: null,
-      }).select("_id").lean();
+      })
+        .select("_id")
+        .lean();
       locationUserIds = locUsers.map((u) => u._id);
     }
 
@@ -1385,7 +1462,10 @@ export const getPostsByHashtag = async (req, res) => {
           .populate("user", "name username profilePic verifications isVerified")
           .populate({
             path: "quoteOf",
-            populate: { path: "user", select: "name username profilePic verifications isVerified" },
+            populate: {
+              path: "user",
+              select: "name username profilePic verifications isVerified",
+            },
           })
           .sort({ _id: -1 })
           .limit(limit + 1);
@@ -1407,12 +1487,18 @@ export const getPostsByHashtag = async (req, res) => {
       .filter((p) => p.quoteOf)
       .map((p) => p.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+    const [
+      likedPostIds,
+      bookmarkedPostIds,
+      repostedPostIds,
+      reactionSummaries,
+      myReactions,
+    ] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
-      getReactionSummaries('post', allIds),
-      getUserReactions(req.user._id, 'post', allIds),
+      getReactionSummaries("post", allIds),
+      getUserReactions(req.user._id, "post", allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => {
@@ -1466,10 +1552,15 @@ export const getPostsByHashtag = async (req, res) => {
 // implicitly had would be a confusing, unrequested unfollow.
 export const toggleHashtagFollow = async (req, res) => {
   try {
-    const tag = String(req.params.tag || "").trim().toLowerCase();
+    const tag = String(req.params.tag || "")
+      .trim()
+      .toLowerCase();
     if (!tag) return res.status(400).json({ message: "Hashtag is required" });
 
-    const alreadyFollowing = await isExplicitlyFollowingHashtag(req.user._id, tag);
+    const alreadyFollowing = await isExplicitlyFollowingHashtag(
+      req.user._id,
+      tag,
+    );
     if (alreadyFollowing) {
       await unfollowHashtag(req.user._id, tag);
       return res.status(200).json({ following: false, tag });
@@ -1519,7 +1610,8 @@ export const searchPosts = async (req, res) => {
         ? parseFloat(req.query.afterScore)
         : null;
     const cursorId = req.query.afterId || null;
-    const hasCursor = cursorScore !== null && cursorId && !Number.isNaN(cursorScore);
+    const hasCursor =
+      cursorScore !== null && cursorId && !Number.isNaN(cursorScore);
 
     // Filters (from user / date range / has-media / min-likes) can
     // stand alone or combine with a text query — an empty query with at
@@ -1529,7 +1621,11 @@ export const searchPosts = async (req, res) => {
     const { fromUserId, startDate, endDate, hasMedia, minLikes } =
       await parseSearchFilters(req.query);
     const hasFilters =
-      fromUserId || startDate || endDate || hasMedia !== null || minLikes !== null;
+      fromUserId ||
+      startDate ||
+      endDate ||
+      hasMedia !== null ||
+      minLikes !== null;
 
     if (query.length > 0 && query.length < 2) {
       return res.status(200).json({ posts: [], hasMore: false });
@@ -1595,9 +1691,16 @@ export const searchPosts = async (req, res) => {
       .populate("user", "name username profilePic verifications isVerified")
       .populate({
         path: "quoteOf",
-        populate: { path: "user", select: "name username profilePic verifications isVerified" },
+        populate: {
+          path: "user",
+          select: "name username profilePic verifications isVerified",
+        },
       })
-      .sort(hasTextQuery ? { score: { $meta: "textScore" }, _id: -1 } : { createdAt: -1, _id: -1 })
+      .sort(
+        hasTextQuery
+          ? { score: { $meta: "textScore" }, _id: -1 }
+          : { createdAt: -1, _id: -1 },
+      )
       .limit(MAX_SEARCH_CANDIDATES);
 
     // Filters-only pagination cursors on (createdAt, _id) instead of
@@ -1624,12 +1727,18 @@ export const searchPosts = async (req, res) => {
     const postIds = posts.map((p) => p._id);
     const quoteOfIds = posts.filter((p) => p.quoteOf).map((p) => p.quoteOf._id);
     const allIds = [...postIds, ...quoteOfIds];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+    const [
+      likedPostIds,
+      bookmarkedPostIds,
+      repostedPostIds,
+      reactionSummaries,
+      myReactions,
+    ] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
-      getReactionSummaries('post', allIds),
-      getUserReactions(req.user._id, 'post', allIds),
+      getReactionSummaries("post", allIds),
+      getUserReactions(req.user._id, "post", allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -1965,12 +2074,18 @@ export const getBookmarkedPosts = async (req, res) => {
     const quoteOfIds = posts.filter((p) => p.quoteOf).map((p) => p.quoteOf._id);
     const allIds = [...posts.map((p) => p._id), ...quoteOfIds];
 
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+    const [
+      likedPostIds,
+      bookmarkedPostIds,
+      repostedPostIds,
+      reactionSummaries,
+      myReactions,
+    ] = await Promise.all([
       getLikedPostIds(req.user._id, allIds),
       getBookmarkedPostIds(req.user._id, allIds),
       getRepostedPostIds(req.user._id, allIds),
-      getReactionSummaries('post', allIds),
-      getUserReactions(req.user._id, 'post', allIds),
+      getReactionSummaries("post", allIds),
+      getUserReactions(req.user._id, "post", allIds),
     ]);
 
     const formatQuoteOf = (quoteOfDoc) => ({
@@ -2160,7 +2275,9 @@ export const createQuotePost = async (req, res) => {
     if (original.quoteOf) {
       return res
         .status(403)
-        .json({ message: "You can't quote a quote. Quote the original post instead." });
+        .json({
+          message: "You can't quote a quote. Quote the original post instead.",
+        });
     }
 
     const { text } = req.body;
@@ -2186,8 +2303,14 @@ export const createQuotePost = async (req, res) => {
     original.repostsCount += 1;
     await original.updateOne({ $inc: { repostsCount: 1 } });
 
-    const populatedQuote = await quotePost.populate("user", "name username profilePic verifications isVerified");
-    const populatedOriginal = await original.populate("user", "name username profilePic verifications isVerified");
+    const populatedQuote = await quotePost.populate(
+      "user",
+      "name username profilePic verifications isVerified",
+    );
+    const populatedOriginal = await original.populate(
+      "user",
+      "name username profilePic verifications isVerified",
+    );
 
     // Notify the original author (skip self-quotes, blocked, muted —
     // same guards as every other notification path here).
@@ -2297,7 +2420,10 @@ export const getPostById = async (req, res) => {
       .populate("user", "name username profilePic verifications isVerified")
       .populate({
         path: "quoteOf",
-        populate: { path: "user", select: "name username profilePic verifications isVerified" },
+        populate: {
+          path: "user",
+          select: "name username profilePic verifications isVerified",
+        },
       });
 
     if (!post) {
@@ -2318,7 +2444,13 @@ export const getPostById = async (req, res) => {
     }
 
     const idsToCheck = [post._id, ...(post.quoteOf ? [post.quoteOf._id] : [])];
-    const [likedPostIds, bookmarkedPostIds, repostedPostIds, reactionSummaries, myReactions] = await Promise.all([
+    const [
+      likedPostIds,
+      bookmarkedPostIds,
+      repostedPostIds,
+      reactionSummaries,
+      myReactions,
+    ] = await Promise.all([
       getLikedPostIds(userId, idsToCheck),
       getBookmarkedPostIds(userId, idsToCheck),
       getRepostedPostIds(userId, idsToCheck),
@@ -2342,7 +2474,8 @@ export const getPostById = async (req, res) => {
             isLiked: likedPostIds.has(post.quoteOf._id.toString()),
             isBookmarked: bookmarkedPostIds.has(post.quoteOf._id.toString()),
             isReposted: repostedPostIds.has(post.quoteOf._id.toString()),
-            reactionSummary: reactionSummaries.get(post.quoteOf._id.toString()) || {},
+            reactionSummary:
+              reactionSummaries.get(post.quoteOf._id.toString()) || {},
             myReaction: myReactions.get(post.quoteOf._id.toString()) || null,
           }
         : null,
@@ -2448,6 +2581,7 @@ export const deletePost = async (req, res) => {
     // post was the pinned one. Otherwise the stale pinnedPost id lingers
     // for the full cache TTL.
     invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`mediakit:${req.user._id}`);
 
     res.status(200).json({ message: "Post deleted" });
   } catch (error) {

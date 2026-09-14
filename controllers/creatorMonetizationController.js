@@ -2,7 +2,10 @@ import crypto from "crypto";
 import User from "../models/User.js";
 import Post from "../models/Post.js";
 import CreatorTip from "../models/CreatorTip.js";
-import { CreatorPlan, CreatorSubscription } from "../models/CreatorSubscription.js";
+import {
+  CreatorPlan,
+  CreatorSubscription,
+} from "../models/CreatorSubscription.js";
 import { CreatorBankAccount, CreatorPayout } from "../models/CreatorPayout.js";
 import Notification from "../models/Notification.js";
 import Follow from "../models/Follow.js";
@@ -15,7 +18,7 @@ import {
   verifyTransaction,
 } from "../services/paystackService.js";
 import { emitToUser } from "../socket/socket.js";
-import { invalidateCache } from "../utils/redis.js";
+import { invalidateCache, getOrSetCache } from "../utils/redis.js";
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
 // Platform fee taken from each tip/subscription (10% default).
@@ -33,7 +36,8 @@ const hasActiveCreatorBadge = (user) => {
   if (!Array.isArray(user?.verifications)) return false;
   const now = new Date();
   return user.verifications.some(
-    (v) => v.type === "creator" && (!v.expiresAt || new Date(v.expiresAt) > now),
+    (v) =>
+      v.type === "creator" && (!v.expiresAt || new Date(v.expiresAt) > now),
   );
 };
 
@@ -63,11 +67,22 @@ const computeEarnings = async (creatorId) => {
     // We'll use a separate tips-equivalent approach (subscription charges are tracked in CreatorTip with post=null)
     CreatorTip.aggregate([
       { $match: { creator: creatorId, status: "verified" } },
-      { $group: { _id: null, total: { $sum: "$amountKobo" }, count: { $sum: 1 } } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amountKobo" },
+          count: { $sum: 1 },
+        },
+      },
     ]),
     // Pending / processing payouts
     CreatorPayout.aggregate([
-      { $match: { creator: creatorId, status: { $in: ["pending", "processing"] } } },
+      {
+        $match: {
+          creator: creatorId,
+          status: { $in: ["pending", "processing"] },
+        },
+      },
       { $group: { _id: null, total: { $sum: "$amountKobo" } } },
     ]),
     // Already paid out
@@ -78,11 +93,16 @@ const computeEarnings = async (creatorId) => {
   ]);
 
   const totalEarnedKobo = tipsAgg[0]?.total ?? 0;
-  const platformFeeKobo = Math.round(totalEarnedKobo * (PLATFORM_FEE_PCT / 100));
+  const platformFeeKobo = Math.round(
+    totalEarnedKobo * (PLATFORM_FEE_PCT / 100),
+  );
   const netEarnedKobo = totalEarnedKobo - platformFeeKobo;
   const pendingPayoutKobo = pendingPayout[0]?.total ?? 0;
   const paidPayoutKobo = paidPayout[0]?.total ?? 0;
-  const availableKobo = Math.max(0, netEarnedKobo - pendingPayoutKobo - paidPayoutKobo);
+  const availableKobo = Math.max(
+    0,
+    netEarnedKobo - pendingPayoutKobo - paidPayoutKobo,
+  );
 
   return {
     totalEarnedKobo,
@@ -103,11 +123,14 @@ export const initiateTip = async (req, res) => {
   try {
     const { creatorId, amountNgn, message, isAnonymous, postId } = req.body;
 
-    if (!creatorId) return res.status(400).json({ message: "creatorId required." });
+    if (!creatorId)
+      return res.status(400).json({ message: "creatorId required." });
     if (!amountNgn || amountNgn < 50)
       return res.status(400).json({ message: "Minimum tip is ₦50." });
     if (amountNgn > 100_000)
-      return res.status(400).json({ message: "Maximum single tip is ₦100,000." });
+      return res
+        .status(400)
+        .json({ message: "Maximum single tip is ₦100,000." });
 
     const creator = await User.findById(creatorId).select(
       "email name username verifications deletedAt",
@@ -130,7 +153,8 @@ export const initiateTip = async (req, res) => {
     const amountKobo = amountNgn * 100;
 
     const callbackBase =
-      process.env.PAYSTACK_TIP_CALLBACK_URL || process.env.PAYSTACK_CALLBACK_URL;
+      process.env.PAYSTACK_TIP_CALLBACK_URL ||
+      process.env.PAYSTACK_CALLBACK_URL;
     const callbackUrl = callbackBase
       ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}&flow=tip`
       : undefined;
@@ -181,7 +205,8 @@ export const verifyTip = async (req, res) => {
     const { reference } = req.params;
     const tip = await CreatorTip.findOne({ reference });
     if (!tip) return res.status(404).json({ message: "Tip not found." });
-    if (tip.status === "verified") return res.status(200).json({ verified: true });
+    if (tip.status === "verified")
+      return res.status(200).json({ verified: true });
     if (tip.sender.toString() !== req.user._id.toString())
       return res.status(403).json({ message: "Not your transaction." });
 
@@ -250,10 +275,15 @@ export const getReceivedTips = async (req, res) => {
 // GET /creator-monetization/plan/:creatorId — public, returns a creator's plan
 export const getCreatorPlan = async (req, res) => {
   try {
-    const creatorId = req.params.creatorId === "me" ? req.user?._id : req.params.creatorId;
-    if (!creatorId) return res.status(400).json({ message: "creatorId required." });
+    const creatorId =
+      req.params.creatorId === "me" ? req.user?._id : req.params.creatorId;
+    if (!creatorId)
+      return res.status(400).json({ message: "creatorId required." });
 
-    const plan = await CreatorPlan.findOne({ creator: creatorId, active: true }).lean();
+    const plan = await CreatorPlan.findOne({
+      creator: creatorId,
+      active: true,
+    }).lean();
 
     // For "me" requests from unauthenticated — shouldn't reach here but safe guard
     if (req.params.creatorId !== "me" && !plan)
@@ -277,11 +307,16 @@ export const getCreatorPlan = async (req, res) => {
 export const upsertCreatorPlan = async (req, res) => {
   try {
     const { name, perks, priceNgn, active } = req.body;
-    if (!name?.trim()) return res.status(400).json({ message: "Plan name required." });
+    if (!name?.trim())
+      return res.status(400).json({ message: "Plan name required." });
     if (!priceNgn || priceNgn < 100)
-      return res.status(400).json({ message: "Minimum plan price is ₦100/month." });
+      return res
+        .status(400)
+        .json({ message: "Minimum plan price is ₦100/month." });
     if (priceNgn > 50_000)
-      return res.status(400).json({ message: "Maximum plan price is ₦50,000/month." });
+      return res
+        .status(400)
+        .json({ message: "Maximum plan price is ₦50,000/month." });
 
     const plan = await CreatorPlan.findOneAndUpdate(
       { creator: req.user._id },
@@ -297,6 +332,7 @@ export const upsertCreatorPlan = async (req, res) => {
     );
 
     invalidateCache(`creator-plan:${req.user._id}`);
+    invalidateCache(`mediakit:${req.user._id}`);
     res.status(200).json({ plan });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -308,12 +344,17 @@ export const upsertCreatorPlan = async (req, res) => {
 export const initiateSubscription = async (req, res) => {
   try {
     const { creatorId } = req.body;
-    if (!creatorId) return res.status(400).json({ message: "creatorId required." });
+    if (!creatorId)
+      return res.status(400).json({ message: "creatorId required." });
     if (creatorId === req.user._id.toString())
-      return res.status(400).json({ message: "You cannot subscribe to yourself." });
+      return res
+        .status(400)
+        .json({ message: "You cannot subscribe to yourself." });
 
     const [creator, plan] = await Promise.all([
-      User.findById(creatorId).select("name username verifications deletedAt email"),
+      User.findById(creatorId).select(
+        "name username verifications deletedAt email",
+      ),
       CreatorPlan.findOne({ creator: creatorId, active: true }).lean(),
     ]);
 
@@ -322,7 +363,9 @@ export const initiateSubscription = async (req, res) => {
     if (!hasActiveCreatorBadge(creator))
       return res.status(403).json({ message: "This user is not a creator." });
     if (!plan)
-      return res.status(404).json({ message: "Creator has no active subscription plan." });
+      return res
+        .status(404)
+        .json({ message: "Creator has no active subscription plan." });
 
     // Check for existing active subscription
     const existing = await CreatorSubscription.findOne({
@@ -330,13 +373,16 @@ export const initiateSubscription = async (req, res) => {
       creator: creatorId,
     });
     if (existing?.status === "active" && existing.currentPeriodEnd > new Date())
-      return res.status(409).json({ message: "You already have an active subscription." });
+      return res
+        .status(409)
+        .json({ message: "You already have an active subscription." });
 
     const reference = `${SUB_REFERENCE_PREFIX}${crypto.randomBytes(12).toString("hex")}`;
     const amountKobo = plan.priceNgn * 100;
 
     const callbackBase =
-      process.env.PAYSTACK_SUB_CALLBACK_URL || process.env.PAYSTACK_CALLBACK_URL;
+      process.env.PAYSTACK_SUB_CALLBACK_URL ||
+      process.env.PAYSTACK_CALLBACK_URL;
     const callbackUrl = callbackBase
       ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}&flow=subscription`
       : undefined;
@@ -433,6 +479,7 @@ export const verifySubscription = async (req, res) => {
 
     invalidateCache(`creator-earnings:${creatorId}`);
     invalidateCache(`sub-status:${req.user._id}:${creatorId}`);
+    invalidateCache(`mediakit:${creatorId}`);
 
     // Notify creator
     const notification = await Notification.create({
@@ -461,12 +508,16 @@ export const cancelSubscription = async (req, res) => {
       subscriber: req.user._id,
       creator: creatorId,
     });
-    if (!sub) return res.status(404).json({ message: "Subscription not found." });
+    if (!sub)
+      return res.status(404).json({ message: "Subscription not found." });
     if (sub.status !== "active")
-      return res.status(409).json({ message: "Subscription is already cancelled." });
+      return res
+        .status(409)
+        .json({ message: "Subscription is already cancelled." });
 
     await sub.updateOne({ $set: { status: "cancelled" } });
     invalidateCache(`sub-status:${req.user._id}:${creatorId}`);
+    invalidateCache(`mediakit:${creatorId}`);
 
     res.status(200).json({
       cancelled: true,
@@ -547,8 +598,11 @@ export const getSubscribers = async (req, res) => {
 export const checkSubscriberAccess = async (req, res) => {
   try {
     const { postId } = req.params;
-    const post = await Post.findById(postId).select("user privacy removedAt").lean();
-    if (!post || post.removedAt) return res.status(404).json({ message: "Post not found." });
+    const post = await Post.findById(postId)
+      .select("user privacy removedAt")
+      .lean();
+    if (!post || post.removedAt)
+      return res.status(404).json({ message: "Post not found." });
 
     // Author always has access
     if (post.user.toString() === req.user._id.toString())
@@ -621,7 +675,9 @@ export const upsertBankAccount = async (req, res) => {
     if (!bankName || !accountName || !accountNumber || !bankCode)
       return res.status(400).json({ message: "All bank fields are required." });
     if (!/^\d{10}$/.test(accountNumber))
-      return res.status(400).json({ message: "Account number must be 10 digits." });
+      return res
+        .status(400)
+        .json({ message: "Account number must be 10 digits." });
 
     const bankAccount = await CreatorBankAccount.findOneAndUpdate(
       { creator: req.user._id },
@@ -647,7 +703,9 @@ export const upsertBankAccount = async (req, res) => {
 // GET /creator-monetization/bank-account
 export const getBankAccount = async (req, res) => {
   try {
-    const bankAccount = await CreatorBankAccount.findOne({ creator: req.user._id }).lean();
+    const bankAccount = await CreatorBankAccount.findOne({
+      creator: req.user._id,
+    }).lean();
     res.status(200).json({ bankAccount: bankAccount || null });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -663,7 +721,9 @@ export const requestPayout = async (req, res) => {
         .status(400)
         .json({ message: `Minimum withdrawal is ₦${MIN_PAYOUT_NGN}.` });
 
-    const bankAccount = await CreatorBankAccount.findOne({ creator: req.user._id });
+    const bankAccount = await CreatorBankAccount.findOne({
+      creator: req.user._id,
+    });
     if (!bankAccount)
       return res
         .status(400)
@@ -730,106 +790,123 @@ export const getMediaKit = async (req, res) => {
   try {
     const { creatorId } = req.params;
 
-    const [creator, postStats, plan, subCount] = await Promise.all([
-      User.findById(creatorId)
-        .select(
-          "name username bio profilePic verifications isVerified followersCount openToCollabs interests location createdAt",
-        )
-        .lean(),
-      Post.aggregate([
-        {
-          $match: {
-            user: new (await import("mongoose")).default.Types.ObjectId(creatorId),
-            removedAt: null,
-            scheduledFor: null,
-            privacy: "public",
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            postCount: { $sum: 1 },
-            totalLikes: { $sum: "$likesCount" },
-            totalComments: { $sum: "$commentsCount" },
-            totalReposts: { $sum: "$repostsCount" },
-            avgLikes: { $avg: "$likesCount" },
-            avgComments: { $avg: "$commentsCount" },
-          },
-        },
-      ]),
-      CreatorPlan.findOne({ creator: creatorId, active: true }).lean(),
-      CreatorSubscription.countDocuments({
-        creator: creatorId,
-        status: "active",
-        currentPeriodEnd: { $gt: new Date() },
-      }),
-    ]);
+    // Fetch from cache or compute if not cached (60-second TTL)
+    const mediaKitData = await getOrSetCache(
+      `mediakit:${creatorId}`,
+      async () => {
+        const [creator, postStats, plan, subCount] = await Promise.all([
+          User.findById(creatorId)
+            .select(
+              "name username bio profilePic verifications isVerified followersCount openToCollabs interests location createdAt",
+            )
+            .lean(),
+          Post.aggregate([
+            {
+              $match: {
+                user: new (await import("mongoose")).default.Types.ObjectId(
+                  creatorId,
+                ),
+                removedAt: null,
+                scheduledFor: null,
+                privacy: "public",
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                postCount: { $sum: 1 },
+                totalLikes: { $sum: "$likesCount" },
+                totalComments: { $sum: "$commentsCount" },
+                totalReposts: { $sum: "$repostsCount" },
+                avgLikes: { $avg: "$likesCount" },
+                avgComments: { $avg: "$commentsCount" },
+              },
+            },
+          ]),
+          CreatorPlan.findOne({ creator: creatorId, active: true }).lean(),
+          CreatorSubscription.countDocuments({
+            creator: creatorId,
+            status: "active",
+            currentPeriodEnd: { $gt: new Date() },
+          }),
+        ]);
 
-    if (!creator || !hasActiveCreatorBadge({ verifications: creator.verifications }))
+        if (
+          !creator ||
+          !hasActiveCreatorBadge({ verifications: creator.verifications })
+        )
+          return null;
+
+        const stats = postStats[0] || {
+          postCount: 0,
+          totalLikes: 0,
+          totalComments: 0,
+          totalReposts: 0,
+          avgLikes: 0,
+          avgComments: 0,
+        };
+
+        // Engagement rate: (avg likes + avg comments) / followers * 100
+        const engagementRate =
+          creator.followersCount > 0
+            ? (((stats.avgLikes || 0) + (stats.avgComments || 0)) /
+                creator.followersCount) *
+              100
+            : 0;
+
+        // Top posts in last 30 days for the kit
+        const topPosts = await Post.find({
+          user: creatorId,
+          removedAt: null,
+          scheduledFor: null,
+          privacy: "public",
+          createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+        })
+          .sort({ likesCount: -1 })
+          .limit(3)
+          .select("text images likesCount commentsCount repostsCount createdAt")
+          .lean();
+
+        return {
+          creator: {
+            name: creator.name,
+            username: creator.username,
+            bio: creator.bio,
+            profilePic: creator.profilePic,
+            location: creator.location,
+            interests: creator.interests,
+            memberSince: creator.createdAt,
+            openToCollabs: creator.openToCollabs,
+            isVerified: creator.isVerified,
+          },
+          reach: {
+            followers: creator.followersCount,
+            totalPosts: stats.postCount,
+            totalLikes: stats.totalLikes,
+            totalComments: stats.totalComments,
+            totalReposts: stats.totalReposts,
+            activeSubscribers: subCount,
+          },
+          engagement: {
+            avgLikesPerPost: Math.round(stats.avgLikes || 0),
+            avgCommentsPerPost: Math.round(stats.avgComments || 0),
+            engagementRatePct: Math.round(engagementRate * 10) / 10,
+          },
+          subscriptionPlan: plan
+            ? { name: plan.name, priceNgn: plan.priceNgn, perks: plan.perks }
+            : null,
+          topPosts,
+          generatedAt: new Date(),
+        };
+      },
+      60000, // 60-second TTL
+    );
+
+    if (!mediaKitData)
       return res.status(404).json({ message: "Creator not found." });
 
-    const stats = postStats[0] || {
-      postCount: 0,
-      totalLikes: 0,
-      totalComments: 0,
-      totalReposts: 0,
-      avgLikes: 0,
-      avgComments: 0,
-    };
-
-    // Engagement rate: (avg likes + avg comments) / followers * 100
-    const engagementRate =
-      creator.followersCount > 0
-        ? (((stats.avgLikes || 0) + (stats.avgComments || 0)) /
-            creator.followersCount) *
-          100
-        : 0;
-
-    // Top posts in last 30 days for the kit
-    const topPosts = await Post.find({
-      user: creatorId,
-      removedAt: null,
-      scheduledFor: null,
-      privacy: "public",
-      createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
-    })
-      .sort({ likesCount: -1 })
-      .limit(3)
-      .select("text images likesCount commentsCount repostsCount createdAt")
-      .lean();
-
     res.status(200).json({
-      mediaKit: {
-        creator: {
-          name: creator.name,
-          username: creator.username,
-          bio: creator.bio,
-          profilePic: creator.profilePic,
-          location: creator.location,
-          interests: creator.interests,
-          memberSince: creator.createdAt,
-          openToCollabs: creator.openToCollabs,
-          isVerified: creator.isVerified,
-        },
-        reach: {
-          followers: creator.followersCount,
-          totalPosts: stats.postCount,
-          totalLikes: stats.totalLikes,
-          totalComments: stats.totalComments,
-          totalReposts: stats.totalReposts,
-          activeSubscribers: subCount,
-        },
-        engagement: {
-          avgLikesPerPost: Math.round(stats.avgLikes || 0),
-          avgCommentsPerPost: Math.round(stats.avgComments || 0),
-          engagementRatePct: Math.round(engagementRate * 10) / 10,
-        },
-        subscriptionPlan: plan
-          ? { name: plan.name, priceNgn: plan.priceNgn, perks: plan.perks }
-          : null,
-        topPosts,
-        generatedAt: new Date(),
-      },
+      mediaKit: mediaKitData,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

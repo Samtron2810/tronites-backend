@@ -4,10 +4,22 @@ import Repost from "../models/Repost.js";
 import Notification from "../models/Notification.js";
 import Block from "../models/Block.js";
 import bcrypt from "bcryptjs";
-import { emitToUser, joinFollowersRoom, leaveFollowersRoom } from "../socket/socket.js";
-import { getOrSetCache, invalidateCache, invalidateFeedCache } from "../utils/redis.js";
+import {
+  emitToUser,
+  joinFollowersRoom,
+  leaveFollowersRoom,
+} from "../socket/socket.js";
+import {
+  getOrSetCache,
+  invalidateCache,
+  invalidateFeedCache,
+} from "../utils/redis.js";
 import cloudinary from "../utils/cloudinary.js";
-import { hasBlocked, isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockService.js";
+import {
+  hasBlocked,
+  isBlockedEitherWay,
+  getBlockedEitherWayIds,
+} from "../services/blockService.js";
 import { getWhoToFollow } from "../services/suggestionService.js";
 import { autoPromoteIfMutual } from "../services/conversationService.js";
 import { toPublicUserDTO, toPrivateSelfDTO } from "../dtos/userDTO.js";
@@ -115,7 +127,9 @@ export const setUsername = async (req, res) => {
         ...(current.username ? { usernameChangedAt: new Date() } : {}),
       },
       { returnDocument: "after", runValidators: true },
-    ).select("name username bio profilePic email usernameChangedAt nameChangedAt role permissions presenceVisibility");
+    ).select(
+      "name username bio profilePic email usernameChangedAt nameChangedAt role permissions presenceVisibility",
+    );
 
     res.status(200).json({ user: toPrivateSelfDTO(user) });
   } catch (error) {
@@ -155,9 +169,11 @@ export const blockUser = async (req, res) => {
     const target = await User.findById(targetId).select("_id");
     if (!target) return res.status(404).json({ message: "User not found" });
 
-    await Block.create({ blocker: req.user._id, blocked: targetId }).catch((err) => {
-      if (err.code !== 11000) throw err; // already blocked — no-op
-    });
+    await Block.create({ blocker: req.user._id, blocked: targetId }).catch(
+      (err) => {
+        if (err.code !== 11000) throw err; // already blocked — no-op
+      },
+    );
 
     // Sever any follow edge either direction existed. Blocking someone
     // you follow, or who follows you, should immediately stop their
@@ -240,12 +256,18 @@ export const followUser = async (req, res) => {
       });
     }
 
-    const alreadyFollowing = await isFollowing(currentUser._id, userToFollow._id);
+    const alreadyFollowing = await isFollowing(
+      currentUser._id,
+      userToFollow._id,
+    );
 
     // A block always wins over a new follow — unfollowing (the
     // `alreadyFollowing` branch below) stays allowed either way since
     // that only removes a relationship, it never creates one.
-    if (!alreadyFollowing && (await isBlockedEitherWay(currentUser._id, userToFollow._id))) {
+    if (
+      !alreadyFollowing &&
+      (await isBlockedEitherWay(currentUser._id, userToFollow._id))
+    ) {
       return res.status(403).json({ message: "You can't follow this user." });
     }
 
@@ -302,7 +324,10 @@ export const followUser = async (req, res) => {
         try {
           await autoPromoteIfMutual(currentUser._id, userToFollow._id);
         } catch (promoteError) {
-          console.error("Auto-promote conversation error:", promoteError.message);
+          console.error(
+            "Auto-promote conversation error:",
+            promoteError.message,
+          );
         }
       }
     }
@@ -334,7 +359,9 @@ export const followUser = async (req, res) => {
 export const resolveUsername = async (req, res) => {
   try {
     const username = (req.params.username || "").trim().toLowerCase();
-    const user = await User.findOne({ username }).select("_id username name profilePic verifications isVerified");
+    const user = await User.findOne({ username }).select(
+      "_id username name profilePic verifications isVerified",
+    );
     if (!user) return res.status(404).json({ message: "User not found" });
     res.status(200).json({ user });
   } catch (error) {
@@ -493,19 +520,32 @@ export const getUserProfile = async (req, res) => {
           Post.find(postFilter)
             .populate({
               path: "quoteOf",
-              populate: { path: "user", select: "name username profilePic verifications isVerified" },
+              populate: {
+                path: "user",
+                select: "name username profilePic verifications isVerified",
+              },
             })
             .sort({ createdAt: -1 })
             .limit(MAX_PROFILE_ITEMS),
           Repost.find(repostFilter)
             .populate({
               path: "post",
-              match: { removedAt: null, ...PUBLISHED_FILTER, ...PUBLIC_ONLY_FILTER },
+              match: {
+                removedAt: null,
+                ...PUBLISHED_FILTER,
+                ...PUBLIC_ONLY_FILTER,
+              },
               populate: [
-                { path: "user", select: "name username profilePic verifications isVerified" },
+                {
+                  path: "user",
+                  select: "name username profilePic verifications isVerified",
+                },
                 {
                   path: "quoteOf",
-                  populate: { path: "user", select: "name username profilePic verifications isVerified" },
+                  populate: {
+                    path: "user",
+                    select: "name username profilePic verifications isVerified",
+                  },
                 },
               ],
             })
@@ -681,7 +721,8 @@ export const getUserProfile = async (req, res) => {
           isLiked: likedPostIds.has(pinnedDoc._id.toString()),
           isBookmarked: bookmarkedPostIds.has(pinnedDoc._id.toString()),
           isReposted: repostedPostIds.has(pinnedDoc._id.toString()),
-          reactionSummary: reactionSummaries.get(pinnedDoc._id.toString()) || {},
+          reactionSummary:
+            reactionSummaries.get(pinnedDoc._id.toString()) || {},
           myReaction: myReactions.get(pinnedDoc._id.toString()) || null,
           isQuotePost: Boolean(pinnedDoc.quoteOf),
           quoteOf: pinnedDoc.quoteOf ? formatQuoteOf(pinnedDoc.quoteOf) : null,
@@ -916,6 +957,7 @@ export const updateName = async (req, res) => {
     // `name` is denormalized into search index and any place that reads
     // a cached profile — same invalidation as updateBio below.
     invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`mediakit:${req.user._id}`);
 
     res.status(200).json({ user: toPrivateSelfDTO(user) });
   } catch (error) {
@@ -933,8 +975,9 @@ export const updateBio = async (req, res) => {
       { returnDocument: "after" },
     ).select("bio");
 
-    // Invalidate profile cache
+    // Invalidate profile and mediakit cache
     invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`mediakit:${req.user._id}`);
 
     res.status(200).json({ bio: user.bio });
   } catch (error) {
@@ -980,9 +1023,7 @@ export const getFollowers = async (req, res) => {
       getBlockedEitherWayIds(req.user._id),
     ]);
 
-    const filtered = followers.filter(
-      (u) => !blockedIds.has(u._id.toString()),
-    );
+    const filtered = followers.filter((u) => !blockedIds.has(u._id.toString()));
 
     res.status(200).json({
       followers: filtered,
@@ -1016,9 +1057,7 @@ export const getFollowing = async (req, res) => {
       getBlockedEitherWayIds(req.user._id),
     ]);
 
-    const filtered = following.filter(
-      (u) => !blockedIds.has(u._id.toString()),
-    );
+    const filtered = following.filter((u) => !blockedIds.has(u._id.toString()));
 
     res.status(200).json({
       following: filtered,
@@ -1058,7 +1097,8 @@ export const deleteMyAccount = async (req, res) => {
     clearAuthCookies(res);
 
     res.status(200).json({
-      message: "Your account has been deleted. This is reversible for 30 days — contact support if this wasn't you.",
+      message:
+        "Your account has been deleted. This is reversible for 30 days — contact support if this wasn't you.",
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -1157,11 +1197,14 @@ export const setCollabStatus = async (req, res) => {
   try {
     const { openToCollabs } = req.body;
     if (typeof openToCollabs !== "boolean") {
-      return res.status(400).json({ message: "openToCollabs must be a boolean." });
+      return res
+        .status(400)
+        .json({ message: "openToCollabs must be a boolean." });
     }
 
     await User.findByIdAndUpdate(req.user._id, { openToCollabs });
     invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`mediakit:${req.user._id}`);
     res.status(200).json({ openToCollabs });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -1175,6 +1218,7 @@ export const updateInterests = async (req, res) => {
     const { interests } = req.body;
     await User.findByIdAndUpdate(req.user._id, { interests });
     invalidateCache(`profile:${req.user._id}:*`);
+    invalidateCache(`mediakit:${req.user._id}`);
     res.status(200).json({ interests });
   } catch (error) {
     res.status(500).json({ message: error.message });
