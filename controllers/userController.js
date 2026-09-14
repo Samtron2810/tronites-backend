@@ -732,10 +732,19 @@ export const getUserProfile = async (req, res) => {
         };
       });
 
+    // Filter out pinned posts from the regular feed to avoid duplicates on
+    // the profile page. Pinned posts only show in the "Pinned" banner at the
+    // top, not in the regular timeline below. This doesn't affect the homepage
+    // or other feeds — only the profile page response filters them.
+    const pinnedPostIdSet = new Set(pinnedPostIds.map((id) => id.toString()));
+    const postsWithoutPinned = postsWithLikeState.filter(
+      (post) => !pinnedPostIdSet.has(post._id.toString()),
+    );
+
     res.status(200).json({
       ...userResult,
       ...postsResult,
-      posts: postsWithLikeState,
+      posts: postsWithoutPinned,
       pinnedPosts,
     });
   } catch (error) {
