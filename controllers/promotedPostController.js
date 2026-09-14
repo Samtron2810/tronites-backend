@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import Post from "../models/Post.js";
 import User from "../models/User.js";
+import AdCampaign from "../models/AdCampaign.js";
 import { canPromote } from "../utils/tierLimits.js";
 import {
   initializeTransaction,
@@ -8,30 +9,42 @@ import {
 } from "../services/paystackService.js";
 import { invalidateCache, invalidateFeedCache } from "../utils/redis.js";
 
-// Paid post promotion (business tier only). Price/size are env-tunable:
-//   PROMOTE_POST_PRICE_NGN — whole naira (converted to kobo ×100). Default 2000.
-//   PROMOTE_POST_DAYS      — how long a promotion lasts. Default 7.
-const PROMOTE_POST_PRICE_NGN = Number(process.env.PROMOTE_POST_PRICE_NGN) || 2000;
-const PROMOTE_POST_DAYS = Number(process.env.PROMOTE_POST_DAYS) || 7;
+// ── Promotion tiers ──────────────────────────────────────────────────────────
+// Each tier defines price (NGN), promotion duration, and daily impression cap.
+// All three are env-overridable per tier.
+export const PROMO_TIERS = {
+  basic: {
+    amountNgn: Number(process.env.PROMO_BASIC_NGN) || 2000,
+    days: Number(process.env.PROMO_BASIC_DAYS) || 3,
+    label: "Basic (3 days)",
+    impressionCap: 5000,
+  },
+  standard: {
+    amountNgn: Number(process.env.PROMO_STANDARD_NGN) || 5000,
+    days: Number(process.env.PROMO_STANDARD_DAYS) || 7,
+    label: "Standard (7 days)",
+    impressionCap: 20000,
+  },
+  premium: {
+    amountNgn: Number(process.env.PROMO_PREMIUM_NGN) || 15000,
+    days: Number(process.env.PROMO_PREMIUM_DAYS) || 14,
+    label: "Premium (14 days)",
+    impressionCap: null, // unlimited
+  },
+};
 
 const PROMO_REFERENCE_PREFIX = "tronites_promo_";
 
-// GET /posts/promote/fees — lets the frontend show the price before paying.
+// GET /posts/promote/fees
 export const getPromotionFees = async (_req, res) => {
   try {
-    res.status(200).json({
-      amountNgn: PROMOTE_POST_PRICE_NGN,
-      promoDays: PROMOTE_POST_DAYS,
-    });
+    res.status(200).json({ tiers: PROMO_TIERS });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// POST /posts/promote/initiate { postId }
-// Business-tier only. Creates a Paystack transaction tied to this post and
-// returns the checkout URL; the charge is not applied until the browser
-// returns from Paystack and the frontend calls /verify/:reference.
+// POST /posts/promote/initiate { postId, tier, targeting? }
 export const initiatePromotion = async (req, res) => {
   try {
     if (!canPromote(req.user)) {
@@ -41,7 +54,13 @@ export const initiatePromotion = async (req, res) => {
       });
     }
 
-    const { postId } = req.body;
+    const { postId, tier = "basic", targeting = {} } = req.body;
+
+    const tierConfig = PROMO_TIERS[tier];
+    if (!tierConfig) {
+      return res.status(400).json({ message: `Invalid promotion tier: ${tier}` });
+    }
+
     const post = await Post.findById(postId).select(
       "user removedAt promotedUntil promotionReference",
     );
@@ -49,9 +68,7 @@ export const initiatePromotion = async (req, res) => {
       return res.status(404).json({ message: "Post not found." });
     }
     if (post.user.toString() !== req.user._id.toString()) {
-      return res
-        .status(403)
-        .json({ message: "You can only promote your own posts." });
+      return res.status(403).json({ message: "You can only promote your own posts." });
     }
     if (post.promotedUntil && new Date(post.promotedUntil) > new Date()) {
       return res.status(409).json({
@@ -66,16 +83,10 @@ export const initiatePromotion = async (req, res) => {
     }
 
     const owner = await User.findById(req.user._id).select("email");
-    if (!owner) {
-      return res.status(404).json({ message: "User not found." });
-    }
+    if (!owner) return res.status(404).json({ message: "User not found." });
 
     const reference = `${PROMO_REFERENCE_PREFIX}${crypto.randomBytes(12).toString("hex")}`;
 
-    // PAYSTACK_PROMO_CALLBACK_URL is the dedicated env var for post-promotion
-    // payments — lands on /paystack-return which runs verifyPromotion.
-    // Falls back to PAYSTACK_CALLBACK_URL for backwards compat, then undefined
-    // (Paystack uses its dashboard default).
     const callbackBase =
       process.env.PAYSTACK_PROMO_CALLBACK_URL ||
       process.env.PAYSTACK_CALLBACK_URL;
@@ -85,25 +96,36 @@ export const initiatePromotion = async (req, res) => {
 
     const paystackData = await initializeTransaction({
       email: owner.email,
-      amountKobo: PROMOTE_POST_PRICE_NGN * 100,
+      amountKobo: tierConfig.amountNgn * 100,
       reference,
       metadata: {
         userId: req.user._id.toString(),
         postId: post._id.toString(),
+        tier,
+        targeting,
         platform: "tronites",
       },
       callbackUrl,
     });
 
-    // Stamp the reference BEFORE the user can complete payment so a second
-    // initiate can't create a duplicate charge for the same post.
-    await post.updateOne({ $set: { promotionReference: reference } });
+    // Stamp reference + tier + targeting before redirect so retry guards work.
+    await post.updateOne({
+      $set: {
+        promotionReference: reference,
+        promotionTier: tier,
+        promotionTargeting: {
+          location: targeting.location || "",
+          interests: Array.isArray(targeting.interests) ? targeting.interests : [],
+        },
+      },
+    });
 
     res.status(200).json({
       reference,
       authorizationUrl: paystackData.authorization_url,
-      amountNgn: PROMOTE_POST_PRICE_NGN,
-      promoDays: PROMOTE_POST_DAYS,
+      tier,
+      amountNgn: tierConfig.amountNgn,
+      promoDays: tierConfig.days,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -111,8 +133,6 @@ export const initiatePromotion = async (req, res) => {
 };
 
 // GET /posts/promote/verify/:reference
-// Frontend calls this after the Paystack redirect returns. On success the
-// post becomes promoted until now + PROMOTE_POST_DAYS.
 export const verifyPromotion = async (req, res) => {
   try {
     const { reference } = req.params;
@@ -121,9 +141,7 @@ export const verifyPromotion = async (req, res) => {
       promotionReference: reference,
     });
     if (!post) {
-      return res
-        .status(404)
-        .json({ message: "Promotion payment not found." });
+      return res.status(404).json({ message: "Promotion payment not found." });
     }
 
     const data = await verifyTransaction(reference);
@@ -133,27 +151,31 @@ export const verifyPromotion = async (req, res) => {
       });
     }
 
+    const tier = post.promotionTier || "basic";
+    const tierConfig = PROMO_TIERS[tier] || PROMO_TIERS.basic;
     const promotedUntil = new Date(
-      Date.now() + PROMOTE_POST_DAYS * 24 * 60 * 60 * 1000,
+      Date.now() + tierConfig.days * 24 * 60 * 60 * 1000,
     );
+
     await post.updateOne({
-      $set: { promotedUntil, promotionReference: null },
+      $set: {
+        promotedUntil,
+        promotionReference: null,
+        promotionImpressions: 0,
+        promotionClicks: 0,
+      },
     });
 
     invalidateFeedCache(req.user._id);
     invalidateCache(`profile-posts:${req.user._id}:*`);
 
-    res.status(200).json({ verified: true, promotedUntil });
+    res.status(200).json({ verified: true, promotedUntil, tier });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
 };
 
 // DELETE /posts/promote/cancel/:postId
-// Clears a stuck promotionReference so the user can retry payment after a
-// failed/abandoned Paystack session. Only the post owner can cancel, and only
-// when the post isn't already successfully promoted (promotedUntil still in
-// the future means the charge went through — no cancel needed there).
 export const cancelPromotion = async (req, res) => {
   try {
     const { postId } = req.params;
@@ -164,11 +186,8 @@ export const cancelPromotion = async (req, res) => {
       return res.status(404).json({ message: "Post not found." });
     }
     if (post.user.toString() !== req.user._id.toString()) {
-      return res
-        .status(403)
-        .json({ message: "You can only cancel your own post's promotion." });
+      return res.status(403).json({ message: "You can only cancel your own post's promotion." });
     }
-    // Don't let them cancel a promotion that already succeeded.
     if (post.promotedUntil && new Date(post.promotedUntil) > new Date()) {
       return res.status(409).json({
         message: "This post is already promoted and cannot be cancelled.",
@@ -186,9 +205,7 @@ export const cancelPromotion = async (req, res) => {
   }
 };
 
-// GET /posts/promote/my-promotions — paginated list of the authenticated
-// user's posts that have been promoted or are pending promotion.
-// Returns: { promotions: [...], total: Number }
+// GET /posts/promote/my-promotions
 export const getMyPromotions = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -200,14 +217,16 @@ export const getMyPromotions = async (req, res) => {
       user: req.user._id,
       removedAt: null,
       $or: [
-        { promotedUntil: { $ne: null } },  // was / is promoted
-        { promotionReference: { $ne: null } }, // payment pending
+        { promotedUntil: { $ne: null } },
+        { promotionReference: { $ne: null } },
       ],
     };
 
     const [posts, total] = await Promise.all([
       Post.find(filter)
-        .select("text images video createdAt promotedUntil promotionReference likesCount commentsCount repostsCount")
+        .select(
+          "text images video createdAt promotedUntil promotionReference promotionTier promotionTargeting promotionImpressions promotionClicks likesCount commentsCount repostsCount",
+        )
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -218,12 +237,20 @@ export const getMyPromotions = async (req, res) => {
     const promotions = posts.map((p) => {
       let status;
       if (p.promotionReference && (!p.promotedUntil || new Date(p.promotedUntil) <= now)) {
-        status = "pending";  // payment initiated but not verified yet
+        status = "pending";
       } else if (p.promotedUntil && new Date(p.promotedUntil) > now) {
-        status = "active";   // currently in feed
+        status = "active";
       } else {
-        status = "expired";  // promotion period ended
+        status = "expired";
       }
+
+      const tierConfig = PROMO_TIERS[p.promotionTier] || null;
+      const impressionCap = tierConfig?.impressionCap ?? null;
+      const reachPct =
+        impressionCap && p.promotionImpressions
+          ? Math.min(100, Math.round((p.promotionImpressions / impressionCap) * 100))
+          : null;
+
       return {
         _id: p._id,
         text: p.text,
@@ -232,6 +259,12 @@ export const getMyPromotions = async (req, res) => {
         createdAt: p.createdAt,
         promotedUntil: p.promotedUntil,
         promotionReference: p.promotionReference,
+        promotionTier: p.promotionTier,
+        promotionTargeting: p.promotionTargeting,
+        impressions: p.promotionImpressions ?? 0,
+        clicks: p.promotionClicks ?? 0,
+        impressionCap,
+        reachPct,
         likesCount: p.likesCount,
         commentsCount: p.commentsCount,
         repostsCount: p.repostsCount,
@@ -245,29 +278,67 @@ export const getMyPromotions = async (req, res) => {
   }
 };
 
-// GET /posts/promote/promoted — returns currently-promoted posts for feed
-// injection. Used internally by getFeedPosts / getForYouFeed; also exported
-// so the route can expose it as a standalone endpoint if needed later.
-// Limit is capped at 3 so the feed never becomes ad-heavy; posts are ordered
-// by promotedUntil desc so the most recently promoted surfaces first.
-//
-// viewer* args are required: promoted posts must respect the same privacy,
-// block, and mute gates as organic posts. A business account promoting a
-// followers-only or only-me post must NOT have it injected into every
-// viewer's feed — that would be a paid privacy bypass.
+// POST /posts/promote/impression/:postId  — called by the feed when a
+// promoted post enters the viewport. Increments promotionImpressions and
+// also propagates to AdCampaign.impressions if the post is in a campaign.
+export const recordImpression = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const post = await Post.findById(postId).select(
+      "promotedUntil promotionTier promotionImpressions campaignId",
+    );
+
+    if (!post || !post.promotedUntil || new Date(post.promotedUntil) <= new Date()) {
+      return res.status(200).json({ ok: true }); // silently ignore organic/expired
+    }
+
+    // Respect impression cap
+    const tierConfig = PROMO_TIERS[post.promotionTier] || PROMO_TIERS.basic;
+    if (
+      tierConfig.impressionCap !== null &&
+      (post.promotionImpressions ?? 0) >= tierConfig.impressionCap
+    ) {
+      return res.status(200).json({ ok: true, capped: true });
+    }
+
+    await Post.updateOne({ _id: postId }, { $inc: { promotionImpressions: 1 } });
+
+    if (post.campaignId) {
+      await AdCampaign.updateOne(
+        { _id: post.campaignId },
+        { $inc: { impressions: 1 } },
+      ).catch(() => {}); // non-fatal
+    }
+
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// POST /posts/promote/click/:postId — records a sponsored-post click.
+export const recordClick = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    await Post.updateOne(
+      { _id: postId, promotedUntil: { $gt: new Date() } },
+      { $inc: { promotionClicks: 1 } },
+    );
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /posts/promote/promoted — feed injection (unchanged public API).
+// Now also filters by targeting.location and targeting.interests when set.
 export const getPromotedPostsForFeed = async (
   excludeIds = [],
-  { viewerId, blockedIds = new Set(), mutedIds = new Set() } = {},
+  { viewerId, blockedIds = new Set(), mutedIds = new Set(), viewerLocation = "", viewerInterests = [] } = {},
 ) => {
   const now = new Date();
-
-  // Build the excluded-user set: blocked (either direction) + muted.
   const excludedUsers = new Set([...blockedIds, ...mutedIds]);
 
-  // Only public posts may be promoted into stranger feeds — same rule
-  // as trending/search (PUBLIC_ONLY_FILTER). A promoted followers-only
-  // post would let the author pay to bypass their own privacy setting.
-  // Imported inline to avoid circular deps with postController.
   const publicFilter = {
     $or: [{ privacy: "public" }, { privacy: { $exists: false } }],
   };
@@ -280,17 +351,42 @@ export const getPromotedPostsForFeed = async (
     ...(excludedUsers.size ? { user: { $nin: [...excludedUsers] } } : {}),
   };
 
-  // Exclude the viewer's own promoted posts — they already appear
-  // organically in their own feed, so a second sponsored copy is noisy.
   if (viewerId) {
     query.user = query.user
       ? { ...query.user, $ne: viewerId }
       : { $ne: viewerId };
   }
 
-  return Post.find(query)
+  // Fetch pool of candidates and soft-filter by targeting. We fetch more
+  // than 3 to have candidates after filtering, then cap at 3.
+  const candidates = await Post.find(query)
     .populate("user", "name username profilePic verifications isVerified")
     .sort({ promotedUntil: -1 })
-    .limit(3)
+    .limit(20)
     .lean();
+
+  // Apply targeting soft-filters (location + interests).
+  const filtered = candidates.filter((p) => {
+    const t = p.promotionTargeting;
+    if (!t) return true;
+
+    // Location match — case-insensitive substring
+    if (t.location && viewerLocation) {
+      const tLoc = t.location.toLowerCase();
+      const vLoc = viewerLocation.toLowerCase();
+      if (!vLoc.includes(tLoc) && !tLoc.includes(vLoc)) return false;
+    }
+
+    // Interest match — at least one overlap
+    if (t.interests && t.interests.length > 0 && viewerInterests.length > 0) {
+      const hasOverlap = t.interests.some((i) => viewerInterests.includes(i));
+      if (!hasOverlap) return false;
+    }
+
+    return true;
+  });
+
+  // Fall back to unfiltered if targeting is too restrictive
+  const result = filtered.length >= 1 ? filtered : candidates;
+  return result.slice(0, 3);
 };

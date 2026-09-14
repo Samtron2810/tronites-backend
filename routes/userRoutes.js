@@ -31,6 +31,8 @@ import {
   updateInterests,
   updateLocation,
   updateReadReceipts,
+  getBusinessProfile,
+  updateBusinessProfile,
 } from "../controllers/userController.js";
 import { getMuteStatus, muteUserHandler, unmuteUserHandler } from "../controllers/muteController.js";
 import {
@@ -97,5 +99,9 @@ router.put("/interests", protect, validate(updateInterestsSchema), updateInteres
 router.put("/location", protect, validate(updateLocationSchema), updateLocation);
 // Feature 6 — Read receipts
 router.put("/read-receipts", protect, validate(updateReadReceiptsSchema), updateReadReceipts);
+
+// Business profile (business-tier accounts only)
+router.get("/me/business-profile", protect, getBusinessProfile);
+router.put("/me/business-profile", protect, updateBusinessProfile);
 
 export default router;

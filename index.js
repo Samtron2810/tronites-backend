@@ -103,6 +103,7 @@ app.use("/api/auth", authRoutes);
 // /fees, /initiate and /verify/:reference segments aren't captured by a
 // post :id param (same reasoning as the webhook mount above).
 app.use("/api/posts/promote", promotedPostRoutes);
+app.use("/api/campaigns", adCampaignRoutes);
 app.use("/api/posts", postRoutes);
 app.use("/api/comments", commentRoutes);
 app.use("/api/users", userRoutes);
@@ -115,6 +116,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/push", pushRoutes);
 import analyticsRoutes from "./routes/analyticsRoutes.js";
+import adCampaignRoutes from "./routes/adCampaignRoutes.js";
 app.use("/api/analytics", analyticsRoutes);
 import creatorMonetizationRoutes from "./routes/creatorMonetizationRoutes.js";
 app.use("/api/creator-monetization", creatorMonetizationRoutes);

@@ -1,12 +1,13 @@
 import crypto from "crypto";
 import Post from "../models/Post.js";
 import VerificationPayment from "../models/VerificationPayment.js";
+import AdCampaign from "../models/AdCampaign.js";
 import { invalidateFeedCache } from "../utils/redis.js";
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PROMO_REFERENCE_PREFIX = "tronites_promo_";
 const BADGE_REFERENCE_PREFIX = "tronites_vbiz_";
-const PROMOTE_POST_DAYS = Number(process.env.PROMOTE_POST_DAYS) || 7;
+const CAMPAIGN_REFERENCE_PREFIX = "tronites_camp_";
 
 // POST /api/webhooks/paystack
 //
@@ -73,6 +74,8 @@ export const handlePaystackWebhook = async (req, res) => {
       await handlePromoWebhook(reference);
     } else if (reference.startsWith(BADGE_REFERENCE_PREFIX)) {
       await handleBadgeWebhook(reference);
+    } else if (reference.startsWith(CAMPAIGN_REFERENCE_PREFIX)) {
+      await handleCampaignWebhook(reference);
     }
     // Unknown reference prefix — a payment from a different flow or environment.
     // Silently ignore; already acknowledged with 200 above.
@@ -99,8 +102,11 @@ const handlePromoWebhook = async (reference) => {
     return;
   }
 
+  const { PROMO_TIERS } = await import("./promotedPostController.js");
+  const tier = post.promotionTier || "basic";
+  const tierConfig = PROMO_TIERS[tier] || PROMO_TIERS.basic;
   const promotedUntil = new Date(
-    Date.now() + PROMOTE_POST_DAYS * 24 * 60 * 60 * 1000,
+    Date.now() + tierConfig.days * 24 * 60 * 60 * 1000,
   );
   await post.updateOne({
     $set: { promotedUntil, promotionReference: null },
@@ -128,4 +134,18 @@ const handleBadgeWebhook = async (reference) => {
   } else {
     console.log("[PaystackWebhook] badge payment verified:", reference);
   }
+};
+
+// Activate a campaign whose payment was confirmed via webhook.
+const handleCampaignWebhook = async (reference) => {
+  const campaign = await AdCampaign.findOne({ paymentReference: reference });
+  if (!campaign) {
+    console.warn("[PaystackWebhook] campaign not found for ref:", reference);
+    return;
+  }
+  if (campaign.paymentStatus === "paid") return; // idempotent
+
+  const { activateCampaign } = await import("./adCampaignController.js");
+  await activateCampaign(campaign);
+  console.log(`[PaystackWebhook] campaign activated: ${campaign._id}`);
 };

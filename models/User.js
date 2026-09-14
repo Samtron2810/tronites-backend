@@ -279,6 +279,54 @@ const userSchema = new mongoose.Schema(
     ],
 
     isVerified: { type: Boolean, default: false, index: true },
+    // Business profile — only surfaced on business-tier accounts.
+    // All fields optional; non-business accounts simply have this null.
+    businessProfile: {
+      address: { type: String, default: "", trim: true, maxlength: 200 },
+      city: { type: String, default: "", trim: true, maxlength: 100 },
+      state: { type: String, default: "", trim: true, maxlength: 100 },
+      country: { type: String, default: "", trim: true, maxlength: 100 },
+      // Structured hours: array of { day: "Mon", open: "09:00", close: "17:00", closed: false }
+      hours: {
+        type: [
+          new mongoose.Schema(
+            {
+              day: { type: String, enum: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], required: true },
+              open: { type: String, default: "09:00" },
+              close: { type: String, default: "17:00" },
+              closed: { type: Boolean, default: false },
+            },
+            { _id: false },
+          ),
+        ],
+        default: [],
+      },
+      phone: { type: String, default: "", trim: true, maxlength: 20 },
+      whatsapp: { type: String, default: "", trim: true, maxlength: 20 },
+      website: { type: String, default: "", trim: true, maxlength: 255 },
+      email: { type: String, default: "", trim: true, maxlength: 120 },
+      // Product/menu catalog — array of { name, price, description, imageUrl }
+      catalog: {
+        type: [
+          new mongoose.Schema(
+            {
+              name: { type: String, required: true, trim: true, maxlength: 100 },
+              price: { type: Number, default: null },
+              currency: { type: String, default: "NGN", maxlength: 10 },
+              description: { type: String, default: "", trim: true, maxlength: 300 },
+              imageUrl: { type: String, default: "" },
+            },
+            { _id: false },
+          ),
+        ],
+        default: [],
+        validate: {
+          validator: (arr) => arr.length <= 50,
+          message: "Catalog cannot exceed 50 items",
+        },
+      },
+      category: { type: String, default: "", trim: true, maxlength: 60 },
+    },
   },
   { timestamps: true },
 );

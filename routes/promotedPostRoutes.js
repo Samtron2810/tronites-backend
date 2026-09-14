@@ -8,6 +8,8 @@ import {
   verifyPromotion,
   cancelPromotion,
   getMyPromotions,
+  recordImpression,
+  recordClick,
 } from "../controllers/promotedPostController.js";
 
 // Paid post promotion (business tier). Mounted by index.js at
@@ -23,5 +25,7 @@ router.get("/verify/:reference", protect, verifyPromotion);
 // Clears a stuck promotionReference after a failed/abandoned payment so the
 // user can retry. Owner-only; rejected if the post is already promoted.
 router.delete("/cancel/:postId", protect, cancelPromotion);
+router.post("/impression/:postId", protect, recordImpression);
+router.post("/click/:postId", protect, recordClick);
 
 export default router;

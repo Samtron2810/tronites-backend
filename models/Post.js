@@ -196,6 +196,24 @@ const postSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Promotion analytics — impression and click counters.
+    // Only incremented for promoted posts; zero for organic.
+    promotionImpressions: { type: Number, default: 0 },
+    promotionClicks: { type: Number, default: 0 },
+    // Promotion tier selected by the user (basic / standard / premium).
+    // null for organic posts.
+    promotionTier: { type: String, enum: ["basic", "standard", "premium", null], default: null },
+    // Audience targeting snapshot at promotion time.
+    promotionTargeting: {
+      location: { type: String, default: "" },
+      interests: { type: [String], default: [] },
+    },
+    // Campaign reference — set if this post belongs to an AdCampaign.
+    campaignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AdCampaign",
+      default: null,
+    },
   },
   { timestamps: true },
 );

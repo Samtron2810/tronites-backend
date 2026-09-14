@@ -934,6 +934,8 @@ export const getFeedPosts = async (req, res) => {
           viewerId: req.user._id,
           blockedIds: promoBlockedIds,
           mutedIds: promoMutedIds,
+          viewerLocation: req.user.location || "",
+          viewerInterests: req.user.interests || [],
         });
         if (promoted.length > 0) {
           // Bulk-fetch like/bookmark/repost state for promoted posts —
@@ -1096,6 +1098,8 @@ export const getForYouFeed = async (req, res) => {
           viewerId: req.user._id,
           blockedIds,
           mutedIds,
+          viewerLocation: req.user.location || "",
+          viewerInterests: req.user.interests || [],
         });
         if (promoted.length > 0) {
           const promotedIds = promoted.map((p) => p._id);

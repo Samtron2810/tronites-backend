@@ -408,8 +408,8 @@ export const getUserProfile = async (req, res) => {
         // through the DTO, a public-view query that never fetched email
         // in the first place still can't leak it.
         const selectFields = isSelf
-          ? "name username bio profilePic email verifications isVerified openToCollabs pinnedPosts"
-          : "name username bio profilePic verifications isVerified openToCollabs pinnedPosts";
+          ? "name username bio profilePic email verifications isVerified openToCollabs pinnedPosts businessProfile location"
+          : "name username bio profilePic verifications isVerified openToCollabs pinnedPosts businessProfile location";
         const user = await User.findById(req.params.id).select(selectFields);
 
         if (!user) {
@@ -1256,5 +1256,57 @@ export const updateReadReceipts = async (req, res) => {
     res.status(200).json({ showReadReceipts });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+// ── Business Profile ─────────────────────────────────────────────────────────
+
+// GET /users/me/business-profile
+export const getBusinessProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("businessProfile verifications");
+    if (!user) return res.status(404).json({ message: "User not found." });
+    res.status(200).json({ businessProfile: user.businessProfile || {} });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// PUT /users/me/business-profile
+export const updateBusinessProfile = async (req, res) => {
+  try {
+    const { getActiveTier } = await import("../utils/tierLimits.js");
+    if (getActiveTier(req.user) !== "business") {
+      return res.status(403).json({
+        message: "Business profile is available to verified business accounts only.",
+      });
+    }
+
+    const allowed = [
+      "address", "city", "state", "country",
+      "phone", "whatsapp", "website", "email",
+      "hours", "catalog", "category",
+    ];
+
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        updates[`businessProfile.${key}`] = req.body[key];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: "No valid fields provided." });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: updates },
+      { new: true, runValidators: true },
+    ).select("businessProfile");
+
+    res.status(200).json({ businessProfile: user.businessProfile });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
   }
 };
