@@ -808,7 +808,8 @@ export const getMediaKit = async (req, res) => {
                 ),
                 removedAt: null,
                 scheduledFor: null,
-                privacy: "public",
+                // Count all published posts regardless of privacy setting so
+                // the post count on the media kit always reflects reality.
               },
             },
             {
@@ -831,11 +832,21 @@ export const getMediaKit = async (req, res) => {
           }),
         ]);
 
-        if (
-          !creator ||
-          !hasActiveCreatorBadge({ verifications: creator.verifications })
-        )
-          return null;
+        if (!creator) return null;
+
+        // Media kit is available to creator-badged AND business-badged accounts.
+        // A business account without a creator badge should still be able to
+        // share a media kit with potential collaborators.
+        const hasEligibleBadge =
+          hasActiveCreatorBadge({ verifications: creator.verifications }) ||
+          (Array.isArray(creator.verifications) &&
+            creator.verifications.some(
+              (v) =>
+                v.type === "business" &&
+                (!v.expiresAt || new Date(v.expiresAt) > new Date()),
+            ));
+
+        if (!hasEligibleBadge) return null;
 
         const stats = postStats[0] || {
           postCount: 0,
