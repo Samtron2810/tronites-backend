@@ -51,7 +51,7 @@ const postSchema = new mongoose.Schema(
     // services/postVisibilityService.js).
     privacy: {
       type: String,
-      enum: ["public", "followers", "only-me"],
+      enum: ["public", "followers", "subscribers", "only-me"],
       default: "public",
     },
 

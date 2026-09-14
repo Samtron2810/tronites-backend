@@ -84,6 +84,19 @@ export const getPinnedLimit = (user) =>
 // Business tier only.
 export const canPromote = (user) => getActiveTier(user) === "business";
 
+// ── Creator monetization gates ───────────────────────────────────────────────
+// Analytics: creator badge OR business badge.
+export const canAccessAnalytics = (user) => {
+  const tier = getActiveTier(user);
+  return tier === "creator" || tier === "business" || tier === "staff";
+};
+
+// Subscription plans: creator badge only (business doesn't sell content this way).
+export const canCreateSubscriptionPlan = (user) => getActiveTier(user) === "creator";
+
+// Subscriber-only post privacy: creator badge only.
+export const canPostSubscribersOnly = (user) => getActiveTier(user) === "creator";
+
 // ── Edit post window ────────────────────────────────────────────────────────
 // Flat cooldown between successive edits, regardless of tier.
 export const POST_EDIT_COOLDOWN_MS = 5 * 60 * 1000;

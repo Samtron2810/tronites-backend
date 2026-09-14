@@ -37,6 +37,9 @@ const TYPE_TO_PREF_KEY = {
   repost: "repost",
   quote: "quote",
   reaction: "reaction",
+  // Creator monetization — always on (no pref key), so they're
+  // omitted here intentionally: pushForNotification skips the pref
+  // check when prefKey is falsy and always delivers the notification.
 };
 
 // Human copy per notification type — kept here (not on the frontend)
@@ -64,6 +67,16 @@ const buildNotificationCopy = (notif) => {
       return {
         title: "New reaction",
         body: `${actor} reacted ${notif.message || ""} to your post`.trim(),
+      };
+    case "creator_tip":
+      return {
+        title: "💰 You received a tip!",
+        body: notif.message || `${actor} sent you a tip`,
+      };
+    case "creator_subscribe":
+      return {
+        title: "🎉 New subscriber!",
+        body: notif.message || `${actor} subscribed to your channel`,
       };
     default:
       return { title: "Tronites", body: "You have a new notification" };

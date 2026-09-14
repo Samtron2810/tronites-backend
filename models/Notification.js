@@ -63,6 +63,12 @@ const notificationSchema = new mongoose.Schema(
         // can render it with a different CTA ("Renew now" vs "Apply
         // again"). No human sender; message carries the days-left copy.
         "badge_expiring",
+        // Creator monetization — a user sent the creator a tip.
+        // sender: the tipper (null if anonymous). message: amount + optional note.
+        "creator_tip",
+        // Creator monetization — a user subscribed to the creator's channel.
+        // sender: the subscriber. message: confirmation copy.
+        "creator_subscribe",
       ],
       required: true,
     },

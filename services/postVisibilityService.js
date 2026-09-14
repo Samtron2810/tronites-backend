@@ -1,4 +1,5 @@
 import { isFollowing } from "./followService.js";
+import { CreatorSubscription } from "../models/CreatorSubscription.js";
 
 // Single source of truth for post privacy ("who can see this post").
 //
@@ -22,6 +23,7 @@ export const PUBLISHED_FILTER = { scheduledFor: null };
 export const POST_PRIVACY = Object.freeze({
   PUBLIC: "public",
   FOLLOWERS: "followers",
+  SUBSCRIBERS: "subscribers",
   ONLY_ME: "only-me",
 });
 
@@ -31,13 +33,16 @@ export const POST_PRIVACY_VALUES = Object.values(POST_PRIVACY);
 // asking. Used by the shared-cache discovery surfaces (trending,
 // hashtag pages, search) whose result sets must not depend on the
 // viewer — including the author, since these surfaces are global.
+// Subscriber-only posts are excluded from discovery (they're paywalled).
 export const PUBLIC_ONLY_FILTER = {
   $or: [{ privacy: POST_PRIVACY.PUBLIC }, { privacy: { $exists: false } }],
 };
 
 // Mongo filter fragment: posts visible to the author's followers
-// (author + followers, i.e. everything except only-me). Used by the
-// followers tier of the profile-posts read.
+// (author + followers, i.e. everything except only-me and subscribers).
+// Used by the followers tier of the profile-posts read.
+// NOTE: subscriber-only posts are NOT included here — following does not
+// grant subscriber access. They surface separately via the subscriber check.
 export const FOLLOWERS_VISIBLE_FILTER = {
   $or: [
     { privacy: POST_PRIVACY.PUBLIC },
@@ -48,27 +53,36 @@ export const FOLLOWERS_VISIBLE_FILTER = {
 
 // Mongo filter fragment for the personalized following feed. The feed
 // already only contains posts from followed accounts + the viewer, so
-// the only posts needing exclusion are OTHER people's only-me ones —
-// your own only-me posts still show up in your own feed. Combined with
-// `user: { $in: feedUsers }` by the caller.
+// the only posts needing exclusion are OTHER people's only-me and
+// subscriber-only ones — your own posts of any privacy always appear.
 export const feedVisibilityFilter = (viewerId) => ({
   $or: [
     { user: viewerId },
-    { privacy: { $ne: POST_PRIVACY.ONLY_ME } },
+    { privacy: { $nin: [POST_PRIVACY.ONLY_ME, POST_PRIVACY.SUBSCRIBERS] } },
   ],
 });
 
 // Can this post be reposted/quoted at all, by anyone other than its
-// own author? Reposting is inherently a "send this to MY followers"
-// action — a followers-only or only-me post reposted verbatim would
-// leak it to an audience the original author never chose (the
-// reposter's followers, who may not follow the original author and so
-// were never granted visibility in the first place). Public posts are
-// the only ones eligible; this is independent of whether the specific
-// viewer could currently see the post via canViewPost below.
+// own author? Subscriber-only and followers-only posts are not repostable —
+// same reasoning as followers: the reposter's audience never opted in.
 export const isRepostable = (post) => {
   const privacy = post.privacy || POST_PRIVACY.PUBLIC;
   return privacy === POST_PRIVACY.PUBLIC;
+};
+
+// Checks if viewerId has an active, non-expired subscription to creatorId.
+// Thin async helper used by canViewPost and checkSubscriberAccess.
+export const isActiveSubscriber = async (viewerId, creatorId) => {
+  if (!viewerId) return false;
+  const sub = await CreatorSubscription.findOne({
+    subscriber: viewerId,
+    creator: creatorId,
+    status: "active",
+    currentPeriodEnd: { $gt: new Date() },
+  })
+    .select("_id")
+    .lean();
+  return !!sub;
 };
 
 // Can `viewerId` see `post` directly? Used as defense-in-depth on
@@ -82,6 +96,11 @@ export const canViewPost = async (viewerId, post) => {
   const privacy = post.privacy || POST_PRIVACY.PUBLIC;
   if (privacy === POST_PRIVACY.PUBLIC) return true;
   if (privacy === POST_PRIVACY.ONLY_ME) return false;
+
+  // subscribers-only: must have an active paid subscription.
+  if (privacy === POST_PRIVACY.SUBSCRIBERS) {
+    return isActiveSubscriber(viewerId, post.user);
+  }
 
   // followers-only: the viewer must be following the author.
   return isFollowing(viewerId, post.user);

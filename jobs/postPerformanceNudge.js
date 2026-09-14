@@ -67,7 +67,7 @@ export const runPostPerformanceNudge = async () => {
         ...populated.toObject(),
         _overrideCopy: {
           title: "Post performance tip",
-          body: `"${snippet.slice(0, 50)}…" is getting less traction than usual. Consider re-sharing or adding a comment.`,
+          body: `"${snippet.slice(0, 50)}…" is getting less traction than usual. Try re-sharing, adding a comment, or making it subscriber-only to drive subscriptions.`,
         },
       }).catch(() => {});
 

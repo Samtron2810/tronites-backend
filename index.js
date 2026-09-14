@@ -43,6 +43,7 @@ import { expireVerifications } from "./jobs/expireVerifications.js";
 import { publishScheduledPosts } from "./jobs/publishScheduledPosts.js";
 import { runPostPerformanceNudge } from "./jobs/postPerformanceNudge.js";
 import { runBadgeRenewalReminder } from "./jobs/badgeRenewalReminder.js";
+import { renewCreatorSubscriptions } from "./jobs/renewCreatorSubscriptions.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -115,6 +116,8 @@ app.use("/api/search", searchRoutes);
 app.use("/api/push", pushRoutes);
 import analyticsRoutes from "./routes/analyticsRoutes.js";
 app.use("/api/analytics", analyticsRoutes);
+import creatorMonetizationRoutes from "./routes/creatorMonetizationRoutes.js";
+app.use("/api/creator-monetization", creatorMonetizationRoutes);
 app.get("/", (req, res) => {
   res.send("API Running...");
 });
@@ -241,6 +244,13 @@ const startServer = async () => {
   runBadgeRenewalReminder();
   const badgeRenewalInterval = setInterval(runBadgeRenewalReminder, FOR_YOU_SIGNALS_INTERVAL_MS);
 
+  // Creator monetization — attempt to renew subscriptions whose billing
+  // period is ending within the next 24h. Runs nightly (same cadence as
+  // the badge expiry and For You signals sweeps). Also cleans up any
+  // cancelled/failed subs that are past their currentPeriodEnd.
+  renewCreatorSubscriptions();
+  const subRenewalInterval = setInterval(renewCreatorSubscriptions, FOR_YOU_SIGNALS_INTERVAL_MS);
+
   // io is attached to this exact server instance (see socket/socket.js) —
   // must listen on `server`, not app.listen() (which would silently spin
   // up a second, unrelated http.Server and leave Socket.IO unreachable).
@@ -269,6 +279,7 @@ const startServer = async () => {
       clearInterval(scheduledPostsInterval);
       clearInterval(performanceNudgeInterval);
       clearInterval(badgeRenewalInterval);
+      clearInterval(subRenewalInterval);
 
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see
