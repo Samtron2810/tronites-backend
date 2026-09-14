@@ -115,7 +115,26 @@ export const sendMessage = async (req, res) => {
     });
 
     // Reflect the permission outcome in the Conversation record.
-    if (permission.isNewRequest) {
+    if (permission.staffMessage) {
+      // Staff DMs bypass the request gate entirely - open the thread as
+      // accepted so it lands in the recipient's inbox, never Requests.
+      // Covers first contact (no Conversation yet) and re-opening an
+      // existing pending/declined thread alike.
+      await Conversation.updateOne(
+        { conversationId: permission.conversationId },
+        {
+          $setOnInsert: {
+            conversationId: permission.conversationId,
+            participants: [senderId, receiverId],
+            initiator: senderId,
+          },
+          $set: { status: "accepted" },
+        },
+        { upsert: true },
+      ).catch((err) => {
+        if (err.code !== 11000) throw err; // concurrent upsert race - first writer wins
+      });
+    } else if (permission.isNewRequest) {
       // Guard against double-tap race: two concurrent sends can both
       // land here before either Conversation.create commits. The unique
       // index on conversationId will reject the second with E11000;
@@ -327,7 +346,26 @@ export const sendVideoMessage = async (req, res) => {
 
     // Reflect the permission outcome in the Conversation record — identical
     // handling to sendMessage.
-    if (permission.isNewRequest) {
+    if (permission.staffMessage) {
+      // Staff DMs bypass the request gate entirely - open the thread as
+      // accepted so it lands in the recipient's inbox, never Requests.
+      // Covers first contact (no Conversation yet) and re-opening an
+      // existing pending/declined thread alike.
+      await Conversation.updateOne(
+        { conversationId: permission.conversationId },
+        {
+          $setOnInsert: {
+            conversationId: permission.conversationId,
+            participants: [senderId, receiverId],
+            initiator: senderId,
+          },
+          $set: { status: "accepted" },
+        },
+        { upsert: true },
+      ).catch((err) => {
+        if (err.code !== 11000) throw err; // concurrent upsert race - first writer wins
+      });
+    } else if (permission.isNewRequest) {
       await Conversation.create({
         conversationId: permission.conversationId,
         participants: [senderId, receiverId],
@@ -481,7 +519,26 @@ export const sendVoiceMessage = async (req, res) => {
 
     // Reflect the permission outcome in the Conversation record — identical
     // handling to sendMessage/sendVideoMessage.
-    if (permission.isNewRequest) {
+    if (permission.staffMessage) {
+      // Staff DMs bypass the request gate entirely - open the thread as
+      // accepted so it lands in the recipient's inbox, never Requests.
+      // Covers first contact (no Conversation yet) and re-opening an
+      // existing pending/declined thread alike.
+      await Conversation.updateOne(
+        { conversationId: permission.conversationId },
+        {
+          $setOnInsert: {
+            conversationId: permission.conversationId,
+            participants: [senderId, receiverId],
+            initiator: senderId,
+          },
+          $set: { status: "accepted" },
+        },
+        { upsert: true },
+      ).catch((err) => {
+        if (err.code !== 11000) throw err; // concurrent upsert race - first writer wins
+      });
+    } else if (permission.isNewRequest) {
       await Conversation.create({
         conversationId: permission.conversationId,
         participants: [senderId, receiverId],

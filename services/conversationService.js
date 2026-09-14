@@ -1,10 +1,18 @@
 import Conversation from "../models/Conversation.js";
+import User from "../models/User.js";
 import { isFollowing } from "./followService.js";
 
 export const getConversationId = (userA, userB) => {
   const participants = [userA.toString(), userB.toString()].sort();
   return `${participants[0]}_${participants[1]}`;
 };
+
+// Staff (moderator/admin) messages are never gated behind the request
+// system - first contact lands directly in the recipient's inbox. Role is
+// the source of truth: the staff badge auto-syncs to role, never the
+// reverse (see adminController.updateUserRole), so checking `role` alone
+// is sufficient and can't drift out of sync with the badge.
+const isStaffRole = (role) => role === "moderator" || role === "admin";
 
 // Central gate for "can senderId message receiverId right now?"
 // Returns { allowed: true, conversation } or { allowed: false, reason, code }.
@@ -14,9 +22,12 @@ export const getConversationId = (userA, userB) => {
 export const evaluateSendPermission = async (senderId, receiverId) => {
   const conversationId = getConversationId(senderId, receiverId);
 
-  const [mutualA, mutualB] = await Promise.all([
+  const [mutualA, mutualB, senderDoc] = await Promise.all([
     isFollowing(senderId, receiverId),
     isFollowing(receiverId, senderId),
+    // Staff check rides the same parallel fetch batch so it adds no
+    // extra latency to the hot send path.
+    User.findById(senderId).select("role").lean(),
   ]);
   const isMutual = mutualA && mutualB;
 
@@ -24,6 +35,23 @@ export const evaluateSendPermission = async (senderId, receiverId) => {
 
   if (isMutual) {
     return { allowed: true, conversation, conversationId, isMutual: true };
+  }
+
+  // Staff bypass: moderators/admins can reach any user directly. The
+  // `staffMessage` flag tells callers to create (or upgrade) the
+  // Conversation as "accepted" - the message lands in the recipient's
+  // main inbox instead of Message Requests, and the reply path stays
+  // open for the recipient.
+  if (isStaffRole(senderDoc?.role)) {
+    if (!conversation || conversation.status !== "accepted") {
+      return {
+        allowed: true,
+        conversation,
+        conversationId,
+        staffMessage: true,
+      };
+    }
+    return { allowed: true, conversation, conversationId };
   }
 
   if (!conversation) {
