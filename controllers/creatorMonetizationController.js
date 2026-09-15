@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import mongoose from "mongoose";
 import User from "../models/User.js";
 import Post from "../models/Post.js";
 import CreatorTip from "../models/CreatorTip.js";
@@ -803,11 +804,13 @@ export const getMediaKit = async (req, res) => {
           Post.aggregate([
             {
               $match: {
-                user: new (await import("mongoose")).default.Types.ObjectId(
-                  creatorId,
-                ),
+                user: new mongoose.Types.ObjectId(creatorId),
                 removedAt: null,
-                scheduledFor: null,
+                // Exclude scheduled (future) posts; null or missing field = published.
+                $or: [
+                  { scheduledFor: null },
+                  { scheduledFor: { $exists: false } },
+                ],
                 // Count all published posts regardless of privacy setting so
                 // the post count on the media kit always reflects reality.
               },
@@ -865,18 +868,29 @@ export const getMediaKit = async (req, res) => {
               100
             : 0;
 
-        // Top posts in last 30 days for the kit
-        const topPosts = await Post.find({
+        // Top posts — try last 30 days first, fall back to all-time top 3
+        // so the kit always shows something for new/low-volume creators.
+        const topPostsQuery = {
           user: creatorId,
           removedAt: null,
-          scheduledFor: null,
+          $or: [{ scheduledFor: null }, { scheduledFor: { $exists: false } }],
           privacy: "public",
+        };
+        let topPosts = await Post.find({
+          ...topPostsQuery,
           createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
         })
           .sort({ likesCount: -1 })
           .limit(3)
           .select("text images likesCount commentsCount repostsCount createdAt")
           .lean();
+        if (topPosts.length === 0) {
+          topPosts = await Post.find(topPostsQuery)
+            .sort({ likesCount: -1 })
+            .limit(3)
+            .select("text images likesCount commentsCount repostsCount createdAt")
+            .lean();
+        }
 
         return {
           creator: {
@@ -910,7 +924,7 @@ export const getMediaKit = async (req, res) => {
           generatedAt: new Date(),
         };
       },
-      60000, // 60-second TTL
+      60, // 60-second TTL
     );
 
     if (!mediaKitData)
