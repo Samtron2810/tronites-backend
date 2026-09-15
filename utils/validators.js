@@ -642,8 +642,22 @@ export const pinnedPostSchema = z.object({
 });
 
 // Paid-post promotion (business tier) — the post being promoted.
+export const CTA_TYPES_LIST = [
+  "learn_more", "shop_now", "sign_up", "contact_us",
+  "download", "get_quote", "visit_website", "book_now",
+];
+
 export const promotePostSchema = z.object({
   postId: z.string().regex(/^[a-f\d]{24}$/i, "Invalid post ID"),
+  tier: z.enum(["basic", "standard", "premium"]).optional(),
+  targeting: z
+    .object({
+      location: z.string().trim().max(100).optional().default(""),
+      interests: z.array(z.string()).optional().default([]),
+    })
+    .optional(),
+  ctaType: z.enum(CTA_TYPES_LIST).nullable().optional(),
+  destinationUrl: z.string().url("Destination URL must be a valid URL").max(2000).nullable().optional(),
 });
 
 export const collabStatusSchema = z.object({

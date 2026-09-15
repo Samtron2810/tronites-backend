@@ -14,7 +14,7 @@
 // Scheduling     | ❌         | ✅         | ✅      | ✅       | ✅         | ✅
 // Pinned posts   | 0          | 1          | 3       | 3        | 3          | 5
 // Edit window    | n/a (none) | 15 min     | 30 min  | 30 min   | 60 min     | ∞
-// Promoted posts | ❌         | ❌         | ❌      | ✅       | ❌         | ❌
+// Promoted posts | ❌         | ❌         | ✅      | ✅       | ❌         | ❌
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TIER_PRIORITY = ["staff", "government", "business", "creator", "individual"];
@@ -81,8 +81,12 @@ export const getPinnedLimit = (user) =>
   PINNED_POST_LIMITS[getActiveTier(user)] ?? 0;
 
 // ── Promoted posts (paid boost) ─────────────────────────────────────────────
-// Business tier only.
-export const canPromote = (user) => getActiveTier(user) === "business";
+// Business AND Creator tiers — paid visibility/ad tools are not exclusive
+// to business; creators monetize via promotion + campaigns too.
+export const canPromote = (user) => {
+  const tier = getActiveTier(user);
+  return tier === "business" || tier === "creator";
+};
 
 // ── Creator monetization gates ───────────────────────────────────────────────
 // Analytics: creator badge OR business badge.

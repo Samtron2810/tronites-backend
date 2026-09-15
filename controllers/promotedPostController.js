@@ -35,6 +35,11 @@ export const PROMO_TIERS = {
 
 const PROMO_REFERENCE_PREFIX = "tronites_promo_";
 
+export const CTA_TYPES = [
+  "learn_more", "shop_now", "sign_up", "contact_us",
+  "download", "get_quote", "visit_website", "book_now",
+];
+
 // GET /posts/promote/fees
 export const getPromotionFees = async (_req, res) => {
   try {
@@ -54,11 +59,18 @@ export const initiatePromotion = async (req, res) => {
       });
     }
 
-    const { postId, tier = "basic", targeting = {} } = req.body;
+    const { postId, tier = "basic", targeting = {}, ctaType = null, destinationUrl = null } = req.body;
 
     const tierConfig = PROMO_TIERS[tier];
     if (!tierConfig) {
       return res.status(400).json({ message: `Invalid promotion tier: ${tier}` });
+    }
+    if (ctaType && !CTA_TYPES.includes(ctaType)) {
+      return res.status(400).json({ message: `Invalid CTA type: ${ctaType}` });
+    }
+    if (destinationUrl) {
+      try { new URL(destinationUrl); }
+      catch { return res.status(400).json({ message: "Destination URL must be a valid URL." }); }
     }
 
     const post = await Post.findById(postId).select(
@@ -117,6 +129,8 @@ export const initiatePromotion = async (req, res) => {
           location: targeting.location || "",
           interests: Array.isArray(targeting.interests) ? targeting.interests : [],
         },
+        ctaType: ctaType || null,
+        destinationUrl: destinationUrl || null,
       },
     });
 
@@ -225,7 +239,7 @@ export const getMyPromotions = async (req, res) => {
     const [posts, total] = await Promise.all([
       Post.find(filter)
         .select(
-          "text images video createdAt promotedUntil promotionReference promotionTier promotionTargeting promotionImpressions promotionClicks likesCount commentsCount repostsCount",
+          "text images video createdAt promotedUntil promotionReference promotionTier promotionTargeting promotionImpressions promotionClicks ctaClicks ctaType destinationUrl likesCount commentsCount repostsCount",
         )
         .sort({ updatedAt: -1 })
         .skip(skip)
@@ -263,6 +277,9 @@ export const getMyPromotions = async (req, res) => {
         promotionTargeting: p.promotionTargeting,
         impressions: p.promotionImpressions ?? 0,
         clicks: p.promotionClicks ?? 0,
+        ctaClicks: p.ctaClicks ?? 0,
+        ctaType: p.ctaType ?? null,
+        destinationUrl: p.destinationUrl ?? null,
         impressionCap,
         reachPct,
         likesCount: p.likesCount,
@@ -325,6 +342,32 @@ export const recordClick = async (req, res) => {
       { $inc: { promotionClicks: 1 } },
     );
     res.status(200).json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// POST /posts/promote/cta-click/:postId — records a CTA-button click-through.
+// Separate metric from recordClick (whole-card sponsored click) and from
+// organic engagement (likes/comments/reposts) — this is specifically
+// "did the ad's call-to-action convert a click".
+export const recordCtaClick = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const post = await Post.updateOne(
+      { _id: postId, promotedUntil: { $gt: new Date() } },
+      { $inc: { ctaClicks: 1 } },
+    );
+
+    const p = await Post.findById(postId).select("campaignId destinationUrl ctaType");
+    if (p?.campaignId) {
+      await AdCampaign.updateOne(
+        { _id: p.campaignId },
+        { $inc: { ctaClicks: 1 } },
+      ).catch(() => {}); // non-fatal
+    }
+
+    res.status(200).json({ ok: true, destinationUrl: p?.destinationUrl || null });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

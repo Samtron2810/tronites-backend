@@ -10,6 +10,7 @@ import {
   getMyPromotions,
   recordImpression,
   recordClick,
+  recordCtaClick,
 } from "../controllers/promotedPostController.js";
 
 // Paid post promotion (business tier). Mounted by index.js at
@@ -27,5 +28,6 @@ router.get("/verify/:reference", protect, verifyPromotion);
 router.delete("/cancel/:postId", protect, cancelPromotion);
 router.post("/impression/:postId", protect, recordImpression);
 router.post("/click/:postId", protect, recordClick);
+router.post("/cta-click/:postId", protect, recordCtaClick);
 
 export default router;

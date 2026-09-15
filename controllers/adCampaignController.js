@@ -6,7 +6,7 @@ import {
   initializeTransaction,
   verifyTransaction,
 } from "../services/paystackService.js";
-import { PROMO_TIERS } from "./promotedPostController.js";
+import { PROMO_TIERS, CTA_TYPES } from "./promotedPostController.js";
 import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
 
 const CAMPAIGN_REFERENCE_PREFIX = "tronites_camp_";
@@ -41,7 +41,7 @@ export const getCampaign = async (req, res) => {
       _id: req.params.id,
       user: req.user._id,
     })
-      .populate("posts.postId", "text images video createdAt promotionImpressions promotionClicks likesCount commentsCount repostsCount")
+      .populate("posts.postId", "text images video createdAt promotionImpressions promotionClicks ctaClicks ctaType destinationUrl likesCount commentsCount repostsCount")
       .lean();
 
     if (!campaign) return res.status(404).json({ message: "Campaign not found." });
@@ -68,6 +68,8 @@ export const createCampaign = async (req, res) => {
       targeting = {},
       scheduledStart = null,
       scheduledEnd = null,
+      ctaType = null,
+      destinationUrl = null,
     } = req.body;
 
     if (!name?.trim()) return res.status(400).json({ message: "Campaign name is required." });
@@ -75,6 +77,13 @@ export const createCampaign = async (req, res) => {
     if (postIds.length === 0) return res.status(400).json({ message: "At least one post is required." });
     if (postIds.length > MAX_POSTS_PER_CAMPAIGN) {
       return res.status(400).json({ message: `Max ${MAX_POSTS_PER_CAMPAIGN} posts per campaign.` });
+    }
+    if (ctaType && !CTA_TYPES.includes(ctaType)) {
+      return res.status(400).json({ message: `Invalid CTA type: ${ctaType}` });
+    }
+    if (destinationUrl) {
+      try { new URL(destinationUrl); }
+      catch { return res.status(400).json({ message: "Destination URL must be a valid URL." }); }
     }
 
     // Verify all posts belong to the requester and are eligible
@@ -104,6 +113,8 @@ export const createCampaign = async (req, res) => {
       totalBudgetNgn,
       scheduledStart: scheduledStart ? new Date(scheduledStart) : null,
       scheduledEnd: scheduledEnd ? new Date(scheduledEnd) : null,
+      ctaType: ctaType || null,
+      destinationUrl: destinationUrl || null,
     });
 
     res.status(201).json({ campaign });
@@ -124,7 +135,7 @@ export const updateCampaign = async (req, res) => {
       return res.status(409).json({ message: "Only draft campaigns can be edited." });
     }
 
-    const { name, postIds, tier, targeting, scheduledStart, scheduledEnd } = req.body;
+    const { name, postIds, tier, targeting, scheduledStart, scheduledEnd, ctaType, destinationUrl } = req.body;
 
     if (name !== undefined) campaign.name = name.trim();
     if (tier !== undefined) {
@@ -136,6 +147,19 @@ export const updateCampaign = async (req, res) => {
         location: targeting.location || "",
         interests: Array.isArray(targeting.interests) ? targeting.interests : [],
       };
+    }
+    if (ctaType !== undefined) {
+      if (ctaType && !CTA_TYPES.includes(ctaType)) {
+        return res.status(400).json({ message: `Invalid CTA type: ${ctaType}` });
+      }
+      campaign.ctaType = ctaType || null;
+    }
+    if (destinationUrl !== undefined) {
+      if (destinationUrl) {
+        try { new URL(destinationUrl); }
+        catch { return res.status(400).json({ message: "Destination URL must be a valid URL." }); }
+      }
+      campaign.destinationUrl = destinationUrl || null;
     }
     if (scheduledStart !== undefined) campaign.scheduledStart = scheduledStart ? new Date(scheduledStart) : null;
     if (scheduledEnd !== undefined) campaign.scheduledEnd = scheduledEnd ? new Date(scheduledEnd) : null;
@@ -276,6 +300,8 @@ export const activateCampaign = async (campaign) => {
             promotionClicks: 0,
             promotionReference: null,
             campaignId: campaign._id,
+            ctaType: campaign.ctaType || null,
+            destinationUrl: campaign.destinationUrl || null,
           },
         },
       );
@@ -375,6 +401,8 @@ export const cancelCampaign = async (req, res) => {
             promotedUntil: null,
             campaignId: null,
             promotionTier: null,
+            ctaType: null,
+            destinationUrl: null,
           },
         },
       );

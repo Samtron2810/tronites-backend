@@ -69,9 +69,21 @@ const adCampaignSchema = new mongoose.Schema(
       default: "unpaid",
     },
 
+    // CTA applied to every post in this campaign at activation time.
+    ctaType: {
+      type: String,
+      enum: [
+        "learn_more", "shop_now", "sign_up", "contact_us",
+        "download", "get_quote", "visit_website", "book_now", null,
+      ],
+      default: null,
+    },
+    destinationUrl: { type: String, default: null, trim: true, maxlength: 2000 },
+
     // Aggregate impression + engagement counters across all posts in campaign.
     impressions: { type: Number, default: 0 },
-    clicks: { type: Number, default: 0 },
+    clicks: { type: Number, default: 0 }, // sponsored-card clicks (legacy/whole-card)
+    ctaClicks: { type: Number, default: 0 }, // CTA-button click-throughs, tracked separately
     engagements: { type: Number, default: 0 }, // likes + comments + reposts
 
     // Campaign schedule — when to start/end. Null = immediately / no hard end.

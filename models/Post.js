@@ -230,6 +230,33 @@ const postSchema = new mongoose.Schema(
       ref: "AdCampaign",
       default: null,
     },
+
+    // ── Promoted-post / campaign CTA ────────────────────────────────────────
+    // Fixed enum (not free text) so CTA-type performance is comparable
+    // across posts/campaigns. null for organic posts.
+    ctaType: {
+      type: String,
+      enum: [
+        "learn_more", "shop_now", "sign_up", "contact_us",
+        "download", "get_quote", "visit_website", "book_now", null,
+      ],
+      default: null,
+    },
+    // Optional — when absent, the CTA (if any) falls back to the post
+    // itself / author profile on the frontend rather than rendering dead.
+    destinationUrl: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 2000,
+    },
+    // Click-through count on the CTA button specifically — separate from
+    // promotionClicks (which is a whole-card sponsored-post click) and
+    // from likesCount/commentsCount/repostsCount (organic engagement).
+    ctaClicks: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );
