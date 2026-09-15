@@ -219,7 +219,7 @@ export const initiateCampaignPayment = async (req, res) => {
       process.env.PAYSTACK_PROMO_CALLBACK_URL ||
       process.env.PAYSTACK_CALLBACK_URL;
     const callbackUrl = callbackBase
-      ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}&type=campaign`
+      ? `${callbackBase.replace(/\/$/, "")}?paystack_ref=${reference}&type=campaign&campaign=${campaign._id.toString()}`
       : undefined;
 
     const paystackData = await initializeTransaction({
