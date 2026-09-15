@@ -38,6 +38,7 @@ import errorHandler from "./middleware/errorHandler.js";
 import { cleanupAbandonedVideoShells } from "./jobs/cleanupAbandonedVideoShells.js";
 import { purgeDeletedAccounts } from "./jobs/purgeDeletedAccounts.js";
 import { flagRepeatOffenders } from "./jobs/flagRepeatOffenders.js";
+import { detectSpamClusters } from "./jobs/detectSpamClusters.js";
 import { computeForYouSignals } from "./jobs/computeForYouSignals.js";
 import { expireVerifications } from "./jobs/expireVerifications.js";
 import { publishScheduledPosts } from "./jobs/publishScheduledPosts.js";
@@ -206,6 +207,18 @@ const startServer = async () => {
     CLEANUP_INTERVAL_MS,
   );
 
+  // Phase 7+ — spam-cluster sweep (near-duplicate text across
+  // different accounts) — see jobs/detectSpamClusters.js. Tighter
+  // cadence than the hourly sweeps above: coordinated spam bursts are
+  // time-sensitive, but each run is a handful of indexed queries over
+  // a small rolling window, so 15 minutes is cheap.
+  const SPAM_CLUSTER_INTERVAL_MS = 15 * 60 * 1000;
+  detectSpamClusters();
+  const spamClusterInterval = setInterval(
+    detectSpamClusters,
+    SPAM_CLUSTER_INTERVAL_MS,
+  );
+
   // For You ranking maintenance — followersCount reconciliation +
   // credibleRatio recompute (jobs/computeForYouSignals.js). Runs less
   // often than the hourly sweeps above: credibleRatio is intentionally
@@ -276,6 +289,7 @@ const startServer = async () => {
       clearInterval(cleanupInterval);
       clearInterval(purgeInterval);
       clearInterval(offenderInterval);
+      clearInterval(spamClusterInterval);
       clearInterval(forYouSignalsInterval);
       clearInterval(expireVerificationsInterval);
       clearInterval(scheduledPostsInterval);

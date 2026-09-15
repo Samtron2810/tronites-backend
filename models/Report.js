@@ -38,6 +38,26 @@ const reportSchema = new mongoose.Schema(
       default: [],
     },
 
+    // Phase 7+ — confidence-scored categories from the AI classifier
+    // (services/aiModerationService.js), e.g.
+    // [{ category: "harassment", score: 0.83 }]. Overwritten (not
+    // appended) on each pre-moderation re-run — reflects the latest
+    // classification of the current content, not a history. Empty for
+    // reports raised purely by deterministic heuristics or spam-cluster
+    // detection.
+    aiFlags: {
+      type: [
+        new mongoose.Schema(
+          {
+            category: { type: String, required: true },
+            score: { type: Number, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+
     // What kind of thing is being reported. "user" covers profile-level
     // reports (harassment pattern, impersonation, spam account) that
     // aren't about one specific post/comment/message.

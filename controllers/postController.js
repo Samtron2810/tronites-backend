@@ -28,6 +28,7 @@ import {
 } from "../services/blockService.js";
 import { getForYouCandidates } from "../services/forYouService.js";
 import { runPreModeration } from "../services/preModerationService.js";
+import { backfillAltText } from "../services/altTextService.js";
 import {
   isExplicitlyFollowingHashtag,
   followHashtag,
@@ -234,6 +235,16 @@ export const createPost = async (req, res) => {
     }).catch((err) =>
       console.error("Pre-moderation dispatch failed:", err.message),
     );
+
+    // Phase 7+ — auto alt-text (accessibility + SEO). Fire-and-forget,
+    // same reasoning as pre-moderation above: a slow/down AI provider
+    // must never delay the response. Only fills images the author left
+    // blank (see services/altTextService.js).
+    if (imageUrls.length > 0) {
+      backfillAltText({ postId: post._id, images: imageUrls }).catch((err) =>
+        console.error("Alt-text backfill dispatch failed:", err.message),
+      );
+    }
 
     // Send response FIRST before real-time socket emissions.
     // Wrap in { post } so the frontend can access postRes.data.post._id

@@ -172,6 +172,22 @@ const postSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Phase 7+ — simhash text fingerprint (utils/simhash.js), computed
+    // fire-and-forget by preModerationService right after creation.
+    // hashBands is the same 64-bit hash split into 4 LSH buckets so
+    // jobs/detectSpamClusters.js can find near-duplicate posts via an
+    // indexed equality query instead of a pairwise scan. Null/empty
+    // until the pre-moderation pass completes (or forever, for posts
+    // with too little text to fingerprint — see computeSimhash).
+    contentHash: {
+      type: String,
+      default: null,
+    },
+    hashBands: {
+      type: [Number],
+      default: [],
+    },
+
     // Creator tools — scheduled publishing. When set, the post is in
     // "draft/scheduled" state and invisible to all feed/explore/profile
     // queries until the publishScheduledPosts job flips it to null.
@@ -243,6 +259,10 @@ postSchema.index({ scheduledFor: 1 }, { sparse: true });
 postSchema.index({ promotedUntil: 1 }, { sparse: true });
 // Fast unique-ish lookup by promotion charge reference.
 postSchema.index({ promotionReference: 1 }, { sparse: true });
+// Phase 7+ — multikey index on the LSH bands so spam-cluster detection
+// (jobs/detectSpamClusters.js) can look up near-duplicate candidates
+// without a collection scan.
+postSchema.index({ hashBands: 1, createdAt: -1 });
 
 const Post = mongoose.model("Post", postSchema);
 
