@@ -212,6 +212,25 @@ const postSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // "paid" (default, existing behavior) vs "admin" — a moderator/admin
+    // comped this promotion for free via adminPromotePost, without a
+    // Paystack charge. Lets analytics/spend reporting exclude comped
+    // promotions from paid-revenue aggregates while still counting them
+    // as promoted for feed injection/impressions.
+    promotionSource: {
+      type: String,
+      enum: ["paid", "admin"],
+      default: "paid",
+    },
+    // Snapshot of which admin/moderator granted a free promotion — null
+    // for paid promotions. Denormalized here (not just in AuditLog) so
+    // the post itself can show "boosted by the Tronites team" without a
+    // join, even if the audit trail is queried separately.
+    promotedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
     // Promotion analytics — impression and click counters.
     // Only incremented for promoted posts; zero for organic.
     promotionImpressions: { type: Number, default: 0 },

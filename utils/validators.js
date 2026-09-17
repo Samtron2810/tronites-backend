@@ -660,6 +660,24 @@ export const promotePostSchema = z.object({
   destinationUrl: z.string().url("Destination URL must be a valid URL").max(2000).nullable().optional(),
 });
 
+// Admin/moderator comp — same shape as promotePostSchema minus postId
+// (taken from the route param, see promotedPostRoutes.js's /admin/:postId)
+// and tier (comps aren't tied to a paid tier's price/impression cap —
+// just a plain duration). `days` is clamped again server-side in the
+// controller (MAX_ADMIN_PROMO_DAYS) but validated here too so an
+// out-of-range value fails fast with a clear message.
+export const adminPromotePostSchema = z.object({
+  days: z.number().int().min(1).max(30),
+  targeting: z
+    .object({
+      location: z.string().trim().max(100).optional().default(""),
+      interests: z.array(z.string()).optional().default([]),
+    })
+    .optional(),
+  ctaType: z.enum(CTA_TYPES_LIST).nullable().optional(),
+  destinationUrl: z.string().url("Destination URL must be a valid URL").max(2000).nullable().optional(),
+});
+
 export const collabStatusSchema = z.object({
   openToCollabs: z.boolean(),
 });

@@ -2,7 +2,10 @@ import crypto from "crypto";
 import Post from "../models/Post.js";
 import User from "../models/User.js";
 import AdCampaign from "../models/AdCampaign.js";
+import Notification from "../models/Notification.js";
 import { canPromote } from "../utils/tierLimits.js";
+import { logAudit } from "../utils/auditLogger.js";
+import { emitToUser } from "../socket/socket.js";
 import {
   initializeTransaction,
   verifyTransaction,
@@ -34,6 +37,11 @@ export const PROMO_TIERS = {
 };
 
 const PROMO_REFERENCE_PREFIX = "tronites_promo_";
+
+// ── Admin/moderator comp promotion (no payment) ─────────────────────────────
+// Env-overridable ceiling on how many days a single admin comp can grant —
+// keeps a moderator from effectively gifting an unlimited-run ad slot.
+export const MAX_ADMIN_PROMO_DAYS = Number(process.env.ADMIN_PROMO_MAX_DAYS) || 30;
 
 export const CTA_TYPES = [
   "learn_more", "shop_now", "sign_up", "contact_us",
@@ -146,6 +154,155 @@ export const initiatePromotion = async (req, res) => {
   }
 };
 
+// POST /posts/promote/admin/:postId — moderator/admin grants a free
+// promotion to a creator's or business's post, no Paystack charge. Gated
+// in the route by requireModerator + requirePermission("manage_content").
+// Mirrors initiatePromotion's eligibility/conflict checks but skips
+// straight to an active promotedUntil instead of a pending
+// promotionReference — there's no payment step to wait on.
+export const adminPromotePost = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const { days, targeting = {}, ctaType = null, destinationUrl = null } = req.body;
+
+    const post = await Post.findById(postId).select(
+      "user removedAt promotedUntil promotionReference text",
+    );
+    if (!post || post.removedAt) {
+      return res.status(404).json({ message: "Post not found." });
+    }
+
+    // Eligibility is the POST AUTHOR's tier, not the acting admin's — an
+    // admin accelerates access to a benefit the author already qualifies
+    // for (creator/business), never grants it to an ineligible account.
+    const author = await User.findById(post.user).select(
+      "name username verifications",
+    );
+    if (!author) {
+      return res.status(404).json({ message: "Post author not found." });
+    }
+    if (!canPromote(author)) {
+      return res.status(403).json({
+        message:
+          "This post's author isn't eligible for promotion (creator/business tier only).",
+        code: "PROMOTING_UNAVAILABLE",
+      });
+    }
+
+    if (post.promotedUntil && new Date(post.promotedUntil) > new Date()) {
+      return res.status(409).json({
+        message: "This post is already promoted.",
+        promotedUntil: post.promotedUntil,
+      });
+    }
+    if (post.promotionReference) {
+      return res.status(409).json({
+        message:
+          "A promotion payment for this post is pending verification — cancel it first.",
+      });
+    }
+
+    if (ctaType && !CTA_TYPES.includes(ctaType)) {
+      return res.status(400).json({ message: `Invalid CTA type: ${ctaType}` });
+    }
+    if (destinationUrl) {
+      try {
+        new URL(destinationUrl);
+      } catch {
+        return res
+          .status(400)
+          .json({ message: "Destination URL must be a valid URL." });
+      }
+    }
+
+    // Clamp again server-side regardless of what validate() already
+    // enforced — this is the actual source of truth for the ceiling.
+    const grantedDays = Math.min(
+      Math.max(1, Math.trunc(Number(days)) || 0),
+      MAX_ADMIN_PROMO_DAYS,
+    );
+    const promotedUntil = new Date(
+      Date.now() + grantedDays * 24 * 60 * 60 * 1000,
+    );
+
+    await post.updateOne({
+      $set: {
+        promotedUntil,
+        promotionReference: null,
+        promotionSource: "admin",
+        promotedBy: req.user._id,
+        // Comps aren't tied to a paid tier's price/impression cap.
+        promotionTier: null,
+        promotionTargeting: {
+          location: targeting.location || "",
+          interests: Array.isArray(targeting.interests) ? targeting.interests : [],
+        },
+        ctaType: ctaType || null,
+        destinationUrl: destinationUrl || null,
+        promotionImpressions: 0,
+        promotionClicks: 0,
+      },
+    });
+
+    invalidateFeedCache(post.user);
+    invalidateCache(`profile-posts:${post.user}:*`);
+
+    // Audit trail — recorded regardless of whether the notification
+    // below succeeds (logAudit is fire-and-forget and independent of
+    // the notification's own try/catch).
+    logAudit({
+      action: "post_admin_promoted",
+      actor: req.user,
+      req,
+      target: {
+        type: "post",
+        ref: post._id,
+        snapshot: {
+          authorName: author.name,
+          authorUsername: author.username,
+          text: (post.text || "").slice(0, 120),
+        },
+      },
+      detail: {
+        days: grantedDays,
+        promotedUntil,
+        ctaType: ctaType || null,
+        destinationUrl: destinationUrl || null,
+        targeting,
+      },
+    });
+
+    // In-app notification, best effort — mirrors the moderator_warning
+    // pattern in adminController.js (fire, populate sender, emit; never
+    // fail the request over it).
+    try {
+      const newNotif = await Notification.create({
+        recipient: post.user,
+        sender: req.user._id,
+        type: "post_admin_promoted",
+        post: post._id,
+        message: `Your post was promoted by the Tronites team for ${grantedDays} day${grantedDays === 1 ? "" : "s"} — no charge.`,
+      });
+      const populatedNotif = await newNotif.populate(
+        "sender",
+        "name username profilePic verifications isVerified",
+      );
+      emitToUser(post.user, "newNotification", populatedNotif);
+    } catch (notifError) {
+      console.error("Admin-promotion notification failed:", notifError.message);
+    }
+
+    res.status(200).json({
+      promoted: true,
+      promotedUntil,
+      promotionSource: "admin",
+      days: grantedDays,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // GET /posts/promote/verify/:reference
 export const verifyPromotion = async (req, res) => {
   try {
@@ -239,7 +396,7 @@ export const getMyPromotions = async (req, res) => {
     const [posts, total] = await Promise.all([
       Post.find(filter)
         .select(
-          "text images video createdAt promotedUntil promotionReference promotionTier promotionTargeting promotionImpressions promotionClicks ctaClicks ctaType destinationUrl likesCount commentsCount repostsCount",
+          "text images video createdAt promotedUntil promotionReference promotionSource promotionTier promotionTargeting promotionImpressions promotionClicks ctaClicks ctaType destinationUrl likesCount commentsCount repostsCount",
         )
         .sort({ updatedAt: -1 })
         .skip(skip)
@@ -273,6 +430,10 @@ export const getMyPromotions = async (req, res) => {
         createdAt: p.createdAt,
         promotedUntil: p.promotedUntil,
         promotionReference: p.promotionReference,
+        // "admin" = a moderator/admin comp (see adminPromotePost) — the
+        // frontend shows "Boosted by the Tronites team" instead of a
+        // tier/price for these, and any spend total sums "paid" only.
+        promotionSource: p.promotionSource || "paid",
         promotionTier: p.promotionTier,
         promotionTargeting: p.promotionTargeting,
         impressions: p.promotionImpressions ?? 0,

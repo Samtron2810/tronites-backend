@@ -33,6 +33,9 @@ export const AUDIT_ACTIONS = [
   "user_shadow_rank_lifted",
   "user_auto_suspended",
   "user_auto_banned",
+  // Free promotion granted by a moderator/admin (no Paystack charge) —
+  // see controllers/promotedPostController.js's adminPromotePost.
+  "post_admin_promoted",
 ];
 
 const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];

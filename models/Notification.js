@@ -69,6 +69,12 @@ const notificationSchema = new mongoose.Schema(
         // Creator monetization — a user subscribed to the creator's channel.
         // sender: the subscriber. message: confirmation copy.
         "creator_subscribe",
+        // A moderator/admin comped a free promotion for this post (see
+        // adminPromotePost). sender: the acting admin/moderator (shown
+        // generically, like moderator_warning, not by name — the
+        // notifications page renders "The Tronites team" for this type).
+        // message: human-readable duration/summary copy.
+        "post_admin_promoted",
       ],
       required: true,
     },
