@@ -9,6 +9,7 @@ import { isBlockedEitherWay, getBlockedEitherWayIds } from "../services/blockSer
 import { canViewPost } from "../services/postVisibilityService.js";
 import { hasMuted } from "../services/muteService.js";
 import { checkEngagementVelocity } from "../services/engagementVelocityService.js";
+import { runPreModeration } from "../services/preModerationService.js";
 import { parseSearchFilters, dateRangeFilter } from "../services/searchService.js";
 import {
   getLikedCommentIds,
@@ -188,6 +189,18 @@ export const addComment = async (req, res) => {
     }
 
     res.status(201).json(populatedComment);
+
+    // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass.
+    // Previously only createPost ran this, so comments AND replies (this
+    // one function handles both — see parentComment above) went
+    // completely unchecked by the slur list / AI classifier.
+    runPreModeration({
+      targetType: "comment",
+      target: comment,
+      author: req.user,
+    }).catch((err) =>
+      console.error("Pre-moderation dispatch failed:", err.message),
+    );
 
     // Fairness fix #2 — fire-and-forget, after the response so it never
     // adds latency to the comment action. Comments only ever ADD

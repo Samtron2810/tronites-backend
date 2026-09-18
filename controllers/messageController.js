@@ -34,6 +34,7 @@ import {
   removeAllReactionsForTarget,
   REACTION_EMOJIS,
 } from "../services/reactionService.js";
+import { runPreModeration } from "../services/preModerationService.js";
 
 export const sendMessage = async (req, res) => {
   try {
@@ -175,6 +176,17 @@ export const sendMessage = async (req, res) => {
     emitToUser(receiverId, "receiveMessage", populatedMessage);
 
     res.status(201).json(populatedMessage);
+
+    // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass.
+    // DMs previously ran zero moderation (slur list, AI classifier) at
+    // all — only createPost triggered this.
+    runPreModeration({
+      targetType: "message",
+      target: message,
+      author: req.user,
+    }).catch((err) =>
+      console.error("Pre-moderation dispatch failed:", err.message),
+    );
   } catch (error) {
     console.error("SEND MESSAGE ERROR:", error);
     res.status(500).json({ message: error.message });
@@ -401,6 +413,17 @@ export const sendVideoMessage = async (req, res) => {
     emitToUser(receiverId, "receiveMessage", populatedMessage);
 
     res.status(201).json(populatedMessage);
+
+    // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass on the
+    // caption text (and thumbnail, via the generic images[] extraction —
+    // see preModerationService).
+    runPreModeration({
+      targetType: "message",
+      target: message,
+      author: req.user,
+    }).catch((err) =>
+      console.error("Pre-moderation dispatch failed:", err.message),
+    );
   } catch (error) {
     console.error("SEND VIDEO MESSAGE ERROR:", error);
     res.status(500).json({ message: error.message });
@@ -571,6 +594,17 @@ export const sendVoiceMessage = async (req, res) => {
     emitToUser(receiverId, "receiveMessage", populatedMessage);
 
     res.status(201).json(populatedMessage);
+
+    // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass on any
+    // caption text sent alongside the voice note (no-op on empty text —
+    // the audio itself isn't classified).
+    runPreModeration({
+      targetType: "message",
+      target: message,
+      author: req.user,
+    }).catch((err) =>
+      console.error("Pre-moderation dispatch failed:", err.message),
+    );
   } catch (error) {
     console.error("SEND VOICE MESSAGE ERROR:", error);
     res.status(500).json({ message: error.message });

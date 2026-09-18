@@ -472,6 +472,16 @@ export const createVideoPost = async (req, res) => {
       invalidateCache(`profile-posts:${req.user._id}:*`);
     }
 
+    // Phase 7 (roadmap 3.2) — fire-and-forget pre-moderation pass, same
+    // as createPost. Video posts were previously bypassing this entirely.
+    runPreModeration({
+      targetType: "post",
+      target: post,
+      author: req.user,
+    }).catch((err) =>
+      console.error("Pre-moderation dispatch failed:", err.message),
+    );
+
     const populatedPost = await post.populate(
       "user",
       "name username profilePic verifications isVerified",
@@ -582,6 +592,20 @@ export const editPost = async (req, res) => {
     post.edited = true;
     post.editedAt = new Date();
     await post.save();
+
+    // Phase 7 (roadmap 3.2) — re-run pre-moderation on the edited text.
+    // Previously only createPost triggered this, so an edit that added
+    // a slur/spam etc. after the fact never got flagged. The report
+    // upsert is keyed on {system, targetType, targetId}, so this merges
+    // into any existing open system report for the post instead of
+    // duplicating it.
+    runPreModeration({
+      targetType: "post",
+      target: post,
+      author: req.user,
+    }).catch((err) =>
+      console.error("Pre-moderation dispatch failed:", err.message),
+    );
 
     const populatedPost = await post.populate(
       "user",

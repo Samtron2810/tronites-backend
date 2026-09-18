@@ -1,5 +1,7 @@
 import Report from "../models/Report.js";
 import Post from "../models/Post.js";
+import Comment from "../models/Comment.js";
+import Message from "../models/Message.js";
 import {
   checkSlurList,
   checkLinkSpam,
@@ -12,29 +14,44 @@ import { computeSimhash, simhashBands } from "../utils/simhash.js";
 
 // Phase 7 — automated pre-moderation (roadmap 3.2). Runs cheap text/
 // account heuristics PLUS an AI classifier (see aiModerationService.js)
-// against newly created content and, if anything fires, raises a
-// system-authored Report at "high" priority straight into the existing
+// against newly created OR edited content and, if anything fires, raises
+// a system-authored Report at "high" priority straight into the existing
 // moderation queue (see reportService.listReports) — reusing Phase
 // 1/6 infra instead of building a parallel review surface.
+//
+// Covers posts (create + video-post create + edit), comments/replies
+// (Comment doc covers both — see commentController.addComment), and DMs
+// (Message doc — text and/or media captions). Re-running against the
+// same targetId (e.g. a post edit) is safe: the {system:1, targetType:1,
+// targetId:1} partial unique index means the upsert below merges new
+// signals into the existing open system report instead of duplicating
+// the queue entry.
 //
 // Deliberately never deletes, hides, or blocks content itself: a human
 // moderator resolves the report exactly like any other, via
 // PUT /reports/:id/resolve. This keeps the same "route to review, don't
 // auto-delete" guarantee the roadmap calls for.
 //
-// Called fire-and-forget from controllers (createPost etc.) — a slow or
-// failed pre-moderation pass (now including a network call to the AI
-// provider) must never delay or break content creation.
+// Called fire-and-forget from controllers (createPost, createVideoPost,
+// editPost, addComment, sendMessage/sendVideoMessage/sendVoiceMessage) —
+// a slow or failed pre-moderation pass (including the network call to
+// the AI provider) must never delay or break content creation.
 
-const TARGET_MODEL_BY_TYPE = { post: Post };
+const TARGET_MODEL_BY_TYPE = { post: Post, comment: Comment, message: Message };
+
+// Velocity heuristic counts recent items from the same author. Post and
+// Comment key the author on `user`; Message keys it on `sender` — same
+// person, different field name — so the count query needs to know which
+// field to filter on per targetType.
+const AUTHOR_FIELD_BY_TYPE = { post: "user", comment: "user", message: "sender" };
 
 /**
- * Run heuristics + AI classification against a piece of just-created
- * content and, if any signal fires, upsert a system Report at high
- * priority.
+ * Run heuristics + AI classification against a piece of just-created or
+ * just-edited content and, if any signal fires, upsert a system Report
+ * at high priority.
  *
- * @param {"post"} targetType
- * @param {object} target        The created document (post) — needs _id, text, images, user.
+ * @param {"post"|"comment"|"message"} targetType
+ * @param {object} target        The document (post/comment/message) — needs _id, text, images.
  * @param {object} author        The author's User doc — needs _id, createdAt.
  * @returns {Promise<{flagged: boolean, signals: string[], aiFlags: object[]}>}
  */
@@ -55,16 +72,18 @@ export const runPreModeration = async ({ targetType, target, author }) => {
     const newAccountLink = checkNewAccountWithLink(text, author?.createdAt);
     if (newAccountLink) signals.push(newAccountLink);
 
-    // Velocity check needs one indexed count query — cheap (Post already
-    // indexes {user, createdAt} implicitly via the feed query patterns).
+    // Velocity check needs one indexed count query — cheap (Post/Comment/
+    // Message already index {user|sender, createdAt} implicitly via their
+    // own query patterns).
     const Model = TARGET_MODEL_BY_TYPE[targetType];
-    if (Model && author?._id) {
+    const authorField = AUTHOR_FIELD_BY_TYPE[targetType];
+    if (Model && authorField && author?._id) {
       const { MODERATION_THRESHOLDS } = await import(
         "../utils/moderationHeuristics.js"
       );
       const since = new Date(Date.now() - MODERATION_THRESHOLDS.VELOCITY_WINDOW_MS);
       const recentCount = await Model.countDocuments({
-        user: author._id,
+        [authorField]: author._id,
         createdAt: { $gte: since },
       });
       const velocity = checkPostingVelocity(recentCount);
