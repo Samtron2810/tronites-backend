@@ -303,6 +303,261 @@ export const adminPromotePost = async (req, res) => {
   }
 };
 
+// DELETE /posts/promote/admin/cancel/:postId — moderator/admin force-ends a
+// promotion, active or pending, regardless of who paid for it or owns the
+// post. Distinct from the owner-only cancelPromotion below, which only ever
+// clears a STUCK PENDING reference and refuses to touch an active run.
+// This is the "pull the ad" lever for the moderation team.
+export const adminCancelPromotion = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const post = await Post.findById(postId).select(
+      "user removedAt promotedUntil promotionReference promotionSource text",
+    );
+    if (!post || post.removedAt) {
+      return res.status(404).json({ message: "Post not found." });
+    }
+    if (!post.promotedUntil && !post.promotionReference) {
+      return res.status(409).json({ message: "This post isn't promoted." });
+    }
+
+    const wasActive = Boolean(post.promotedUntil && new Date(post.promotedUntil) > new Date());
+    const author = await User.findById(post.user).select("name username");
+
+    await post.updateOne({
+      $set: {
+        promotedUntil: null,
+        promotionReference: null,
+        promotionSource: null,
+        promotedBy: null,
+        ctaType: null,
+        destinationUrl: null,
+      },
+    });
+
+    invalidateFeedCache(post.user);
+    invalidateCache(`profile-posts:${post.user}:*`);
+
+    logAudit({
+      action: "post_promotion_cancelled",
+      actor: req.user,
+      req,
+      target: {
+        type: "post",
+        ref: post._id,
+        snapshot: {
+          authorName: author?.name,
+          authorUsername: author?.username,
+          text: (post.text || "").slice(0, 120),
+        },
+      },
+      detail: { wasActive, previousSource: post.promotionSource || "paid" },
+    });
+
+    try {
+      const newNotif = await Notification.create({
+        recipient: post.user,
+        sender: req.user._id,
+        type: "post_promotion_cancelled",
+        post: post._id,
+        message: wasActive
+          ? "Your post's promotion was ended early by the Tronites team."
+          : "Your pending post promotion was cancelled by the Tronites team.",
+      });
+      const populatedNotif = await newNotif.populate(
+        "sender",
+        "name username profilePic verifications isVerified",
+      );
+      emitToUser(post.user, "newNotification", populatedNotif);
+    } catch (notifError) {
+      console.error("Promotion-cancel notification failed:", notifError.message);
+    }
+
+    res.status(200).json({ cancelled: true, wasActive });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// PUT /posts/promote/admin/extend/:postId { days } — moderator/admin adds
+// days to an ACTIVE promotion's expiry. `days` is the amount added, not the
+// resulting total, and is clamped to MAX_ADMIN_PROMO_DAYS just like a fresh
+// adminPromotePost grant.
+export const adminExtendPromotion = async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const { days } = req.body;
+    const grantedDays = Math.min(
+      Math.max(1, Math.trunc(Number(days)) || 0),
+      MAX_ADMIN_PROMO_DAYS,
+    );
+
+    const post = await Post.findById(postId).select(
+      "user removedAt promotedUntil promotionReference text",
+    );
+    if (!post || post.removedAt) {
+      return res.status(404).json({ message: "Post not found." });
+    }
+    if (!post.promotedUntil || new Date(post.promotedUntil) <= new Date()) {
+      return res.status(409).json({
+        message: "This post has no active promotion to extend.",
+      });
+    }
+
+    const promotedUntil = new Date(
+      new Date(post.promotedUntil).getTime() + grantedDays * 24 * 60 * 60 * 1000,
+    );
+
+    await post.updateOne({ $set: { promotedUntil } });
+
+    invalidateFeedCache(post.user);
+    invalidateCache(`profile-posts:${post.user}:*`);
+
+    const author = await User.findById(post.user).select("name username");
+    logAudit({
+      action: "post_promotion_extended",
+      actor: req.user,
+      req,
+      target: {
+        type: "post",
+        ref: post._id,
+        snapshot: {
+          authorName: author?.name,
+          authorUsername: author?.username,
+          text: (post.text || "").slice(0, 120),
+        },
+      },
+      detail: { addedDays: grantedDays, promotedUntil },
+    });
+
+    try {
+      const newNotif = await Notification.create({
+        recipient: post.user,
+        sender: req.user._id,
+        type: "post_promotion_extended",
+        post: post._id,
+        message: `Your post's promotion was extended by ${grantedDays} day${grantedDays === 1 ? "" : "s"} by the Tronites team.`,
+      });
+      const populatedNotif = await newNotif.populate(
+        "sender",
+        "name username profilePic verifications isVerified",
+      );
+      emitToUser(post.user, "newNotification", populatedNotif);
+    } catch (notifError) {
+      console.error("Promotion-extend notification failed:", notifError.message);
+    }
+
+    res.status(200).json({ extended: true, promotedUntil });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /posts/promote/admin/all — every promoted/pending post across all
+// users, for the moderation team's promotions-management page. `q` matches
+// post text or author name/username; `status` narrows to
+// active/pending/expired using the same bucketing getMyPromotions uses.
+export const adminListPromotions = async (req, res) => {
+  try {
+    const query = String(req.query.q || "").trim();
+    const statusFilter = req.query.status;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
+    const skip = (page - 1) * limit;
+    const now = new Date();
+
+    const conds = [{ removedAt: null }];
+    if (statusFilter === "active") {
+      conds.push({ promotedUntil: { $gt: now } });
+    } else if (statusFilter === "pending") {
+      conds.push({ promotionReference: { $ne: null } });
+      conds.push({ $or: [{ promotedUntil: null }, { promotedUntil: { $lte: now } }] });
+    } else if (statusFilter === "expired") {
+      conds.push({ promotionReference: null });
+      conds.push({ promotedUntil: { $ne: null, $lte: now } });
+    } else {
+      conds.push({
+        $or: [{ promotedUntil: { $ne: null } }, { promotionReference: { $ne: null } }],
+      });
+    }
+
+    if (query.length >= 2) {
+      const matchingUsers = await User.find({
+        $or: [
+          { name: { $regex: query, $options: "i" } },
+          { username: { $regex: query, $options: "i" } },
+        ],
+      }).select("_id").lean();
+      conds.push({
+        $or: [
+          { text: { $regex: query, $options: "i" } },
+          { user: { $in: matchingUsers.map((u) => u._id) } },
+        ],
+      });
+    }
+
+    const filter = { $and: conds };
+
+    const [posts, total] = await Promise.all([
+      Post.find(filter)
+        .populate("user", "name username profilePic verifications isVerified")
+        .populate("promotedBy", "name username")
+        .select(
+          "text images video createdAt promotedUntil promotionReference promotionSource promotionTier promotionTargeting promotionImpressions promotionClicks ctaClicks ctaType destinationUrl user promotedBy",
+        )
+        .sort({ updatedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Post.countDocuments(filter),
+    ]);
+
+    const promotions = posts.map((p) => {
+      let status;
+      if (p.promotionReference && (!p.promotedUntil || new Date(p.promotedUntil) <= now)) {
+        status = "pending";
+      } else if (p.promotedUntil && new Date(p.promotedUntil) > now) {
+        status = "active";
+      } else {
+        status = "expired";
+      }
+      const tierConfig = PROMO_TIERS[p.promotionTier] || null;
+
+      return {
+        _id: p._id,
+        text: p.text,
+        images: p.images,
+        video: p.video,
+        createdAt: p.createdAt,
+        author: p.user,
+        promotedBy: p.promotedBy || null,
+        promotedUntil: p.promotedUntil,
+        promotionReference: p.promotionReference,
+        promotionSource: p.promotionSource || "paid",
+        promotionTier: p.promotionTier,
+        promotionTargeting: p.promotionTargeting,
+        impressions: p.promotionImpressions ?? 0,
+        clicks: p.promotionClicks ?? 0,
+        ctaClicks: p.ctaClicks ?? 0,
+        ctaType: p.ctaType ?? null,
+        destinationUrl: p.destinationUrl ?? null,
+        impressionCap: tierConfig?.impressionCap ?? null,
+        status,
+      };
+    });
+
+    res.status(200).json({
+      promotions,
+      total,
+      page,
+      limit,
+      hasMore: skip + posts.length < total,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // GET /posts/promote/verify/:reference
 export const verifyPromotion = async (req, res) => {
   try {

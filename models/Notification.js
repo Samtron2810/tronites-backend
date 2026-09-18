@@ -75,6 +75,13 @@ const notificationSchema = new mongoose.Schema(
         // notifications page renders "The Tronites team" for this type).
         // message: human-readable duration/summary copy.
         "post_admin_promoted",
+        // Same promotion-management surface — the acting moderator/admin
+        // force-cancelled (adminCancelPromotion) or extended
+        // (adminExtendPromotion) this post's promotion. sender: the acting
+        // admin/moderator, rendered generically as "The Tronites team".
+        // message: human-readable summary copy.
+        "post_promotion_cancelled",
+        "post_promotion_extended",
       ],
       required: true,
     },

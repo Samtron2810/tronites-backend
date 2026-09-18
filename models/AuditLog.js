@@ -36,6 +36,10 @@ export const AUDIT_ACTIONS = [
   // Free promotion granted by a moderator/admin (no Paystack charge) —
   // see controllers/promotedPostController.js's adminPromotePost.
   "post_admin_promoted",
+  // Promotion lifecycle on the same admin/moderator comp surface —
+  // force-cancel (adminCancelPromotion) and extend (adminExtendPromotion).
+  "post_promotion_cancelled",
+  "post_promotion_extended",
 ];
 
 const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];

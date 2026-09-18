@@ -3,7 +3,11 @@ import protect from "../middleware/authMiddleware.js";
 import requireModerator from "../middleware/requireModerator.js";
 import requirePermission from "../middleware/requirePermission.js";
 import { validate } from "../utils/validators.js";
-import { promotePostSchema, adminPromotePostSchema } from "../utils/validators.js";
+import {
+  promotePostSchema,
+  adminPromotePostSchema,
+  adminExtendPromotionSchema,
+} from "../utils/validators.js";
 import {
   getPromotionFees,
   initiatePromotion,
@@ -14,6 +18,9 @@ import {
   recordClick,
   recordCtaClick,
   adminPromotePost,
+  adminCancelPromotion,
+  adminExtendPromotion,
+  adminListPromotions,
 } from "../controllers/promotedPostController.js";
 
 // Paid post promotion (business tier). Mounted by index.js at
@@ -23,6 +30,16 @@ import {
 const router = express.Router();
 
 router.get("/fees", protect, getPromotionFees);
+// Moderator/admin promotions-management list — literal /admin/all, must sit
+// above /admin/:postId (POST) is fine since methods differ, but keep it
+// grouped with the other /admin/* routes below for readability.
+router.get(
+  "/admin/all",
+  protect,
+  requireModerator,
+  requirePermission("manage_content"),
+  adminListPromotions,
+);
 router.get("/my-promotions", protect, getMyPromotions);
 router.post("/initiate", protect, validate(promotePostSchema), initiatePromotion);
 router.get("/verify/:reference", protect, verifyPromotion);
@@ -43,6 +60,25 @@ router.post(
   requirePermission("manage_content"),
   validate(adminPromotePostSchema),
   adminPromotePost,
+);
+// Force-cancel any promotion (active or pending), regardless of owner —
+// the moderation team's "pull the ad" lever. Same permission gate as the
+// comp grant above.
+router.delete(
+  "/admin/cancel/:postId",
+  protect,
+  requireModerator,
+  requirePermission("manage_content"),
+  adminCancelPromotion,
+);
+// Extend an already-active promotion by N days.
+router.put(
+  "/admin/extend/:postId",
+  protect,
+  requireModerator,
+  requirePermission("manage_content"),
+  validate(adminExtendPromotionSchema),
+  adminExtendPromotion,
 );
 
 export default router;

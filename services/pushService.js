@@ -78,6 +78,24 @@ const buildNotificationCopy = (notif) => {
         title: "🎉 New subscriber!",
         body: notif.message || `${actor} subscribed to your channel`,
       };
+    // Promotion updates (admin/moderator comps) — always-delivered system
+    // notifications, so they're omitted from TYPE_TO_PREF_KEY like
+    // creator_tip/subscribe.
+    case "post_admin_promoted":
+      return {
+        title: "⚡ Your post was promoted",
+        body: notif.message || "The Tronites team boosted your post",
+      };
+    case "post_promotion_extended":
+      return {
+        title: "⚡ Promotion extended",
+        body: notif.message || "Your post's promotion was extended",
+      };
+    case "post_promotion_cancelled":
+      return {
+        title: "⚡ Promotion ended",
+        body: notif.message || "Your post's promotion was ended by the Tronites team",
+      };
     default:
       return { title: "Tronites", body: "You have a new notification" };
   }

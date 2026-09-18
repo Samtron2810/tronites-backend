@@ -678,6 +678,13 @@ export const adminPromotePostSchema = z.object({
   destinationUrl: z.string().url("Destination URL must be a valid URL").max(2000).nullable().optional(),
 });
 
+// Admin/moderator promotion extension — adds `days` to an already-active
+// promotion's expiry. Same 1-30 ceiling as adminPromotePostSchema, applied
+// to the ADDED days (see adminExtendPromotion), not the resulting total.
+export const adminExtendPromotionSchema = z.object({
+  days: z.number().int().min(1).max(30),
+});
+
 export const collabStatusSchema = z.object({
   openToCollabs: z.boolean(),
 });
