@@ -2,6 +2,7 @@ import Message from "../models/Message.js";
 import User from "../models/User.js";
 import Conversation from "../models/Conversation.js";
 import cloudinary from "../utils/cloudinary.js";
+import { publicIdFromImageUrl } from "../utils/cloudinaryAsset.js";
 import { emitToUser } from "../socket/socket.js";
 
 // Chat-video captions: same 30-second cap as post videos (the Cloudinary
@@ -943,15 +944,15 @@ export const deleteMessage = async (req, res) => {
     ];
     await Promise.all(
       imageUrls.map(async (url) => {
+        // Shared extractor (utils/cloudinaryAsset.js): tolerates the
+        // versioned/unversioned signed-upload URL forms and also a
+        // { url, altText } entry, in case the message image shape ever
+        // follows Post.images. A null result means "nothing to delete",
+        // not an error.
+        const publicId = publicIdFromImageUrl(url);
+        if (!publicId) return;
         try {
-          // Extract the filename-based public ID. Cloudinary secure_urls from
-          // signed uploads look like:
-          //   .../upload/tronites_messages/abc123.jpg   (no version)
-          //   .../upload/v1234567890/tronites_messages/abc123.jpg  (with version)
-          // In both cases the last path segment is the filename; stripping
-          // the extension gives the public ID leaf, and we prefix the folder.
-          const leaf = url.split("/").pop().split(".")[0];
-          await cloudinary.uploader.destroy(`tronites_messages/${leaf}`);
+          await cloudinary.uploader.destroy(`tronites_messages/${publicId}`);
         } catch (err) {
           console.log("Cloudinary message image delete failed:", err.message);
         }

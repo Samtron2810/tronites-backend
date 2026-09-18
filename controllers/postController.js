@@ -5,6 +5,7 @@ import User from "../models/User.js";
 import Comment from "../models/Comment.js";
 import Notification from "../models/Notification.js";
 import cloudinary from "../utils/cloudinary.js";
+import { publicIdFromImageUrl } from "../utils/cloudinaryAsset.js";
 import { io, emitToUser, emitToFollowersOf } from "../socket/socket.js";
 import {
   getOrSetCache,
@@ -2540,12 +2541,17 @@ export const deletePost = async (req, res) => {
     }
 
     // Delete Cloudinary image(s) safely — deleted in parallel and
-    // independently so one failure doesn't block the others.
+    // independently so one failure doesn't block the others. Each entry is
+    // a { url, altText } subdocument, and legacy posts may still hold plain
+    // URL strings, so the public ID comes from the shared extractor rather
+    // than from splitting the entry itself (which used to throw
+    // "url.split is not a function" on subdocuments and skip every delete).
     const urlsToDelete = post.images || [];
     await Promise.all(
-      urlsToDelete.map(async (url) => {
+      urlsToDelete.map(async (image) => {
+        const publicId = publicIdFromImageUrl(image);
+        if (!publicId) return;
         try {
-          const publicId = url.split("/").slice(-1)[0].split(".")[0];
           await cloudinary.uploader.destroy(`tronites_posts/${publicId}`);
         } catch (err) {
           console.log("Cloudinary delete failed:", err.message);

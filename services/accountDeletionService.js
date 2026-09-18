@@ -7,6 +7,7 @@ import Conversation from "../models/Conversation.js";
 import Report from "../models/Report.js";
 import Session from "../models/Session.js";
 import cloudinary from "../utils/cloudinary.js";
+import { publicIdFromImageUrl } from "../utils/cloudinaryAsset.js";
 import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
 import { removeAllLikesForPost, removeAllLikesForUser } from "./likeService.js";
 import { removeAllBookmarksForPost, removeAllBookmarksForUser } from "./bookmarkService.js";
@@ -53,13 +54,14 @@ const destroyCloudinaryAsset = async (publicId, resourceType = "image") => {
   }
 };
 
-const publicIdFromUrl = (url) => {
-  try {
-    return url.split("/").slice(-1)[0].split(".")[0];
-  } catch {
-    return null;
-  }
-};
+// Public-ID extraction for the URL-referenced assets below (post images,
+// message images, profile picture) lives in utils/cloudinaryAsset.js —
+// shared with postController.deletePost and messageController.deleteMessage
+// so all three delete paths agree on which entry shapes they accept. That
+// matters here specifically: Post.images entries are { url, altText }
+// subdocuments, and the old string-only split() threw on them, got swallowed
+// by the catch it used to have, and silently skipped every post-image
+// destroy during a purge.
 
 // STEP 2 of 2 — hard delete + full cascade. Called by
 // jobs/purgeDeletedAccounts.js once deletedAt is older than
@@ -82,8 +84,8 @@ export const hardDeleteAccount = async (userId) => {
 
   for (const post of posts) {
     await Promise.all(
-      (post.images || []).map(async (url) => {
-        const publicId = publicIdFromUrl(url);
+      (post.images || []).map(async (image) => {
+        const publicId = publicIdFromImageUrl(image);
         if (publicId) await destroyCloudinaryAsset(`tronites_posts/${publicId}`);
       }),
     );
@@ -142,12 +144,12 @@ export const hardDeleteAccount = async (userId) => {
     messages.map(async (m) => {
       // Legacy single-image field
       if (m.image) {
-        const publicId = publicIdFromUrl(m.image);
+        const publicId = publicIdFromImageUrl(m.image);
         if (publicId) await destroyCloudinaryAsset(`tronites_messages/${publicId}`);
       }
       // Multi-image array
-      for (const url of m.images || []) {
-        const publicId = publicIdFromUrl(url);
+      for (const image of m.images || []) {
+        const publicId = publicIdFromImageUrl(image);
         if (publicId) await destroyCloudinaryAsset(`tronites_messages/${publicId}`);
       }
       // Video and voice use stored publicId directly
@@ -201,7 +203,7 @@ export const hardDeleteAccount = async (userId) => {
 
   // ── Profile picture.
   if (user.profilePic) {
-    const publicId = publicIdFromUrl(user.profilePic);
+    const publicId = publicIdFromImageUrl(user.profilePic);
     if (publicId) await destroyCloudinaryAsset(`tronites_profiles/${publicId}`);
   }
 
