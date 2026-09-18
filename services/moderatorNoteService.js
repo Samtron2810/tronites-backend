@@ -18,7 +18,9 @@ const httpError = (statusCode, message) => {
 };
 
 export const addModeratorNote = async ({ userId, authorId, body }) => {
-  const target = await User.findById(userId).select("_id");
+  // name/username ride along so the caller can snapshot a meaningful
+  // audit target without a second round-trip.
+  const target = await User.findById(userId).select("_id name username");
   if (!target) throw httpError(404, "User not found.");
 
   const note = await ModeratorNote.create({
@@ -26,7 +28,11 @@ export const addModeratorNote = async ({ userId, authorId, body }) => {
     author: authorId,
     body,
   });
-  return note.populate("author", "name username profilePic verifications isVerified");
+  const populated = await note.populate(
+    "author",
+    "name username profilePic verifications isVerified",
+  );
+  return { note: populated, target };
 };
 
 export const listModeratorNotes = async (userId) => {
@@ -47,7 +53,15 @@ export const deleteModeratorNote = async ({ noteId, requesterId, requesterRole }
     throw httpError(403, "You can only delete your own notes.");
   }
 
+  // The row is hard-deleted, so the target is snapshotted BEFORE it goes -
+  // the audit entry is the only record that survives this call.
+  const target = await User.findById(note.user)
+    .select("_id name username")
+    .lean();
+
   await note.deleteOne();
+
+  return { note, target };
 };
 
 // GET /admin/users/:id/case-history — everything a moderator needs to

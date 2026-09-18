@@ -40,6 +40,11 @@ export const AUDIT_ACTIONS = [
   // force-cancel (adminCancelPromotion) and extend (adminExtendPromotion).
   "post_promotion_cancelled",
   "post_promotion_extended",
+  // Phase 7 (roadmap 3.6) - moderator notes. Notes are moderator-only free
+  // text and deleting one is a hard delete, so these two entries are the
+  // only surviving record of what was written or removed.
+  "moderator_note_added",
+  "moderator_note_deleted",
 ];
 
 const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];

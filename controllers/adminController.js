@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import User, { DEFAULT_MODERATOR_PERMISSIONS } from "../models/User.js";
+import Report from "../models/Report.js";
 import Notification from "../models/Notification.js";
 import AuditLog, { AUDIT_ACTIONS } from "../models/AuditLog.js";
 import { toAdminUserDTO } from "../dtos/userDTO.js";
@@ -469,42 +470,87 @@ export const unrestrictUser = async (req, res) => {
 
 // --- Audit log (Phase 3) -----------------------------------------------------
 
-// GET /admin/audit � requireAdmin. Paginated, filterable read over the
-// append-only AuditLog collection. Query params:
-//   limit=50 (1�100)  offset=0  sort=-createdAt|createdAt
+// Target types the trail can point at. Mirrors AUDIT_TARGET_TYPES in
+// models/AuditLog.js; kept as a local list here so an unknown ?targetType=
+// value is ignored rather than silently matching nothing.
+const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];
+
+// YYYY-MM-DD (what <input type="date"> submits) -> a UTC instant. "from"
+// opens at 00:00:00.000Z and "to" closes at 23:59:59.999Z, so a single-day
+// filter covers that whole day instead of an empty half-open range.
+// Anything not matching the pattern returns null and is ignored, rather
+// than becoming an Invalid Date that would poison the query.
+const parseAuditDay = (value, endOfDay) => {
+  const raw = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const parsed = new Date(`${raw}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+// One filter builder shared by the list, the CSV export, so a downloaded
+// file can never disagree with the table it was exported from.
+const buildAuditFilter = (query = {}) => {
+  const filter = {};
+
+  if (query.action) {
+    const actions = String(query.action)
+      .split(",")
+      .map((a) => a.trim())
+      .filter((a) => AUDIT_ACTIONS.includes(a));
+    if (actions.length) filter.action = { $in: actions };
+  }
+
+  if (AUDIT_TARGET_TYPES.includes(query.targetType)) {
+    filter["target.type"] = query.targetType;
+  }
+
+  if (query.actor && mongoose.isValidObjectId(query.actor)) {
+    filter["actor._id"] = new mongoose.Types.ObjectId(query.actor);
+  }
+
+  const from = parseAuditDay(query.from, false);
+  const to = parseAuditDay(query.to, true);
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = from;
+    if (to) filter.createdAt.$lte = to;
+  }
+
+  return filter;
+};
+
+// CSV cell: always quoted, inner quotes doubled (RFC 4180). Audit reasons
+// and note bodies are free text, so a bare comma or newline would
+// otherwise shift every later column.
+const csvCell = (value) => {
+  if (value === null || value === undefined) return '""';
+  return `"${String(value).replace(/"/g, '""')}"`;
+};
+
+// GET /admin/audit -- requirePermission("view_audit_log"). Paginated,
+// filterable read over the append-only AuditLog collection.
+// Query params:
+//   page=1   limit=50 (1..100)   offset=0 (wins over page when supplied)
+//   sort=-createdAt|createdAt
 //   action=user_suspended,user_banned   (CSV; unknown values ignored)
 //   targetType=user|post|comment|message|report
 //   actor=<userId>
+//   from=YYYY-MM-DD  to=YYYY-MM-DD      (UTC day boundaries, inclusive)
 export const listAuditLogs = async (req, res) => {
   try {
     const limit = Math.min(
       Math.max(parseInt(req.query.limit, 10) || 50, 1),
       100,
     );
-    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    // offset stays supported (it is what the pre-page-number UI sent);
+    // page is simply the default way to express it now.
+    const requestedOffset = parseInt(req.query.offset, 10);
+    const offset = Number.isNaN(requestedOffset)
+      ? (page - 1) * limit
+      : Math.max(requestedOffset, 0);
 
-    const filter = {};
-
-    if (req.query.action) {
-      const actions = String(req.query.action)
-        .split(",")
-        .map((a) => a.trim())
-        .filter((a) => AUDIT_ACTIONS.includes(a));
-      if (actions.length) filter.action = { $in: actions };
-    }
-
-    if (
-      ["user", "post", "comment", "message", "report"].includes(
-        req.query.targetType,
-      )
-    ) {
-      filter["target.type"] = req.query.targetType;
-    }
-
-    if (req.query.actor && mongoose.isValidObjectId(req.query.actor)) {
-      filter["actor._id"] = new mongoose.Types.ObjectId(req.query.actor);
-    }
-
+    const filter = buildAuditFilter(req.query);
     const sortDirection = req.query.sort === "createdAt" ? 1 : -1;
 
     const [logs, total] = await Promise.all([
@@ -521,8 +567,220 @@ export const listAuditLogs = async (req, res) => {
       total,
       limit,
       offset,
+      currentPage: Math.floor(offset / limit) + 1,
+      totalPages: Math.ceil(total / limit),
       hasMore: offset + logs.length < total,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /admin/audit/export -- same filters as listAuditLogs, the WHOLE
+// matching set as CSV (no pagination cap: an export that silently stopped
+// at the first page would be worse than useless). Mirrors the attachment
+// pattern already used by adCampaignController.exportCampaignReport.
+export const exportAuditLogs = async (req, res) => {
+  try {
+    const filter = buildAuditFilter(req.query);
+    const sortDirection = req.query.sort === "createdAt" ? 1 : -1;
+
+    const logs = await AuditLog.find(filter)
+      .sort({ createdAt: sortDirection })
+      .lean();
+
+    const header = [
+      "When (UTC)",
+      "Action",
+      "Actor name",
+      "Actor username",
+      "Actor role",
+      "Actor ID",
+      "Target type",
+      "Target ref",
+      "Target snapshot",
+      "Detail",
+      "IP",
+      "User agent",
+    ];
+
+    const rows = logs.map((log) => [
+      log.createdAt ? new Date(log.createdAt).toISOString() : "",
+      log.action,
+      log.actor?.name || "",
+      log.actor?.username || "",
+      log.actor?.role || "",
+      log.actor?._id ? String(log.actor._id) : "",
+      log.target?.type || "",
+      log.target?.ref ? String(log.target.ref) : "",
+      JSON.stringify(log.target?.snapshot || {}),
+      JSON.stringify(log.detail || {}),
+      log.ip || "",
+      log.userAgent || "",
+    ]);
+
+    const csv = [header, ...rows]
+      .map((row) => row.map(csvCell).join(","))
+      .join("\r\n");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="moderation-audit-log-${new Date().toISOString().slice(0, 10)}.csv"`,
+    );
+    res.status(200).send(csv);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /admin/audit/pre-audit-resolutions -- requirePermission("view_audit_log").
+// The AuditLog collection only starts at Phase 3; resolutions performed
+// before then survive solely on the Report rows themselves
+// (status/resolvedBy/resolvedAt/resolutionNote). This reads those rows and
+// flags which have NO corresponding report_resolved audit entry, so the gap
+// is visible instead of silent. Read-only: nothing is inserted.
+export const listPreAuditResolutions = async (req, res) => {
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 50, 1),
+      100,
+    );
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const filter = { resolvedAt: { $ne: null } };
+
+    const [reports, total] = await Promise.all([
+      Report.find(filter)
+        .sort({ resolvedAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .populate("resolvedBy", "name username role")
+        .lean(),
+      Report.countDocuments(filter),
+    ]);
+
+    // One extra query instead of N -- { "target.type": 1, "target.ref": 1 }
+    // is already indexed on AuditLog (see models/AuditLog.js).
+    const loggedRows = reports.length
+      ? await AuditLog.find({
+          action: "report_resolved",
+          "target.type": "report",
+          "target.ref": { $in: reports.map((r) => r._id) },
+        })
+          .select("target.ref")
+          .lean()
+      : [];
+    const logged = new Set(loggedRows.map((row) => String(row.target.ref)));
+
+    res.status(200).json({
+      reports: reports.map((r) => ({
+        ...r,
+        loggedInAuditTrail: logged.has(String(r._id)),
+      })),
+      total,
+      limit,
+      offset,
+      hasMore: offset + reports.length < total,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /admin/audit/gaps -- requirePermission("view_audit_log"). The inverse
+// of the trail: restriction state that exists on User rows but has NO
+// covering audit entry of any kind. This is the honest answer for the
+// pre-Phase-3 suspensions -- their actor and application time were never
+// stored anywhere, and every audit row requires a real actor (actor._id is
+// required), so nothing can reconstruct them. What CAN be done is to stop
+// the silence from being invisible. Read-only.
+export const listAuditGaps = async (req, res) => {
+  try {
+    const restricted = await User.find({
+      $or: [
+        { banned: true },
+        { suspendedUntil: { $ne: null } },
+        { shadowRanked: true },
+      ],
+    })
+      .select(
+        "_id name username role banned suspendedUntil restrictionReason shadowRanked strikes",
+      )
+      .lean();
+
+    const ids = restricted.map((u) => u._id);
+    const coveredRows = ids.length
+      ? await AuditLog.find({
+          "target.type": "user",
+          "target.ref": { $in: ids },
+          action: {
+            $in: [
+              "user_suspended",
+              "user_auto_suspended",
+              "user_banned",
+              "user_auto_banned",
+              "user_shadow_ranked",
+              "user_shadow_rank_lifted",
+            ],
+          },
+        })
+          .select("target.ref action")
+          .lean()
+      : [];
+
+    const covered = new Map();
+    for (const row of coveredRows) {
+      const key = String(row.target.ref);
+      if (!covered.has(key)) covered.set(key, new Set());
+      covered.get(key).add(row.action);
+    }
+
+    const gaps = restricted
+      .map((u) => {
+        const actions = covered.get(String(u._id)) || new Set();
+        // A shadow-rank entry must not mask an unlogged ban, so each
+        // restriction is matched against its own action family.
+        const expected = [];
+        if (u.banned) expected.push("user_banned", "user_auto_banned");
+        if (u.suspendedUntil) {
+          expected.push("user_suspended", "user_auto_suspended");
+        }
+        if (u.shadowRanked) expected.push("user_shadow_ranked");
+
+        const missing = expected.filter((a) => !actions.has(a));
+        return {
+          user: {
+            _id: u._id,
+            name: u.name,
+            username: u.username,
+            role: u.role,
+            banned: !!u.banned,
+            suspendedUntil: u.suspendedUntil || null,
+            restrictionReason: u.restrictionReason || "",
+            shadowRanked: !!u.shadowRanked,
+            strikeCount: (u.strikes || []).length,
+          },
+          missing,
+          attributable: false,
+          note:
+            "No actor or application time was recorded for this state, and none is recoverable -- it predates the audit trail. Shown so the gap is visible; nothing has been invented.",
+        };
+      })
+      .filter((g) => g.missing.length > 0)
+      // Oldest restriction first: a long-standing unlogged suspension is
+      // the more interesting one.
+      .sort((a, b) => {
+        const at = a.user.suspendedUntil
+          ? new Date(a.user.suspendedUntil).getTime()
+          : 0;
+        const bt = b.user.suspendedUntil
+          ? new Date(b.user.suspendedUntil).getTime()
+          : 0;
+        return at - bt;
+      });
+
+    res.status(200).json({ gaps, total: gaps.length });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -27,6 +27,9 @@ import {
   updateUserPermissions,
   bulkUpdateUsers,
   listAuditLogs,
+  exportAuditLogs,
+  listPreAuditResolutions,
+  listAuditGaps,
   grantVerification,
   revokeVerification,
   setShadowRank,
@@ -97,6 +100,29 @@ router.put(
 // permission gate; moderators can be granted view_audit_log explicitly
 // (the checkbox in Manage roles). Plain users fail both checks.
 router.get("/audit", protect, requirePermission("view_audit_log"), listAuditLogs);
+
+// Pre-Phase-3 history, plus the two read-only gap surfaces and the CSV
+// export. Same view_audit_log gate as the trail itself; none of them write
+// anything. Kept as literal paths (never "/audit/:sub") so an entry id can
+// never collide with a sub-resource name.
+router.get(
+  "/audit/pre-audit-resolutions",
+  protect,
+  requirePermission("view_audit_log"),
+  listPreAuditResolutions,
+);
+router.get(
+  "/audit/gaps",
+  protect,
+  requirePermission("view_audit_log"),
+  listAuditGaps,
+);
+router.get(
+  "/audit/export",
+  protect,
+  requirePermission("view_audit_log"),
+  exportAuditLogs,
+);
 
 // Phase 5 -- set a moderator's explicit permission array (admin only,
 // whole-array replacement). See updateUserPermissions for the guards.
