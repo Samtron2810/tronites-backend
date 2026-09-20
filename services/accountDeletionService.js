@@ -6,6 +6,12 @@ import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import Report from "../models/Report.js";
 import Session from "../models/Session.js";
+import PushSubscription from "../models/PushSubscription.js";
+import SavedSearch from "../models/SavedSearch.js";
+import Appeal from "../models/Appeal.js";
+import VerificationRequest from "../models/VerificationRequest.js";
+import { CreatorBankAccount } from "../models/CreatorPayout.js";
+import { CreatorPlan, CreatorSubscription } from "../models/CreatorSubscription.js";
 import cloudinary from "../utils/cloudinary.js";
 import { publicIdFromImageUrl } from "../utils/cloudinaryAsset.js";
 import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
@@ -42,6 +48,13 @@ export const softDeleteAccount = async (userId) => {
   // shouldn't stay logged in on other devices just because the purge
   // hasn't run yet.
   await revokeAllSessions(userId);
+  // Stop recurring charges immediately — a deactivated account (as
+  // subscriber OR creator) must not keep being billed by the nightly
+  // renewal job while it waits out the grace window.
+  await CreatorSubscription.updateMany(
+    { $or: [{ subscriber: userId }, { creator: userId }], status: "active" },
+    { $set: { status: "cancelled" } },
+  );
 };
 
 const destroyCloudinaryAsset = async (publicId, resourceType = "image") => {
@@ -200,6 +213,24 @@ export const hardDeleteAccount = async (userId) => {
   // the (very unlikely) gap between soft-delete and purge — e.g. a
   // support-assisted reactivation-then-re-deletion in the same window.
   await Session.deleteMany({ user: userId });
+
+  // ── Personal-data records the Privacy Policy promises to erase.
+  // Deliberately NOT deleted (retained for accounting / legal / safety,
+  // see Privacy Policy §Data retention): VerificationPayment, CreatorTip
+  // (tip + subscription charge ledger), CreatorPayout transfer records,
+  // AdCampaign payment records, AuditLog and ModeratorNote.
+  await Promise.all([
+    PushSubscription.deleteMany({ user: userId }),
+    SavedSearch.deleteMany({ user: userId }),
+    Appeal.deleteMany({ user: userId }),
+    VerificationRequest.deleteMany({ user: userId }),
+    CreatorBankAccount.deleteMany({ creator: userId }),
+    CreatorPlan.deleteMany({ creator: userId }),
+    // Also drops the stored Paystack authorization code.
+    CreatorSubscription.deleteMany({
+      $or: [{ subscriber: userId }, { creator: userId }],
+    }),
+  ]);
 
   // ── Profile picture.
   if (user.profilePic) {
