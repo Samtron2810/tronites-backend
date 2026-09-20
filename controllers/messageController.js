@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Message from "../models/Message.js";
 import User from "../models/User.js";
 import Conversation from "../models/Conversation.js";
@@ -1197,131 +1198,140 @@ export const markConversationRead = async (req, res) => {
   }
 };
 
-// SEARCH MESSAGES — full-text search over the CALLER's own message
-// history only. `participants: currentUserId` is mandatory and always
-// AND'd in first, so this can never leak another pair's conversation
-// regardless of what filters are passed — a $text search with no
-// participants scoping would otherwise search every message in the
-// database. `from` here means "the other participant in the thread",
-// resolved to a userId and required to be a conversation partner (not
-// an arbitrary global user filter like posts/comments' `from`).
+// SEARCH MESSAGES — over the CALLER's own message history only.
+//
+// Two modes:
+//  - Scoped (`userId` param): search inside ONE conversation. Scoped by
+//    conversationId (derived from caller + userId, so it can never reach
+//    another pair's thread) — this is what the in-chat search box uses.
+//  - Global (no `userId`): search every message the caller sent/received,
+//    optionally matching the other participant's name/username too.
+//
+// Body matching uses an escaped, case-insensitive substring regex rather
+// than $text: $text only matches whole stemmed words ("hel" never finds
+// "hello"), silently drops stop-words, and throws when combined with other
+// $or branches. Scoping by sender/receiver/conversationId (not the newer
+// `participants` field) also keeps legacy messages searchable.
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 export const searchMessages = async (req, res) => {
   try {
     const currentUserId = req.user._id;
-    const query = String(req.query.q || "").trim();
+    const query = String(req.query.q || "").trim().slice(0, 100);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 15, 1), 30);
+
+    const partnerId = req.query.userId ? String(req.query.userId) : null;
+    if (partnerId && !mongoose.Types.ObjectId.isValid(partnerId)) {
+      return res.status(400).json({ message: "Invalid userId." });
+    }
+    if (partnerId && partnerId === currentUserId.toString()) {
+      return res.status(400).json({ message: "Cannot search a conversation with yourself." });
+    }
+
     const cursorTime =
       req.query.afterTime !== undefined ? new Date(req.query.afterTime) : null;
-    const cursorId = req.query.afterId || null;
+    const cursorId = req.query.afterId ? String(req.query.afterId) : null;
     const hasCursor =
-      cursorTime && !Number.isNaN(cursorTime.getTime()) && cursorId;
+      cursorTime &&
+      !Number.isNaN(cursorTime.getTime()) &&
+      cursorId &&
+      mongoose.Types.ObjectId.isValid(cursorId);
 
     const { fromUserId, startDate, endDate, hasMedia } = await parseSearchFilters(req.query);
     const hasFilters = fromUserId || startDate || endDate || hasMedia !== null;
 
-    if (query.length > 0 && query.length < 2) {
-      return res.status(200).json({ messages: [], hasMore: false });
+    const minLen = partnerId ? 1 : 2;
+    const hasTextQuery = query.length >= minLen;
+
+    if (query.length > 0 && !hasTextQuery) {
+      return res.status(200).json({ messages: [], hasMore: false, nextCursor: null });
     }
-    if (query.length === 0 && !hasFilters) {
-      return res.status(200).json({ messages: [], hasMore: false });
+    if (!hasTextQuery && !hasFilters && !partnerId) {
+      return res.status(200).json({ messages: [], hasMore: false, nextCursor: null });
+    }
+    if (!hasTextQuery && partnerId && !hasFilters) {
+      return res.status(200).json({ messages: [], hasMore: false, nextCursor: null });
     }
 
-    const hasTextQuery = query.length >= 2;
+    const and = [
+      partnerId
+        ? { conversationId: getConversationId(currentUserId, partnerId) }
+        : { $or: [{ sender: currentUserId }, { receiver: currentUserId }] },
+      { removedAt: null },
+    ];
 
-    // Typing a person's name/username in the search box is the more
-    // natural expectation ("find my chat with Sam") than typing exact
-    // words from a message body — regex against name/username (not
-    // $text, since these are short strings a partial/prefix match
-    // should hit) resolves any of the caller's OTHER participants whose
-    // name or username contains the query. Combined via $or with the
-    // existing $text body search below, so one search box covers both
-    // "who did I talk to" and "what did we say".
-    let nameMatchedUserIds = [];
-    if (hasTextQuery) {
-      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const nameMatches = await User.find({
+    if (fromUserId && !partnerId) {
+      and.push({
         $or: [
-          { name: { $regex: escaped, $options: "i" } },
-          { username: { $regex: escaped, $options: "i" } },
+          { sender: currentUserId, receiver: fromUserId },
+          { sender: fromUserId, receiver: currentUserId },
         ],
-      }).select("_id");
-      nameMatchedUserIds = nameMatches.map((u) => u._id);
+      });
+    }
+    if (startDate || endDate) and.push(dateRangeFilter(startDate, endDate));
+    if (hasMedia !== null) and.push(hasMediaFilter(hasMedia));
+
+    if (hasTextQuery) {
+      const escaped = escapeRegex(query);
+      const textOr = [{ text: { $regex: escaped, $options: "i" } }];
+
+      // Global mode: typing a person's name/username also surfaces the
+      // caller's messages with that person.
+      if (!partnerId) {
+        const nameMatches = await User.find({
+          _id: { $ne: currentUserId },
+          $or: [
+            { name: { $regex: escaped, $options: "i" } },
+            { username: { $regex: escaped, $options: "i" } },
+          ],
+        })
+          .select("_id")
+          .limit(50)
+          .lean();
+        const ids = nameMatches.map((u) => u._id);
+        if (ids.length) {
+          textOr.push({ sender: { $in: ids } }, { receiver: { $in: ids } });
+        }
+      }
+      and.push({ $or: textOr });
     }
 
-    const baseFilter = {
-      participants: currentUserId,
-      removedAt: null,
-      ...(fromUserId ? { participants: { $all: [currentUserId, fromUserId] } } : {}),
-      ...dateRangeFilter(startDate, endDate),
-      ...hasMediaFilter(hasMedia),
-    };
+    if (hasCursor) {
+      and.push({
+        $or: [
+          { createdAt: { $lt: cursorTime } },
+          { createdAt: cursorTime, _id: { $lt: cursorId } },
+        ],
+      });
+    }
 
-    const filter = hasTextQuery
-      ? {
-          ...baseFilter,
-          $or: [
-            { $text: { $search: query } },
-            ...(nameMatchedUserIds.length
-              ? [
-                  {
-                    $and: [
-                      { participants: { $in: nameMatchedUserIds } },
-                      { participants: currentUserId },
-                    ],
-                  },
-                ]
-              : []),
-          ],
-        }
-      : baseFilter;
-
-    const MAX_SEARCH_CANDIDATES = 500;
-    // $or with $text can't be scored via $meta("textScore") on every
-    // branch reliably across driver versions, so name-matched results
-    // (which have no textScore) sort by recency alongside body-matched
-    // ones — sorting purely by createdAt whenever the query also
-    // matched a person keeps both kinds of hits in one sane order
-    // rather than crashing on a missing score field.
-    const candidates = await Message.find(filter)
+    const rows = await Message.find({ $and: and })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit + 1)
       .populate("sender", "name username profilePic verifications isVerified")
       .populate("receiver", "name username profilePic verifications isVerified")
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(MAX_SEARCH_CANDIDATES);
+      .lean();
 
-    // Cursor is always time-based here (not score-based like posts/
-    // comments) — chat search results read best in chronological
-    // order per thread, and mixing relevance-order with pagination is
-    // more confusing than useful for a "find that message" use case.
-    const filtered = hasCursor
-      ? candidates.filter((m) => {
-          const t = m.createdAt.getTime();
-          const ct = cursorTime.getTime();
-          if (t < ct) return true;
-          if (t === ct) return m._id.toString() < cursorId;
-          return false;
-        })
-      : candidates;
+    const hasMore = rows.length > limit;
+    const messages = hasMore ? rows.slice(0, limit) : rows;
 
-    const hasMore = filtered.length > limit;
-    const messages = hasMore ? filtered.slice(0, limit) : filtered;
-
+    const me = currentUserId.toString();
     const formatted = messages.map((m) => ({
-      ...m._doc,
-      otherUser:
-        m.sender._id.toString() === currentUserId.toString() ? m.receiver : m.sender,
+      ...m,
+      otherUser: m.sender?._id?.toString() === me ? m.receiver : m.sender,
     }));
 
+    const last = messages[messages.length - 1];
     res.status(200).json({
       messages: formatted,
       hasMore,
-      nextCursor: hasMore
-        ? {
-            afterTime: messages[messages.length - 1].createdAt.toISOString(),
-            afterId: messages[messages.length - 1]._id,
-          }
-        : null,
+      nextCursor:
+        hasMore && last
+          ? { afterTime: new Date(last.createdAt).toISOString(), afterId: last._id }
+          : null,
     });
   } catch (error) {
+    console.error("SEARCH MESSAGES ERROR:", error);
     res.status(500).json({ message: error.message });
   }
 };
