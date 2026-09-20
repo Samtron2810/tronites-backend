@@ -41,6 +41,7 @@ import { flagRepeatOffenders } from "./jobs/flagRepeatOffenders.js";
 import { detectSpamClusters } from "./jobs/detectSpamClusters.js";
 import { computeForYouSignals } from "./jobs/computeForYouSignals.js";
 import { expireVerifications } from "./jobs/expireVerifications.js";
+import { purgeVerificationData } from "./jobs/purgeVerificationData.js";
 import { publishScheduledPosts } from "./jobs/publishScheduledPosts.js";
 import { runPostPerformanceNudge } from "./jobs/postPerformanceNudge.js";
 import { runBadgeRenewalReminder } from "./jobs/badgeRenewalReminder.js";
@@ -242,6 +243,14 @@ const startServer = async () => {
     FOR_YOU_SIGNALS_INTERVAL_MS,
   );
 
+  // Deletes resolved verification applications 12 months after the
+  // decision (Privacy Policy §Identity verification). Daily is plenty.
+  purgeVerificationData();
+  const purgeVerificationDataInterval = setInterval(
+    purgeVerificationData,
+    FOR_YOU_SIGNALS_INTERVAL_MS,
+  );
+
   // Creator tools — publish scheduled posts every 60 seconds. Finds
   // any Post with scheduledFor <= now and flips it to null (live).
   publishScheduledPosts();
@@ -292,6 +301,7 @@ const startServer = async () => {
       clearInterval(spamClusterInterval);
       clearInterval(forYouSignalsInterval);
       clearInterval(expireVerificationsInterval);
+      clearInterval(purgeVerificationDataInterval);
       clearInterval(scheduledPostsInterval);
       clearInterval(performanceNudgeInterval);
       clearInterval(badgeRenewalInterval);
