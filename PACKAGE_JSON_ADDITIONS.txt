@@ -1,0 +1,7 @@
+Add to backend/package.json's devDependencies (test script "vitest run" already exists, no change needed there):
+
+  "mongodb-memory-server": "^10.1.2",
+  "supertest": "^7.0.0"
+
+Install: npm install --save-dev mongodb-memory-server supertest
+Run: npm test

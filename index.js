@@ -23,6 +23,8 @@ import adminRoutes from "./routes/adminRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import webhookRoutes from "./routes/webhookRoutes.js";
 import pushRoutes from "./routes/pushRoutes.js";
+import publicRoutes from "./routes/publicRoutes.js";
+import sitemapRoutes from "./routes/sitemapRoutes.js";
 import {
   app,
   server,
@@ -51,6 +53,14 @@ import { renewCreatorSubscriptions } from "./jobs/renewCreatorSubscriptions.js";
 // X-Forwarded-For are read correctly — required for express-rate-limit
 // to key limits per real client instead of erroring or bucketing everyone together.
 app.set("trust proxy", 1);
+
+// Sitemap routes are mounted first, before helmet/CORS/CSRF/rate-limiting
+// — they're public, GET-only, unrelated to sessions or cross-origin
+// browser requests (a search engine crawler fetching /sitemap.xml isn't
+// a browser making a credentialed request), and /sitemap.xml is the
+// conventional root-level path crawlers expect, not something that
+// belongs under /api.
+app.use(sitemapRoutes);
 
 // Security response headers — this is a JSON API with no server-rendered
 // HTML, so helmet's default CSP (aimed at browser-rendered pages) isn't
@@ -109,6 +119,7 @@ app.use("/api/campaigns", adCampaignRoutes);
 app.use("/api/posts", postRoutes);
 app.use("/api/comments", commentRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/public", publicRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/reports", reportRoutes);

@@ -1226,13 +1226,19 @@ const MAX_TRENDING_CANDIDATES = 500;
 // stays bounded regardless of how large the total post collection grows.
 const TRENDING_WINDOW_DAYS = 7;
 
-const computeTrendingScore = (post) => {
+// Exported (not just local to this file) so publicExploreController.js —
+// the anonymous-visitor equivalent of this same ranking — can reuse the
+// exact same formula and window rather than maintaining a second copy
+// that would silently drift from this one over time.
+export const computeTrendingScore = (post) => {
   const ageHours = (Date.now() - post.createdAt.getTime()) / (1000 * 60 * 60);
   const engagement = post.likesCount * 2 + post.commentsCount * 3;
   return (
     engagement / Math.pow(ageHours + TRENDING_ORIGIN_HOURS, TRENDING_GRAVITY)
   );
 };
+export { MAX_TRENDING_CANDIDATES, TRENDING_WINDOW_DAYS };
+
 
 export const getTrendingPosts = async (req, res) => {
   try {
