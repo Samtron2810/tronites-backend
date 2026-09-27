@@ -48,6 +48,7 @@ import { publishScheduledPosts } from "./jobs/publishScheduledPosts.js";
 import { runPostPerformanceNudge } from "./jobs/postPerformanceNudge.js";
 import { runBadgeRenewalReminder } from "./jobs/badgeRenewalReminder.js";
 import { renewCreatorSubscriptions } from "./jobs/renewCreatorSubscriptions.js";
+import { expirePromotions } from "./jobs/expirePromotions.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -267,6 +268,12 @@ const startServer = async () => {
   publishScheduledPosts();
   const scheduledPostsInterval = setInterval(publishScheduledPosts, 60_000);
 
+  // Promoted posts — sweep expired promotions every 60 seconds so the
+  // CTA button and other promo-only UI don't outlive promotedUntil while
+  // waiting on a moderator to run adminCancelPromotion manually.
+  expirePromotions();
+  const expirePromotionsInterval = setInterval(expirePromotions, 60_000);
+
   // Creator tools — post performance nudge every 6 hours. Finds
   // creators whose most recent post is underperforming vs their avg
   // and sends a push notification + in-app alert.
@@ -314,6 +321,7 @@ const startServer = async () => {
       clearInterval(expireVerificationsInterval);
       clearInterval(purgeVerificationDataInterval);
       clearInterval(scheduledPostsInterval);
+      clearInterval(expirePromotionsInterval);
       clearInterval(performanceNudgeInterval);
       clearInterval(badgeRenewalInterval);
       clearInterval(subRenewalInterval);
