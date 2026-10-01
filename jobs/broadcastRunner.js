@@ -29,7 +29,7 @@ export const runBroadcastTick = async () => {
     const campaign = await EmailCampaign.findOneAndUpdate(
       { status: { $in: ["queued", "sending"] } },
       { $set: { status: "sending" } },
-      { sort: { createdAt: 1 }, new: true },
+      { sort: { createdAt: 1 }, returnDocument: 'after' },
     );
     if (!campaign) return;
     if (!campaign.startedAt) {
@@ -43,7 +43,7 @@ export const runBroadcastTick = async () => {
       const rcpt = await EmailCampaignRecipient.findOneAndUpdate(
         { campaign: campaign._id, status: "pending" },
         { $set: { status: "sending", claimedAt: new Date() }, $inc: { attempts: 1 } },
-        { sort: { _id: 1 }, new: true },
+        { sort: { _id: 1 }, returnDocument: 'after' },
       );
 
       if (!rcpt) {
@@ -55,7 +55,7 @@ export const runBroadcastTick = async () => {
           const done = await EmailCampaign.findOneAndUpdate(
             { _id: campaign._id, status: "sending" },
             { $set: { completedAt: new Date() } },
-            { new: true },
+            { returnDocument: 'after' },
           );
           if (done) {
             done.status = done.sentCount === 0 ? "failed" : "completed";

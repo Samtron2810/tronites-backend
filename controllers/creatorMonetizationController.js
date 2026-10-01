@@ -329,7 +329,7 @@ export const upsertCreatorPlan = async (req, res) => {
           ...(active !== undefined ? { active } : {}),
         },
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
+      { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
     );
 
     invalidateCache(`creator-plan:${req.user._id}`);
@@ -457,7 +457,7 @@ export const verifySubscription = async (req, res) => {
           lastChargedAt: new Date(),
         },
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
+      { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
     );
 
     // Record the subscription charge in the tip ledger so earnings reflect it
@@ -475,7 +475,7 @@ export const verifySubscription = async (req, res) => {
           isAnonymous: false,
         },
       },
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: 'after' },
     );
 
     invalidateCache(`creator-earnings:${creatorId}`);
@@ -692,7 +692,7 @@ export const upsertBankAccount = async (req, res) => {
           paystackRecipientCode: null,
         },
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
+      { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
     );
 
     res.status(200).json({ bankAccount });

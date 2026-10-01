@@ -1316,7 +1316,7 @@ export const updateBusinessProfile = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.user._id,
       { $set: updates },
-      { new: true, runValidators: true },
+      { returnDocument: 'after', runValidators: true },
     ).select("businessProfile");
 
     res.status(200).json({ businessProfile: user.businessProfile });

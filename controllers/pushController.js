@@ -30,7 +30,7 @@ export const subscribe = asyncHandler(async (req, res) => {
       userAgent: req.headers["user-agent"] || "",
       lastSeenAt: new Date(),
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
   );
 
   res.status(200).json({ subscribed: true });
@@ -65,7 +65,7 @@ export const updatePushPrefs = asyncHandler(async (req, res) => {
   const user = await User.findByIdAndUpdate(
     req.user._id,
     { $set: setOps },
-    { new: true, runValidators: true },
+    { returnDocument: 'after', runValidators: true },
   ).select("pushPrefs");
 
   res.status(200).json({ pushPrefs: user.pushPrefs });

@@ -48,7 +48,7 @@ export const logSearchHistory = async (req, res) => {
         query: trimmedQuery,
         filters: cleanFilters,
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
     );
 
     // Trim to MAX_HISTORY_PER_USER — cheap enough to run on every log

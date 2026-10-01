@@ -218,7 +218,7 @@ export const cancelBroadcast = async (req, res) => {
   const campaign = await EmailCampaign.findOneAndUpdate(
     { _id: req.params.id, status: { $in: ACTIVE_STATUSES } },
     { $set: { status: "cancelled", completedAt: new Date() } },
-    { new: true },
+    { returnDocument: 'after' },
   );
   if (!campaign) {
     return res.status(409).json({ message: "This broadcast is not running." });
@@ -247,7 +247,7 @@ export const resumeBroadcast = async (req, res) => {
   const campaign = await EmailCampaign.findOneAndUpdate(
     { _id: req.params.id, status: "paused" },
     { $set: { status: "queued", lastError: "" } },
-    { new: true },
+    { returnDocument: 'after' },
   );
   if (!campaign) return res.status(409).json({ message: "This broadcast is not paused." });
   res.json({ campaign });

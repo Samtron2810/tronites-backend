@@ -88,7 +88,7 @@ export const setReaction = async (userId, targetType, targetId, emoji) => {
   const previous = await Reaction.findOneAndUpdate(
     { user: userId, targetType, targetId },
     { $set: { emoji } },
-    { upsert: true, new: false },
+    { upsert: true, returnDocument: 'before' },
   ).lean();
   return previous?.emoji || null;
 };
