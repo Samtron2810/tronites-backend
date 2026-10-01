@@ -7,6 +7,7 @@ export const PERMISSIONS = [
   "view_audit_log",
   "manage_roles",
   "manage_verification",
+  "send_broadcasts",
 ];
 
 export const VERIFICATION_TYPES = [
@@ -152,6 +153,14 @@ const userSchema = new mongoose.Schema(
       default: true,
     },
 
+    // Set by the unsubscribe link in broadcast emails (controllers/
+    // broadcastController.js). Honoured by "announcement" campaigns only;
+    // "critical" notices (policy changes etc.) deliberately ignore it.
+    marketingEmailOptOut: {
+      type: Boolean,
+      default: false,
+    },
+
     // Feature 3 — Topics/Interests. 5–10 tags picked at or after signup.
     // Used by forYouService to weight interest-sourced candidates.
     interests: {
@@ -201,6 +210,7 @@ const userSchema = new mongoose.Schema(
         "view_audit_log",
         "manage_roles",
         "manage_verification",
+        "send_broadcasts",
       ],
       default: [],
     },

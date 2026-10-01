@@ -20,6 +20,8 @@ import reportRoutes from "./routes/reportRoutes.js";
 import appealRoutes from "./routes/appealRoutes.js";
 import verificationRoutes from "./routes/verificationRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
+import broadcastRoutes from "./routes/broadcastRoutes.js";
+import unsubscribeRoutes from "./routes/unsubscribeRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import webhookRoutes from "./routes/webhookRoutes.js";
 import pushRoutes from "./routes/pushRoutes.js";
@@ -49,6 +51,7 @@ import { runPostPerformanceNudge } from "./jobs/postPerformanceNudge.js";
 import { runBadgeRenewalReminder } from "./jobs/badgeRenewalReminder.js";
 import { renewCreatorSubscriptions } from "./jobs/renewCreatorSubscriptions.js";
 import { expirePromotions } from "./jobs/expirePromotions.js";
+import { runBroadcastTick } from "./jobs/broadcastRunner.js";
 
 // Trust the first hop (hosting platform's reverse proxy) so req.ip and
 // X-Forwarded-For are read correctly — required for express-rate-limit
@@ -126,6 +129,10 @@ app.use("/api/messages", messageRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/appeals", appealRoutes);
 app.use("/api/verification-requests", verificationRoutes);
+// Mount before /api/admin so the literal /broadcasts segment is never
+// captured by an adminRoutes param route.
+app.use("/api/admin/broadcasts", broadcastRoutes);
+app.use("/api/unsubscribe", unsubscribeRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/push", pushRoutes);
@@ -274,6 +281,11 @@ const startServer = async () => {
   expirePromotions();
   const expirePromotionsInterval = setInterval(expirePromotions, 60_000);
 
+  // Email broadcasts — drains the queued campaign (see jobs/broadcastRunner.js).
+  // The runner holds its own re-entrancy lock, so a long send never overlaps.
+  runBroadcastTick();
+  const broadcastInterval = setInterval(runBroadcastTick, 5_000);
+
   // Creator tools — post performance nudge every 6 hours. Finds
   // creators whose most recent post is underperforming vs their avg
   // and sends a push notification + in-app alert.
@@ -325,6 +337,7 @@ const startServer = async () => {
       clearInterval(performanceNudgeInterval);
       clearInterval(badgeRenewalInterval);
       clearInterval(subRenewalInterval);
+      clearInterval(broadcastInterval);
 
       // Stops accepting new connections, disconnects existing sockets, and
       // closes the underlying HTTP server (io.close() owns both — see

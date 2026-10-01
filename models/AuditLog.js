@@ -45,9 +45,12 @@ export const AUDIT_ACTIONS = [
   // only surviving record of what was written or removed.
   "moderator_note_added",
   "moderator_note_deleted",
+  // Email broadcast campaigns (controllers/broadcastController.js).
+  "email_broadcast_created",
+  "email_broadcast_cancelled",
 ];
 
-const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];
+const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report", "campaign"];
 
 const auditLogSchema = new mongoose.Schema(
   {

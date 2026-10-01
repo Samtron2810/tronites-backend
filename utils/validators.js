@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BROADCAST_GROUPS, BROADCAST_TYPES } from "./broadcastGroups.js";
 
 // ─── Auth ───────────────────────────────────────────────────────────────────
 
@@ -459,9 +460,60 @@ export const updatePermissionsSchema = z.object({
         "view_audit_log",
         "manage_roles",
         "manage_verification",
+        "send_broadcasts",
       ]),
     )
-    .max(6),
+    .max(7),
+});
+
+// ── Email broadcasts ────────────────────────────────────────────────────────
+const objectIdString = z.string().regex(/^[a-f\d]{24}$/i, "Invalid user id");
+
+const broadcastAudienceShape = {
+  groups: z.array(z.enum(BROADCAST_GROUPS)).max(BROADCAST_GROUPS.length).default([]),
+  userIds: z.array(objectIdString).max(50).default([]),
+  type: z.enum(BROADCAST_TYPES).default("announcement"),
+};
+
+const broadcastContentShape = {
+  subject: z.string().trim().min(1, "Subject is required").max(150),
+  body: z.string().trim().min(1, "Message is required").max(5000),
+  ctaLabel: z.string().trim().max(40).optional().default(""),
+  ctaUrl: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .default("")
+    .refine((v) => v === "" || /^https:\/\/[^\s]+$/i.test(v), {
+      message: "Button link must start with https://",
+    }),
+};
+
+const ctaPairRefine = (v) => Boolean(v.ctaLabel) === Boolean(v.ctaUrl);
+const ctaPairMessage = { message: "Button needs both a label and a link", path: ["ctaUrl"] };
+
+export const previewBroadcastAudienceSchema = z.object(broadcastAudienceShape);
+
+export const createBroadcastSchema = z
+  .object({ ...broadcastAudienceShape, ...broadcastContentShape })
+  .refine((v) => v.groups.length > 0 || v.userIds.length > 0, {
+    message: "Select at least one recipient group or user",
+    path: ["groups"],
+  })
+  .refine(ctaPairRefine, ctaPairMessage);
+
+export const testBroadcastSchema = z
+  .object({ type: broadcastAudienceShape.type, ...broadcastContentShape })
+  .refine(ctaPairRefine, ctaPairMessage);
+
+// Lenient: used for the live preview while the admin is still typing.
+export const renderBroadcastSchema = z.object({
+  type: broadcastAudienceShape.type,
+  subject: z.string().trim().max(150).default(""),
+  body: z.string().trim().max(5000).default(""),
+  ctaLabel: z.string().trim().max(40).default(""),
+  ctaUrl: z.string().trim().max(500).default(""),
 });
 
 // Verification badges (Phase 1 — manual admin grant only, no

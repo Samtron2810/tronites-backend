@@ -262,3 +262,71 @@ export const duplicateRegistrationAlertTemplate = () => `
 </body>
 </html>
 `;
+
+// Admin/moderator broadcast. `bodyHtml` is already escaped + paragraph-built
+// by services/broadcastService.js#renderBodyHtml — never pass raw input here.
+// `critical` swaps the unsubscribe footer for a "why you're receiving this"
+// line, since critical notices intentionally ignore the opt-out flag.
+export const broadcastEmailTemplate = ({
+  subject,
+  bodyHtml,
+  ctaLabel,
+  ctaUrl,
+  unsubscribeUrl,
+  critical = false,
+}) => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body style="margin:0; padding:0; background-color:#f5f5f5; font-family:Arial, Helvetica, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f5; padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="520" cellpadding="0" cellspacing="0" style="max-width:100%; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
+          <tr>
+            <td style="background: linear-gradient(135deg, #1d9e75, #0f6e56); padding:28px 24px; text-align:center;">
+              <h1 style="margin:0; font-size:28px; font-weight:800; color:#ffffff;">
+                Tron<span style="color:#9fe1cb;">ites</span>
+              </h1>
+              <p style="margin:8px 0 0; font-size:13px; color:#e1f5ee; text-transform:uppercase; letter-spacing:1px;">
+                ${critical ? "Important notice" : "Announcement"}
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 28px;">
+              <h2 style="margin:0 0 18px; font-size:20px; line-height:1.3; color:#111827;">${subject}</h2>
+              <div style="font-size:15px; color:#374151; line-height:1.65;">${bodyHtml}</div>
+              ${
+                ctaLabel && ctaUrl
+                  ? `<p style="margin:28px 0 0;"><a href="${ctaUrl}" style="display:inline-block; background-color:#0f6e56; color:#ffffff; text-decoration:none; font-weight:700; font-size:15px; padding:12px 24px; border-radius:10px;">${ctaLabel}</a></p>`
+                  : ""
+              }
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#f9fafb; padding:20px 24px; text-align:center; border-top:1px solid #e5e7eb;">
+              <p style="margin:0 0 6px; font-size:12px; color:#9ca3af; line-height:1.5;">
+                ${
+                  critical
+                    ? "You're receiving this because it affects your Tronites account."
+                    : unsubscribeUrl
+                      ? `Don't want these emails? <a href="${unsubscribeUrl}" style="color:#6b7280;">Unsubscribe</a>`
+                      : "You're receiving this as a Tronites member."
+                }
+              </p>
+              <p style="margin:0; font-size:12px; color:#9ca3af;">
+                &copy; ${new Date().getFullYear()} Tronites. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`;

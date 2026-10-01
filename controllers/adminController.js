@@ -473,7 +473,7 @@ export const unrestrictUser = async (req, res) => {
 // Target types the trail can point at. Mirrors AUDIT_TARGET_TYPES in
 // models/AuditLog.js; kept as a local list here so an unknown ?targetType=
 // value is ignored rather than silently matching nothing.
-const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report"];
+const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report", "campaign"];
 
 // YYYY-MM-DD (what <input type="date"> submits) -> a UTC instant. "from"
 // opens at 00:00:00.000Z and "to" closes at 23:59:59.999Z, so a single-day

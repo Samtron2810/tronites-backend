@@ -15,7 +15,7 @@ if (!apiKey) {
 
 const brevo = new BrevoClient({ apiKey });
 
-export const sendEmail = async ({ to, subject, htmlContent }) => {
+export const sendEmail = async ({ to, subject, htmlContent, headers }) => {
   if (!apiKey) {
     throw new Error(
       "Brevo API key is not configured. Set BREVO_API_KEY in .env.",
@@ -44,6 +44,7 @@ export const sendEmail = async ({ to, subject, htmlContent }) => {
       replyTo: {
         email: senderEmail,
       },
+      ...(headers ? { headers } : {}),
     });
 
     console.debug("Brevo SDK response:", resp);
