@@ -1259,6 +1259,20 @@ export const updateReadReceipts = async (req, res) => {
   }
 };
 
+// PUT /users/email-preferences  { marketingEmails: boolean }
+// Opt in/out of admin announcement emails. Critical notices ignore this.
+export const updateEmailPreferences = async (req, res) => {
+  try {
+    const { marketingEmails } = req.body;
+    await User.findByIdAndUpdate(req.user._id, {
+      marketingEmailOptOut: !marketingEmails,
+    });
+    res.status(200).json({ marketingEmails });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // ── Business Profile ─────────────────────────────────────────────────────────
 
 // GET /users/me/business-profile

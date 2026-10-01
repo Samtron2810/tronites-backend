@@ -766,6 +766,12 @@ export const updateReadReceiptsSchema = z.object({
   showReadReceipts: z.boolean(),
 });
 
+// Announcement-email opt in/out (Settings → Notifications). The DB stores
+// the inverse (marketingEmailOptOut) so existing users default to opted in.
+export const updateEmailPreferencesSchema = z.object({
+  marketingEmails: z.boolean(),
+});
+
 // ── Feature 5: Reply-to-message — adds optional replyTo field ─────────────
 export const sendMessageWithReplySchema = z.object({
   text: z.string().trim().max(1000, "Message too long").optional().default(""),

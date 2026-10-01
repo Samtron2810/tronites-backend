@@ -5,7 +5,7 @@ import requireCreator from "../middleware/requireCreator.js";
 import { accountDeletionLimiter } from "../middleware/rateLimiter.js";
 import { validate } from "../utils/validators.js";
 import { deleteAccountSchema } from "../utils/validators.js";
-import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema, pinnedPostSchema, collabStatusSchema, updateInterestsSchema, updateLocationSchema, updateReadReceiptsSchema } from "../utils/validators.js";
+import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema, pinnedPostSchema, collabStatusSchema, updateInterestsSchema, updateLocationSchema, updateReadReceiptsSchema, updateEmailPreferencesSchema } from "../utils/validators.js";
 
 import {
   followUser,
@@ -31,6 +31,7 @@ import {
   updateInterests,
   updateLocation,
   updateReadReceipts,
+  updateEmailPreferences,
   getBusinessProfile,
   updateBusinessProfile,
 } from "../controllers/userController.js";
@@ -99,6 +100,7 @@ router.put("/interests", protect, validate(updateInterestsSchema), updateInteres
 router.put("/location", protect, validate(updateLocationSchema), updateLocation);
 // Feature 6 — Read receipts
 router.put("/read-receipts", protect, validate(updateReadReceiptsSchema), updateReadReceipts);
+router.put("/email-preferences", protect, validate(updateEmailPreferencesSchema), updateEmailPreferences);
 
 // Business profile (business-tier accounts only)
 router.get("/me/business-profile", protect, getBusinessProfile);

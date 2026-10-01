@@ -91,6 +91,8 @@ export const toPrivateSelfDTO = (user) => {
     interests: Array.isArray(u.interests) ? u.interests : [],
     // Feature 6 — read receipts preference
     showReadReceipts: u.showReadReceipts !== false,
+    // Announcement emails — opted in unless the user unsubscribed.
+    marketingEmails: u.marketingEmailOptOut !== true,
     // Feature 9 — shadow rank reason visible to self only
     shadowRankedReason: u.shadowRankedReason || "",
   };
