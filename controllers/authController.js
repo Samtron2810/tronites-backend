@@ -253,41 +253,58 @@ export const resetPassword = async (req, res) => {
     const { challengeId, otp, newPassword } = req.body;
 
     const verified = await verifyChallenge({ challengeId, otp });
-    const { email, payload } = verified;
+    const { email, payload, _id: otpDocId } = verified;
 
-    // Registration challenges carry payload { name, passwordHash }; fake
-    // challenges (unknown email in forgotPassword) carry no payload at
-    // all. Only challenges explicitly created for a reset are accepted
-    // here — the optional chaining means a missing payload fails the
-    // check and is rejected instead of crashing.
-    if (payload?.type !== "passwordReset") {
-      return res.status(400).json({ message: "Invalid OTP payload" });
-    }
+    try {
+      // Registration challenges carry payload { name, passwordHash }; fake
+      // challenges (unknown email in forgotPassword) carry no payload at
+      // all. Only challenges explicitly created for a reset are accepted
+      // here — the optional chaining means a missing payload fails the
+      // check and is rejected instead of crashing.
+      if (payload?.type !== "passwordReset") {
+        const err = new Error("Invalid OTP payload");
+        err.statusCode = 400;
+        throw err;
+      }
 
-    const passwordHash = await bcrypt.hash(newPassword, 10);
+      const passwordHash = await bcrypt.hash(newPassword, 10);
 
-    // passwordChangedAt drives the session-invalidation check in
-    // authMiddleware for any access token still valid from before this
-    // reset. That covers the 15-minute access-token window; the refresh
-    // tokens covering the following 30 days are killed outright here so
-    // a stolen refresh token from before the reset can't mint further
-    // access tokens either.
-    await User.updateOne(
-      { email },
-      {
-        $set: {
-          password: passwordHash,
-          passwordChangedAt: new Date(),
+      // passwordChangedAt drives the session-invalidation check in
+      // authMiddleware for any access token still valid from before this
+      // reset. That covers the 15-minute access-token window; the refresh
+      // tokens covering the following 30 days are killed outright here so
+      // a stolen refresh token from before the reset can't mint further
+      // access tokens either.
+      await User.updateOne(
+        { email },
+        {
+          $set: {
+            password: passwordHash,
+            passwordChangedAt: new Date(),
+          },
         },
-      },
-    );
+      );
 
-    const resetUser = await User.findOne({ email }).select("_id");
-    if (resetUser) await revokeAllSessions(resetUser._id);
+      const resetUser = await User.findOne({ email }).select("_id");
+      if (resetUser) await revokeAllSessions(resetUser._id);
 
-    res
-      .status(200)
-      .json({ message: "Password reset successful. Please sign in." });
+      res
+        .status(200)
+        .json({ message: "Password reset successful. Please sign in." });
+    } catch (innerErr) {
+      // Same recovery as verifyOtp above: verifyChallenge() has already
+      // burned the code by this point (that's required to stop a
+      // double-submit from both succeeding). If anything after that —
+      // bad payload, bcrypt, the User.updateOne, a dropped connection —
+      // throws, the user is left with a correctly-entered code that's
+      // now permanently "used" and a password that was never actually
+      // changed, with no way to retry except waiting for a brand-new
+      // email. Put the challenge back to unused so a retry of the same
+      // OTP (or the already-known-good one on Resend) can succeed once
+      // the transient condition clears.
+      await unconsumeChallenge(otpDocId);
+      throw innerErr;
+    }
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
   }
