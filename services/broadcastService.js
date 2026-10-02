@@ -133,6 +133,10 @@ export const renderCampaignEmail = (campaign, { userId, firstName }) => {
   const critical = campaign.type === "critical";
   const subject = applyMergeTags(campaign.subject, firstName);
   const unsubscribeUrl = critical || !userId ? null : makeUnsubscribeUrl(userId);
+  const plainPreview = String(campaign.body || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 110);
   const html = broadcastEmailTemplate({
     subject: esc(subject),
     bodyHtml: renderBodyHtml(campaign.body, firstName),
@@ -140,6 +144,7 @@ export const renderCampaignEmail = (campaign, { userId, firstName }) => {
     ctaUrl: campaign.ctaUrl ? esc(campaign.ctaUrl) : "",
     unsubscribeUrl,
     critical,
+    preheader: esc(plainPreview),
   });
   return { subject, html, unsubscribeUrl };
 };

@@ -267,6 +267,18 @@ export const duplicateRegistrationAlertTemplate = () => `
 // by services/broadcastService.js#renderBodyHtml — never pass raw input here.
 // `critical` swaps the unsubscribe footer for a "why you're receiving this"
 // line, since critical notices intentionally ignore the opt-out flag.
+//
+// Gmail mobile auto-shrinks/narrows emails whose rendered HTML is short on
+// content — short broadcasts were hitting that. Fixes applied:
+//   1. Hidden preheader text (Gmail/Outlook preview-line filler, also pads
+//      the DOM so Gmail doesn't treat the message as "thin").
+//   2. outer table forced to 100% with a fixed-width inner table + MSO
+//      conditional wrapper, so width is explicit instead of inferred.
+//   3. Logo bar + divider + a denser footer give real height to short
+//      one-paragraph bodies, instead of the body padding being the only
+//      thing holding the card open.
+//   4. min-height on the body card via a 1px spacer row — keeps the card
+//      from collapsing to content height on short messages.
 export const broadcastEmailTemplate = ({
   subject,
   bodyHtml,
@@ -274,56 +286,150 @@ export const broadcastEmailTemplate = ({
   ctaUrl,
   unsubscribeUrl,
   critical = false,
+  preheader = "",
 }) => `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <meta name="supported-color-schemes" content="light" />
+  <title>${subject}</title>
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <style>table, td { border-collapse: collapse; }</style>
+  <![endif]-->
 </head>
-<body style="margin:0; padding:0; background-color:#f5f5f5; font-family:Arial, Helvetica, sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f5; padding:40px 20px;">
+<body style="margin:0; padding:0; background-color:#eef1f0; font-family:Arial, Helvetica, sans-serif; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;">
+  <!-- Preheader: hidden preview text, also pads Gmail's content-length heuristic -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
+    ${preheader || "A message from the Tronites team"}
+    &#8203;&zwnj;&nbsp;&#8203;&zwnj;&nbsp;&#8203;&zwnj;&nbsp;&#8203;&zwnj;&nbsp;&#8203;&zwnj;&nbsp;&#8203;&zwnj;&nbsp;
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#eef1f0;">
     <tr>
-      <td align="center">
-        <table width="520" cellpadding="0" cellspacing="0" style="max-width:100%; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
+      <td align="center" style="padding:32px 16px;">
+
+        <!--[if mso]>
+        <table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td>
+        <![endif]-->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 4px 16px rgba(15,110,86,0.08); border:1px solid #e5e7eb;">
+
+          <!-- Logo bar -->
           <tr>
-            <td style="background: linear-gradient(135deg, #1d9e75, #0f6e56); padding:28px 24px; text-align:center;">
-              <h1 style="margin:0; font-size:28px; font-weight:800; color:#ffffff;">
-                Tron<span style="color:#9fe1cb;">ites</span>
-              </h1>
-              <p style="margin:8px 0 0; font-size:13px; color:#e1f5ee; text-transform:uppercase; letter-spacing:1px;">
-                ${critical ? "Important notice" : "Announcement"}
-              </p>
+            <td align="center" style="padding:22px 24px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="font-size:20px; font-weight:800; color:#0f6e56; letter-spacing:-0.3px;">
+                    Tron<span style="color:#1d9e75;">ites</span>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
+
+          <!-- Header -->
           <tr>
-            <td style="padding:32px 28px;">
-              <h2 style="margin:0 0 18px; font-size:20px; line-height:1.3; color:#111827;">${subject}</h2>
-              <div style="font-size:15px; color:#374151; line-height:1.65;">${bodyHtml}</div>
+            <td style="padding:18px 24px 0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="background: linear-gradient(135deg, #1d9e75, #0f6e56); border-radius:14px; padding:30px 28px; text-align:center;">
+                    <p style="margin:0; font-size:11px; font-weight:700; color:#bdf0dd; text-transform:uppercase; letter-spacing:2px;">
+                      ${critical ? "⚠ Important notice" : "📣 Announcement"}
+                    </p>
+                    <h1 style="margin:10px 0 0; font-size:22px; line-height:1.35; font-weight:800; color:#ffffff;">
+                      ${subject}
+                    </h1>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:28px 28px 8px;">
+              <div style="font-size:15px; color:#374151; line-height:1.7;">${bodyHtml}</div>
               ${
                 ctaLabel && ctaUrl
-                  ? `<p style="margin:28px 0 0;"><a href="${ctaUrl}" style="display:inline-block; background-color:#0f6e56; color:#ffffff; text-decoration:none; font-weight:700; font-size:15px; padding:12px 24px; border-radius:10px;">${ctaLabel}</a></p>`
+                  ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0 8px;">
+                       <tr>
+                         <td style="border-radius:10px; background-color:#0f6e56;">
+                           <a href="${ctaUrl}" style="display:inline-block; color:#ffffff; text-decoration:none; font-weight:700; font-size:15px; padding:13px 28px;">${ctaLabel} &rarr;</a>
+                         </td>
+                       </tr>
+                     </table>`
                   : ""
               }
             </td>
           </tr>
+
+          <!-- Divider -->
           <tr>
-            <td style="background-color:#f9fafb; padding:20px 24px; text-align:center; border-top:1px solid #e5e7eb;">
-              <p style="margin:0 0 6px; font-size:12px; color:#9ca3af; line-height:1.5;">
+            <td style="padding:16px 28px 0;">
+              <div style="border-top:1px solid #eef1f0; line-height:0; font-size:0;">&nbsp;</div>
+            </td>
+          </tr>
+
+          <!-- Secondary info strip — gives short messages real height and a reason to scroll past the fold -->
+          <tr>
+            <td style="padding:18px 28px 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td width="40" valign="top" style="padding-right:12px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr><td width="32" height="32" align="center" valign="middle" style="background-color:#e1f5ee; border-radius:8px; font-size:15px;">💬</td></tr>
+                    </table>
+                  </td>
+                  <td valign="top">
+                    <p style="margin:0; font-size:13px; color:#6b7280; line-height:1.6;">
+                      Questions about this message? Reach the Tronites team any time from
+                      <a href="https://tronites.com/help" style="color:#0f6e56; font-weight:600; text-decoration:none;">Help &amp; Support</a>
+                      inside the app.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#f9fafb; padding:24px 28px; text-align:center; border-top:1px solid #e5e7eb;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 14px;">
+                <tr>
+                  <td style="padding:0 8px; font-size:13px; font-weight:700; color:#0f6e56;">
+                    Tron<span style="color:#1d9e75;">ites</span>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:0 0 8px; font-size:12px; color:#9ca3af; line-height:1.6;">
                 ${
                   critical
                     ? "You're receiving this because it affects your Tronites account."
                     : unsubscribeUrl
-                      ? `Don't want these emails? <a href="${unsubscribeUrl}" style="color:#6b7280;">Unsubscribe</a>`
+                      ? `Don't want these emails? <a href="${unsubscribeUrl}" style="color:#6b7280; text-decoration:underline;">Unsubscribe</a>`
                       : "You're receiving this as a Tronites member."
                 }
               </p>
-              <p style="margin:0; font-size:12px; color:#9ca3af;">
+              <p style="margin:0; font-size:11px; color:#c1c7d0;">
                 &copy; ${new Date().getFullYear()} Tronites. All rights reserved.
               </p>
             </td>
           </tr>
         </table>
+        <!--[if mso]>
+        </td></tr></table>
+        <![endif]-->
+
       </td>
     </tr>
   </table>
