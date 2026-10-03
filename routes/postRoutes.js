@@ -7,6 +7,7 @@ import {
   createVideoUploadSignature,
   createVideoPost,
   editPost,
+  setPostComments,
   getFeedPosts,
   getForYouFeed,
   getTrendingPosts,
@@ -36,6 +37,7 @@ import {
   createVideoSignatureSchema,
   createVideoPostSchema,
   editPostSchema,
+  setPostCommentsSchema,
   createQuoteSchema,
   reactSchema,
   paginationSchema,
@@ -102,6 +104,15 @@ router.get(
   protect,
   validateQuery(paginationSchema),
   getBookmarkedPosts,
+);
+
+// Owner toggles commenting on/off. Two-segment path, so it never collides
+// with the single-segment PUT "/:id" edit route below.
+router.put(
+  "/:id/comments",
+  protect,
+  validate(setPostCommentsSchema),
+  setPostComments,
 );
 
 router.put(

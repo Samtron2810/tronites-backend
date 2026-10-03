@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 scripts
 tests
+backups
 .env
 .github/
 vitest.config.js

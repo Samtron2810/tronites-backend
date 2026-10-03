@@ -116,6 +116,8 @@ export const createPostSchema = z.object({
   // Post audience — who can see this post. Optional; absent defaults
   // to "public" server-side.
   privacy: z.enum(POST_PRIVACY_VALUES).optional().default("public"),
+  // Author can switch commenting off at creation time.
+  commentsDisabled: z.boolean().optional().default(false),
   // Optional scheduled publish time. When present the post is created in
   // a hidden state and published by the publishScheduledPosts cron job.
   scheduledFor: z
@@ -156,6 +158,7 @@ export const createVideoPostSchema = z.object({
   }),
   // Post audience — same as createPostSchema.
   privacy: z.enum(POST_PRIVACY_VALUES).optional().default("public"),
+  commentsDisabled: z.boolean().optional().default(false),
   // Optional scheduled publish time — same as createPostSchema.
   scheduledFor: z
     .string()
@@ -179,6 +182,11 @@ export const editPostSchema = z.object({
     .max(5000, "Post text must be at most 5000 characters")
     .optional()
     .default(""),
+});
+
+// Toggle commenting on an existing post (owner only — see setPostComments).
+export const setPostCommentsSchema = z.object({
+  commentsDisabled: z.boolean("commentsDisabled must be a boolean"),
 });
 
 // Quote post — the quoter's own caption. Can be empty (a bare "look at

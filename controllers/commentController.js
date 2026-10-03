@@ -46,6 +46,16 @@ export const addComment = async (req, res) => {
       return res.status(404).json({ message: "Post not found" });
     }
 
+    // Author switched commenting off — blocks new comments AND replies for
+    // everyone (existing ones stay readable). Checked after the privacy gate
+    // so hidden posts still 404 instead of leaking this state.
+    if (post.commentsDisabled) {
+      return res.status(403).json({
+        message: "Comments are turned off for this post.",
+        code: "COMMENTS_DISABLED",
+      });
+    }
+
     let parentComment = null;
     if (parentCommentId) {
       parentComment = await Comment.findById(parentCommentId);

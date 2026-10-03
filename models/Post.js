@@ -55,6 +55,14 @@ const postSchema = new mongoose.Schema(
       default: "public",
     },
 
+    // Author-controlled commenting switch. Existing comments stay readable;
+    // only NEW comments/replies are rejected (see commentController.addComment).
+    // Legacy posts have the field missing, which reads as false (comments on).
+    commentsDisabled: {
+      type: Boolean,
+      default: false,
+    },
+
     // Carousel images (max 4). Each entry is now an object { url, altText }
     // for accessibility. Legacy posts stored as plain strings are transparently
     // read by postController helpers that normalise to the object shape.

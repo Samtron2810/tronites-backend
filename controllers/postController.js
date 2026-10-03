@@ -103,7 +103,7 @@ export const normalizeImages = (images) => {
 // directly to Cloudinary and sends the resulting secure_urls here.
 export const createPost = async (req, res) => {
   try {
-    const { text, privacy, scheduledFor } = req.body;
+    const { text, privacy, scheduledFor, commentsDisabled } = req.body;
     const bodyImages = Array.isArray(req.body.images) ? req.body.images : [];
 
     // Tier-based char limit — the zod schema only caps at the staff
@@ -163,6 +163,7 @@ export const createPost = async (req, res) => {
       text,
       privacy,
       images: imageUrls,
+      commentsDisabled: commentsDisabled === true,
       hashtags: extractHashtags(text),
       ...(scheduledForDate ? { scheduledFor: scheduledForDate } : {}),
     });
@@ -364,7 +365,7 @@ export const createVideoUploadSignature = async (req, res) => {
 // and therefore no way for a post to get stuck or be orphaned.
 export const createVideoPost = async (req, res) => {
   try {
-    const { text, video, privacy, scheduledFor } = req.body;
+    const { text, video, privacy, scheduledFor, commentsDisabled } = req.body;
     const { publicId, url, durationSeconds } = video;
 
     // Tier-based char limit (see createPost).
@@ -417,6 +418,7 @@ export const createVideoPost = async (req, res) => {
       user: req.user._id,
       text,
       privacy,
+      commentsDisabled: commentsDisabled === true,
       hashtags: extractHashtags(text),
       video: {
         publicId,
@@ -2528,6 +2530,36 @@ export const getPostById = async (req, res) => {
     };
 
     res.status(200).json(formatted);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// TOGGLE COMMENTS — owner-only. PUT-as-set-state (same convention as
+// like/bookmark): body carries the desired state, so repeated requests are
+// idempotent. Existing comments are untouched; only new ones are blocked.
+export const setPostComments = async (req, res) => {
+  try {
+    const { commentsDisabled } = req.body;
+
+    const post = await Post.findOne({ _id: req.params.id, removedAt: null });
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+    if (post.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    if (post.commentsDisabled !== commentsDisabled) {
+      await Post.updateOne({ _id: post._id }, { $set: { commentsDisabled } });
+
+      invalidateFeedCache(req.user._id);
+      invalidateCache(`profile-posts:${req.user._id}:*`);
+      invalidateCache(`public-post:${post._id}`);
+      invalidateCache(`comments:${post._id}`);
+    }
+
+    res.status(200).json({ postId: post._id, commentsDisabled });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
