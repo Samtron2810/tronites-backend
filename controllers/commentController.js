@@ -47,9 +47,12 @@ export const addComment = async (req, res) => {
     }
 
     // Author switched commenting off — blocks new comments AND replies for
-    // everyone (existing ones stay readable). Checked after the privacy gate
-    // so hidden posts still 404 instead of leaking this state.
-    if (post.commentsDisabled) {
+    // everyone except the author (existing ones stay readable). Checked after
+    // the privacy gate so hidden posts still 404 instead of leaking this state.
+    if (
+      post.commentsDisabled &&
+      post.user.toString() !== req.user._id.toString()
+    ) {
       return res.status(403).json({
         message: "Comments are turned off for this post.",
         code: "COMMENTS_DISABLED",
