@@ -317,22 +317,39 @@ export const adminCancelPromotion = async (req, res) => {
     if (!post || post.removedAt) {
       return res.status(404).json({ message: "Post not found." });
     }
-    if (!post.promotedUntil && !post.promotionReference) {
-      return res.status(409).json({ message: "This post isn't promoted." });
+    const now = new Date();
+    const wasActive = Boolean(post.promotedUntil && new Date(post.promotedUntil) > now);
+    const wasPending = !wasActive && Boolean(post.promotionReference);
+
+    if (!wasActive && !wasPending) {
+      return res.status(409).json({
+        message: post.promotedUntil
+          ? "This promotion has already expired."
+          : "This post isn't promoted.",
+      });
     }
 
-    const wasActive = Boolean(post.promotedUntil && new Date(post.promotedUntil) > new Date());
     const author = await User.findById(post.user).select("name username");
 
+    // Active  -> end NOW (promotedUntil = now) so it lands in the Expired tab
+    //            with its stats/"Ended <date>" intact, same as a natural expiry.
+    // Pending -> nothing ever ran; only drop the stuck payment reference and
+    //            keep any earlier run's promotedUntil as history.
     await post.updateOne({
-      $set: {
-        promotedUntil: null,
-        promotionReference: null,
-        promotionSource: null,
-        promotedBy: null,
-        ctaType: null,
-        destinationUrl: null,
-      },
+      $set: wasActive
+        ? {
+            promotedUntil: now,
+            promotionReference: null,
+            promotionSource: null,
+            promotedBy: null,
+            ctaType: null,
+            destinationUrl: null,
+          }
+        : {
+            promotionReference: null,
+            ctaType: null,
+            destinationUrl: null,
+          },
     });
 
     invalidateFeedCache(post.user);
