@@ -184,6 +184,14 @@ export const editPostSchema = z.object({
     .default(""),
 });
 
+// Change a post's audience after posting (owner only — see setPostPrivacy).
+// "subscribers" is allowed here; the controller gates it on the creator tier.
+export const setPostPrivacySchema = z.object({
+  privacy: z.enum(["public", "followers", "subscribers", "only-me"], {
+    message: "privacy must be public, followers, subscribers or only-me",
+  }),
+});
+
 // Toggle commenting on an existing post (owner only — see setPostComments).
 export const setPostCommentsSchema = z.object({
   commentsDisabled: z.boolean("commentsDisabled must be a boolean"),

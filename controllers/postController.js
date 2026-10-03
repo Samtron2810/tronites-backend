@@ -46,6 +46,7 @@ import { extractHashtags, extractMentions } from "../utils/textParser.js";
 import {
   getCharLimit,
   canSchedule,
+  canPostSubscribersOnly,
   canEditPost,
   getEditWindowMs,
   POST_EDIT_COOLDOWN_MS,
@@ -2530,6 +2531,107 @@ export const getPostById = async (req, res) => {
     };
 
     res.status(200).json(formatted);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// CHANGE AUDIENCE — owner-only, PUT-as-set-state (idempotent).
+// Invariants this protects:
+//  - Reposts/quotes only ever point at PUBLIC posts (see isRepostable), so
+//    moving a post OFF public removes its Repost edges and detaches quotes
+//    (the quote keeps its own caption; its embed then renders "no longer
+//    available", exactly as when an original is deleted).
+//  - A currently-promoted post must stay public (promotion feeds filter on it).
+//  - "subscribers" needs the creator tier, same as at creation time.
+//  - A post that was only-me was never pushed to followers; widening it
+//    announces it the way createPost would (published posts only).
+export const setPostPrivacy = async (req, res) => {
+  try {
+    const { privacy } = req.body;
+
+    const post = await Post.findOne({ _id: req.params.id, removedAt: null });
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+    if (post.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    const previous = post.privacy || POST_PRIVACY.PUBLIC;
+    if (previous === privacy) {
+      return res.status(200).json({ postId: post._id, privacy, repostsCount: post.repostsCount });
+    }
+
+    // A quote is always public by construction (createQuotePost) — its
+    // audience isn't a user choice.
+    if (post.quoteOf) {
+      return res.status(400).json({ message: "A quote post's audience can't be changed." });
+    }
+
+    if (privacy === POST_PRIVACY.SUBSCRIBERS && !canPostSubscribersOnly(req.user)) {
+      return res.status(403).json({
+        message: "Subscribers-only posts require a creator account.",
+        code: "SUBSCRIBERS_ONLY_UNAVAILABLE",
+      });
+    }
+
+    if (
+      privacy !== POST_PRIVACY.PUBLIC &&
+      post.promotedUntil &&
+      post.promotedUntil > new Date()
+    ) {
+      return res.status(409).json({
+        message: "This post is currently promoted and must stay public.",
+        code: "POST_PROMOTED",
+      });
+    }
+
+    const update = { privacy };
+    let repostsRemoved = 0;
+    let quotesDetached = 0;
+
+    if (previous === POST_PRIVACY.PUBLIC && privacy !== POST_PRIVACY.PUBLIC) {
+      const edges = await removeAllRepostsForPost(post._id);
+      repostsRemoved = edges?.deletedCount || 0;
+      const quotes = await Post.updateMany(
+        { quoteOf: post._id },
+        { $set: { quoteOf: null } },
+      );
+      quotesDetached = quotes?.modifiedCount || 0;
+      update.repostsCount = 0;
+    }
+
+    await Post.updateOne({ _id: post._id }, { $set: update });
+
+    invalidateFeedCache(req.user._id);
+    invalidateCache(`profile-posts:${req.user._id}:*`);
+    invalidateCache(`mediakit:${req.user._id}`);
+    invalidateCache(`public-post:${post._id}`);
+    invalidateCache(`comments:${post._id}`);
+
+    if (
+      previous === POST_PRIVACY.ONLY_ME &&
+      !post.scheduledFor
+    ) {
+      try {
+        const fresh = await Post.findById(post._id).populate(
+          "user",
+          "name username profilePic verifications isVerified",
+        );
+        emitToFollowersOf(req.user._id, "newPost", fresh);
+      } catch (socketError) {
+        console.error("Real-time feed emission error:", socketError);
+      }
+    }
+
+    res.status(200).json({
+      postId: post._id,
+      privacy,
+      repostsCount: update.repostsCount ?? post.repostsCount,
+      repostsRemoved,
+      quotesDetached,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

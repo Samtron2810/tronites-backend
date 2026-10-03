@@ -8,6 +8,7 @@ import {
   createVideoPost,
   editPost,
   setPostComments,
+  setPostPrivacy,
   getFeedPosts,
   getForYouFeed,
   getTrendingPosts,
@@ -38,6 +39,7 @@ import {
   createVideoPostSchema,
   editPostSchema,
   setPostCommentsSchema,
+  setPostPrivacySchema,
   createQuoteSchema,
   reactSchema,
   paginationSchema,
@@ -108,6 +110,15 @@ router.get(
 
 // Owner toggles commenting on/off. Two-segment path, so it never collides
 // with the single-segment PUT "/:id" edit route below.
+// Owner changes the post's audience after posting.
+router.put(
+  "/:id/privacy",
+  protect,
+  editPostLimiter,
+  validate(setPostPrivacySchema),
+  setPostPrivacy,
+);
+
 router.put(
   "/:id/comments",
   protect,
