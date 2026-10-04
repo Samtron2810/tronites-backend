@@ -11,6 +11,7 @@ import {
   verifyTransaction,
 } from "../services/paystackService.js";
 import { invalidateCache, invalidateFeedCache } from "../utils/redis.js";
+import { syncCampaignExpiry } from "../jobs/expirePromotions.js";
 
 // ── Promotion tiers ──────────────────────────────────────────────────────────
 // Each tier defines price (NGN), promotion duration, and daily impression cap.
@@ -312,7 +313,7 @@ export const adminCancelPromotion = async (req, res) => {
   try {
     const { postId } = req.params;
     const post = await Post.findById(postId).select(
-      "user removedAt promotedUntil promotionReference promotionSource text",
+      "user removedAt promotedUntil promotionReference promotionSource campaignId text",
     );
     if (!post || post.removedAt) {
       return res.status(404).json({ message: "Post not found." });
@@ -351,6 +352,24 @@ export const adminCancelPromotion = async (req, res) => {
             destinationUrl: null,
           },
     });
+
+    // Ended early from a campaign -> mirror it on the campaign's own entry.
+    if (wasActive && post.campaignId) {
+      try {
+        const campaign = await AdCampaign.findById(post.campaignId);
+        const entry = campaign?.posts.find(
+          (e) => String(e.postId) === String(post._id) && e.status !== "expired",
+        );
+        if (entry) {
+          entry.promotedUntil = now;
+          entry.status = "expired";
+          await campaign.save();
+          await syncCampaignExpiry([campaign._id]);
+        }
+      } catch (err) {
+        console.error("Campaign sync after admin end failed:", err.message);
+      }
+    }
 
     invalidateFeedCache(post.user);
     invalidateCache(`profile-posts:${post.user}:*`);

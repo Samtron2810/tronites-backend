@@ -1,4 +1,5 @@
 import Post from "../models/Post.js";
+import AdCampaign from "../models/AdCampaign.js";
 import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
 
 // Sweeps posts whose promotedUntil has passed but which still carry
@@ -18,7 +19,7 @@ import { invalidateFeedCache, invalidateCache } from "../utils/redis.js";
 // Runs on the same 60s cadence as publishScheduledPosts — a stuck CTA
 // button is user-visible, not a nightly-cadence concern.
 
-export const expirePromotions = async () => {
+const clearExpiredPostFields = async () => {
   try {
     const now = new Date();
 
@@ -61,4 +62,55 @@ export const expirePromotions = async () => {
     console.error("[expirePromotions] sweep failed:", error.message);
     return { expired: 0 };
   }
+};
+
+// Keeps AdCampaign in step with its posts. Campaign posts don't always carry
+// ctaType/destinationUrl, so this can't piggyback on the Post sweep above — it
+// reads the campaign's own per-post windows instead.
+// Marks each elapsed entry "expired"; once every entry is expired the
+// campaign itself becomes "completed". Pass campaignIds to scope the sync.
+export const syncCampaignExpiry = async (campaignIds = null) => {
+  try {
+    const now = new Date();
+    const query = { status: "active" };
+    if (campaignIds?.length) query._id = { $in: campaignIds };
+
+    const campaigns = await AdCampaign.find(query);
+    let completed = 0;
+
+    for (const campaign of campaigns) {
+      let dirty = false;
+
+      for (const entry of campaign.posts) {
+        if (
+          entry.status !== "expired" &&
+          entry.promotedUntil &&
+          new Date(entry.promotedUntil) <= now
+        ) {
+          entry.status = "expired";
+          dirty = true;
+        }
+      }
+
+      if (campaign.posts.length && campaign.posts.every((e) => e.status === "expired")) {
+        campaign.status = "completed";
+        dirty = true;
+        completed += 1;
+      }
+
+      if (dirty) await campaign.save();
+    }
+
+    if (completed) console.log(`[expirePromotions] completed ${completed} ad campaign(s).`);
+    return { completed };
+  } catch (error) {
+    console.error("[expirePromotions] campaign sync failed:", error.message);
+    return { completed: 0 };
+  }
+};
+
+export const expirePromotions = async () => {
+  const { expired } = await clearExpiredPostFields();
+  const { completed } = await syncCampaignExpiry();
+  return { expired, completed };
 };
