@@ -93,7 +93,7 @@ const postSchema = new mongoose.Schema(
       // while status is "processing".
       url: { type: String, default: null },
       thumbnailUrl: { type: String, default: null },
-      // Capped at 30s by the upload-time eager transformation (see
+      // Capped at 60s by the upload-time eager transformation (see
       // videoUploadQueue.js) — this stores the actual resulting
       // duration for display, not a limit enforced here.
       durationSeconds: { type: Number, default: null },

@@ -281,7 +281,7 @@ export const createPost = async (req, res) => {
 // signature before accepting the upload, so users can't upload to
 // arbitrary folders or with arbitrary transformations.
 
-const MAX_VIDEO_DURATION_SECONDS = 30;
+const MAX_VIDEO_DURATION_SECONDS = 60; // keep in sync with tronites/src/services/videoUpload.js
 
 // Generates signed upload params for a single image. The frontend calls
 // this once per post (with the image count), then uploads each image
@@ -410,7 +410,7 @@ export const createVideoPost = async (req, res) => {
     // Thumbnail derivation: Cloudinary can generate a jpg frame from any
     // timestamp via a delivery URL — this constructs one at the 1-second
     // mark without a second upload/job. The eager MP4 URL already carries
-    // its transformation segment (/upload/so_0,du_30,f_mp4,...), so that
+    // its transformation segment (/upload/so_0,du_60,f_mp4,...), so that
     // segment must be REPLACED with so_1,f_jpg — blindly inserting another
     // segment in front of it would chain f_jpg with f_mp4 and produce a
     // broken image.
