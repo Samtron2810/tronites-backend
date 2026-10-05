@@ -309,6 +309,7 @@ postSchema.index({ velocityFlagged: 1, velocityFlaggedAt: -1 });
 // Lets the publishScheduledPosts job efficiently find posts whose
 // scheduled time has arrived without scanning the full collection.
 postSchema.index({ scheduledFor: 1 }, { sparse: true });
+postSchema.index({ user: 1, "video.publicId": 1 }, { sparse: true });
 // Lets promoters/readers find currently-promoted posts without a scan.
 postSchema.index({ promotedUntil: 1 }, { sparse: true });
 // Fast unique-ish lookup by promotion charge reference.

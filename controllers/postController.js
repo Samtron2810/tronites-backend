@@ -398,6 +398,15 @@ export const createVideoPost = async (req, res) => {
       return res.status(400).json({ message: "Invalid video URL" });
     }
 
+    // Idempotency: the client retries this call on timeouts/network drops, so
+    // a first attempt may already have landed. Return that post instead of
+    // creating a duplicate.
+    const existing = await Post.findOne({
+      user: req.user._id,
+      "video.publicId": publicId,
+    }).populate("user", "name username profilePic verifications isVerified");
+    if (existing) return res.status(200).json({ post: existing });
+
     // Thumbnail derivation: Cloudinary can generate a jpg frame from any
     // timestamp via a delivery URL — this constructs one at the 1-second
     // mark without a second upload/job. The eager MP4 URL already carries
