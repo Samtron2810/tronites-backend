@@ -1,4 +1,5 @@
 import Post from "../models/Post.js";
+import { escapeRegex } from "../utils/userSearch.js";
 import Repost from "../models/Repost.js";
 import { getPromotedPostsForFeed } from "../controllers/promotedPostController.js";
 import User from "../models/User.js";
@@ -1415,21 +1416,24 @@ export const getTrendingHashtags = async (req, res) => {
     const near = (req.query.near || "").trim().toLowerCase();
     const cacheKey = `trending-hashtags:${limit}:${near || "global"}`;
 
-    // Feature 4 — if location requested, get user ids from that location.
-    let locationUserIds = null;
-    if (near) {
-      const locUsers = await User.find({
-        location: { $regex: near, $options: "i" },
-        deletedAt: null,
-      })
-        .select("_id")
-        .lean();
-      locationUserIds = locUsers.map((u) => u._id);
-    }
-
     const result = await getOrSetCache(
       cacheKey,
       async () => {
+        // Feature 4 — if location requested, get user ids from that location.
+        // Resolved inside the cached callback (keyed by `near`) so the
+        // unindexable substring scan runs once per cache window, not on
+        // every request. Input is regex-escaped.
+        let locationUserIds = null;
+        if (near) {
+          const locUsers = await User.find({
+            location: { $regex: escapeRegex(near), $options: "i" },
+            deletedAt: null,
+          })
+            .select("_id")
+            .lean();
+          locationUserIds = locUsers.map((u) => u._id);
+        }
+
         const since = new Date(
           Date.now() - TRENDING_HASHTAGS_WINDOW_HOURS * 60 * 60 * 1000,
         );

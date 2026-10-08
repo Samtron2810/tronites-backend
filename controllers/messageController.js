@@ -37,6 +37,7 @@ import {
   REACTION_EMOJIS,
 } from "../services/reactionService.js";
 import { runPreModeration } from "../services/preModerationService.js";
+import { buildPrefixFilter, buildSubstringFilter } from "../utils/userSearch.js";
 
 export const sendMessage = async (req, res) => {
   try {
@@ -1278,16 +1279,30 @@ export const searchMessages = async (req, res) => {
       // Global mode: typing a person's name/username also surfaces the
       // caller's messages with that person.
       if (!partnerId) {
-        const nameMatches = await User.find({
-          _id: { $ne: currentUserId },
-          $or: [
-            { name: { $regex: escaped, $options: "i" } },
-            { username: { $regex: escaped, $options: "i" } },
-          ],
+        // Indexed prefix matches first; the original substring scan only
+        // runs to fill the remaining slots (see utils/userSearch.js).
+        const NAME_MATCH_LIMIT = 50;
+        const notSelf = { _id: { $ne: currentUserId } };
+        const prefixMatches = await User.find({
+          $and: [buildPrefixFilter(query), notSelf],
         })
           .select("_id")
-          .limit(50)
+          .limit(NAME_MATCH_LIMIT)
           .lean();
+        let nameMatches = prefixMatches;
+        if (prefixMatches.length < NAME_MATCH_LIMIT) {
+          const rest = await User.find({
+            $and: [
+              buildSubstringFilter(query),
+              notSelf,
+              { $nor: [buildPrefixFilter(query)] },
+            ],
+          })
+            .select("_id")
+            .limit(NAME_MATCH_LIMIT - prefixMatches.length)
+            .lean();
+          nameMatches = prefixMatches.concat(rest);
+        }
         const ids = nameMatches.map((u) => u._id);
         if (ids.length) {
           textOr.push({ sender: { $in: ids } }, { receiver: { $in: ids } });

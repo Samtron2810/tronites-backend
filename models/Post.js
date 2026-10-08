@@ -335,6 +335,10 @@ postSchema.index({ user: 1, updatedAt: -1 });
 // Perf — hashtag page paginates with `_id` cursor + sort({ _id: -1 });
 // the existing { hashtags, createdAt } index can't serve that sort.
 postSchema.index({ hashtags: 1, _id: -1 });
+// Perf — For You "trending" source sorts { likesCount: -1, createdAt: -1 }
+// inside a 14-day window; without this the whole window is sorted in
+// memory per request. Verify with explain(); drop if the planner ignores it.
+postSchema.index({ likesCount: -1, createdAt: -1 });
 
 const Post = mongoose.model("Post", postSchema);
 
