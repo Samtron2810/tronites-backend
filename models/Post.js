@@ -318,6 +318,23 @@ postSchema.index({ promotionReference: 1 }, { sparse: true });
 // (jobs/detectSpamClusters.js) can look up near-duplicate candidates
 // without a collection scan.
 postSchema.index({ hashBands: 1, createdAt: -1 });
+// Perf — quote detach (updateMany { quoteOf: <id> } when a post goes
+// non-public) previously collection-scanned. Partial: most posts have
+// quoteOf: null, so only real quote links are indexed.
+postSchema.index(
+  { quoteOf: 1 },
+  { partialFilterExpression: { quoteOf: { $type: "objectId" } } },
+);
+// Perf — AdCampaign deactivation (updateMany { campaignId: <id> }).
+postSchema.index(
+  { campaignId: 1 },
+  { partialFilterExpression: { campaignId: { $type: "objectId" } } },
+);
+// Perf — getMyPromotions filters by owner and sorts by updatedAt.
+postSchema.index({ user: 1, updatedAt: -1 });
+// Perf — hashtag page paginates with `_id` cursor + sort({ _id: -1 });
+// the existing { hashtags, createdAt } index can't serve that sort.
+postSchema.index({ hashtags: 1, _id: -1 });
 
 const Post = mongoose.model("Post", postSchema);
 
