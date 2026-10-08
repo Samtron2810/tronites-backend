@@ -116,6 +116,8 @@ const notificationSchema = new mongoose.Schema(
 
 // ADD HERE
 notificationSchema.index({ recipient: 1, createdAt: -1 });
+// Keyset pagination (cursor on createdAt + _id) — serves the sort without an in-memory SORT.
+notificationSchema.index({ recipient: 1, createdAt: -1, _id: -1 });
 notificationSchema.index({ recipient: 1, read: 1 });
 
 const Notification = mongoose.model("Notification", notificationSchema);

@@ -38,6 +38,7 @@ import {
 } from "../services/reactionService.js";
 import { runPreModeration } from "../services/preModerationService.js";
 import { buildPrefixFilter, buildSubstringFilter } from "../utils/userSearch.js";
+import { afterCursorFilter, encodeCursor, parseCursorParam } from "../utils/cursor.js";
 
 export const sendMessage = async (req, res) => {
   try {
@@ -820,20 +821,52 @@ export const getMessages = async (req, res) => {
     );
     const skip = (page - 1) * limit;
 
-    // Fetch newest-first so pagination (skip/limit) grabs the most recent
-    // page of the thread, then reverse to oldest-first for chat display.
-    // Avoids loading the entire message history for long-running chats.
-    const totalMessages = await Message.countDocuments({
+    // Keyset mode (?cursor=start | ?cursor=<nextCursor>): no skip, no count.
+    // A message arriving mid-scroll can't shift older pages into
+    // duplicates, and cost stays flat for very long threads. Legacy
+    // ?page= keeps working for older clients.
+    const { useCursor, cursor, invalid } = parseCursorParam(req.query.cursor);
+    if (invalid) return res.status(400).json({ message: "Invalid cursor" });
+
+    const threadFilter = {
       conversationId,
       removedAt: null, // moderator soft-takedown — see reportService
-    });
+      ...(cursor ? afterCursorFilter(cursor) : {}),
+    };
 
-    const recentMessages = await Message.find({ conversationId, removedAt: null })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
+    // Fetch newest-first so pagination grabs the most recent page of the
+    // thread, then reverse to oldest-first for chat display.
+    let totalMessages = 0;
+    let threadQuery;
+    if (useCursor) {
+      threadQuery = Message.find(threadFilter)
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit + 1);
+    } else {
+      totalMessages = await Message.countDocuments({
+        conversationId,
+        removedAt: null,
+      });
+      threadQuery = Message.find(threadFilter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit);
+    }
+
+    let recentMessages = await threadQuery
       .populate("sender", "_id name profilePic verifications isVerified")
       .populate("receiver", "_id name profilePic");
+
+    let cursorHasMore = false;
+    let nextCursor = null;
+    if (useCursor) {
+      cursorHasMore = recentMessages.length > limit;
+      if (cursorHasMore) recentMessages = recentMessages.slice(0, limit);
+      // Last of the newest-first page = oldest message on screen.
+      if (cursorHasMore && recentMessages.length) {
+        nextCursor = encodeCursor(recentMessages[recentMessages.length - 1]);
+      }
+    }
 
     // Feature 5 — populate replyTo preview for each message
     await Message.populate(recentMessages, {
@@ -906,13 +939,17 @@ export const getMessages = async (req, res) => {
       };
     }
 
-    res.status(200).json({
-      messages: messagesWithReactions,
-      currentPage: page,
-      totalPages: Math.ceil(totalMessages / limit),
-      hasMore: skip + recentMessages.length < totalMessages,
-      requestInfo,
-    });
+    res.status(200).json(
+      useCursor
+        ? { messages: messagesWithReactions, hasMore: cursorHasMore, nextCursor, requestInfo }
+        : {
+            messages: messagesWithReactions,
+            currentPage: page,
+            totalPages: Math.ceil(totalMessages / limit),
+            hasMore: skip + recentMessages.length < totalMessages,
+            requestInfo,
+          },
+    );
   } catch (error) {
     console.error("GET MESSAGES ERROR:", error);
     res.status(500).json({ message: error.message });

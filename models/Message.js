@@ -134,6 +134,8 @@ messageSchema.index({ conversationId: 1, createdAt: 1 });
 // Perf — thread fetch is { conversationId, removedAt: null } sorted by
 // createdAt; this serves the filter and the sort from one index.
 messageSchema.index({ conversationId: 1, removedAt: 1, createdAt: -1 });
+// Keyset pagination for the thread (cursor on createdAt + _id).
+messageSchema.index({ conversationId: 1, removedAt: 1, createdAt: -1, _id: -1 });
 messageSchema.index({ receiver: 1, read: 1 });
 // Supports a future "all messages I'm part of" query directly against
 // Message (participants) instead of only via the sender/receiver $or
