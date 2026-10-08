@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { nameToTokens } from "../utils/userSearch.js";
 
 export const PERMISSIONS = [
   "manage_reports",
@@ -34,6 +35,10 @@ export const AVAILABLE_TOPICS = [
 
 const userSchema = new mongoose.Schema(
   {
+    // Search-only denormalized copies of `name` — never returned to clients.
+    nameLower: { type: String, select: false },
+    nameTokens: { type: [String], select: false },
+
     firstName: {
       type: String,
       required: true,
@@ -345,9 +350,18 @@ userSchema.pre("validate", function () {
   if (this.firstName || this.lastName) {
     this.name = `${this.firstName || ""} ${this.lastName || ""}`.trim();
   }
+  // Search denormalization (see searchUsers). Derived from `name` on
+  // every save, so signup and name edits keep it in sync automatically.
+  if (this.name) {
+    this.nameLower = this.name.toLowerCase();
+    this.nameTokens = nameToTokens(this.name);
+  }
 });
 
 userSchema.index({ name: 1 });
+// Prefix search: full-name prefix and per-word prefix (first/last name).
+userSchema.index({ nameLower: 1 });
+userSchema.index({ nameTokens: 1 });
 userSchema.index({ lastPostAt: -1 });
 // Feature 4 — location-based trending lookup
 userSchema.index({ location: 1 });

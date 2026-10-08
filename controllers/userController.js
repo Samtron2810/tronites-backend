@@ -50,6 +50,7 @@ import { softDeleteAccount } from "../services/accountDeletionService.js";
 import { buildUserDataExport } from "../services/dataExportService.js";
 import { clearAuthCookies } from "../utils/tokens.js";
 import { getPinnedLimit } from "../utils/tierLimits.js";
+import { buildPrefixFilter, buildSubstringFilter } from "../utils/userSearch.js";
 
 // CHECK USERNAME AVAILABILITY (live check while typing)
 export const checkUsername = async (req, res) => {
@@ -771,7 +772,7 @@ export const searchUsers = async (req, res) => {
       cacheKey,
       async () => {
         let matchedUsers;
-        let totalUsers;
+        let hasMoreResults = false;
 
         if (query.length === 0) {
           // 2.2 — real "Who to follow" ranking (mutual follows, shared
@@ -784,23 +785,50 @@ export const searchUsers = async (req, res) => {
         } else if (query.length < 2) {
           return { users: [], hasMore: false };
         } else {
-          const filter = {
-            $or: [
-              { name: { $regex: query, $options: "i" } },
-              { username: { $regex: query, $options: "i" } },
-            ],
-            // exclude current user
-            _id: { $ne: req.user._id },
-          };
+          // Indexed prefix matches first (username, full-name prefix, any
+          // name word), then — only if the page isn't full — the original
+          // substring matches that the prefix pass didn't already cover.
+          // Combined order is stable (prefix block, then substring block,
+          // each by _id) so page/skip stay consistent across requests.
+          const notSelf = { _id: { $ne: req.user._id } };
+          const prefixFilter = { $and: [buildPrefixFilter(query), notSelf] };
+          const SELECT = "name username bio profilePic verifications isVerified";
 
-          [matchedUsers, totalUsers] = await Promise.all([
-            User.find(filter)
-              .select("name username bio profilePic verifications isVerified")
+          const prefixTotal = await User.countDocuments(prefixFilter);
+
+          matchedUsers = [];
+          if (skip < prefixTotal) {
+            matchedUsers = await User.find(prefixFilter)
+              .select(SELECT)
+              .sort({ _id: 1 })
               .skip(skip)
               .limit(limit)
-              .lean(),
-            User.countDocuments(filter),
-          ]);
+              .lean();
+          }
+
+          const remaining = limit - matchedUsers.length;
+          const fallbackFilter = {
+            $and: [
+              buildSubstringFilter(query),
+              notSelf,
+              { $nor: [buildPrefixFilter(query)] },
+            ],
+          };
+
+          hasMoreResults = skip + matchedUsers.length < prefixTotal;
+          if (remaining > 0) {
+            const extra = await User.find(fallbackFilter)
+              .select(SELECT)
+              .sort({ _id: 1 })
+              .skip(Math.max(0, skip - prefixTotal))
+              .limit(remaining + 1)
+              .lean();
+            hasMoreResults = extra.length > remaining;
+            matchedUsers = matchedUsers.concat(extra.slice(0, remaining));
+          } else if (!hasMoreResults) {
+            // Prefix block ends exactly on this page — is there a tail?
+            hasMoreResults = !!(await User.exists(fallbackFilter));
+          }
         }
 
         // Attach each result's follower id list — the frontend uses
@@ -816,7 +844,7 @@ export const searchUsers = async (req, res) => {
           }),
         );
 
-        return { users, hasMore: skip + users.length < totalUsers };
+        return { users, hasMore: hasMoreResults };
       },
       180,
     );
