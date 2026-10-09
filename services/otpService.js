@@ -37,6 +37,19 @@ export const checkAndBumpSendRate = (existingDoc, now = Date.now()) => {
     return { sendCount: 1, sendWindowStart: new Date(now) };
   }
 
+  const nowDate = new Date(now);
+  const expiresAt = existingDoc.expiresAt
+    ? new Date(existingDoc.expiresAt)
+    : null;
+  const usedAt = existingDoc.usedAt ? new Date(existingDoc.usedAt) : null;
+
+  // Treat stale, expired, or already-used challenges as disposable.
+  // Otherwise a stale DB row can block a brand-new signup even when the
+  // user never actually requested another code.
+  if (!expiresAt || expiresAt <= nowDate || usedAt) {
+    return { sendCount: 1, sendWindowStart: nowDate };
+  }
+
   const msSinceLastSend = now - existingDoc.lastSentAt.getTime();
   if (msSinceLastSend < RESEND_COOLDOWN_MS) {
     throw httpError(429, "Please wait before requesting another code.");
@@ -45,7 +58,7 @@ export const checkAndBumpSendRate = (existingDoc, now = Date.now()) => {
   const windowExpired =
     now - existingDoc.sendWindowStart.getTime() > SEND_WINDOW_MS;
   if (windowExpired) {
-    return { sendCount: 1, sendWindowStart: new Date(now) };
+    return { sendCount: 1, sendWindowStart: nowDate };
   }
 
   if (existingDoc.sendCount >= MAX_SENDS_PER_DAY) {
@@ -134,7 +147,40 @@ const startChallengeOnce = async ({
     throw err;
   }
 
-  await deliver(email, subject, otp, emailTemplate);
+  try {
+    await deliver(email, subject, otp, emailTemplate);
+  } catch (deliveryErr) {
+    // No email went out, so this attempt must not count: otherwise the
+    // person's retry is rejected with "Please wait before requesting
+    // another code" for a code they never received (and it burns one of
+    // their daily sends). Undo the write above.
+    try {
+      if (!existing) {
+        await Otp.deleteOne({ email, challengeId });
+      } else {
+        await Otp.updateOne(
+          { email, challengeId },
+          {
+            challengeId: existing.challengeId,
+            otpHash: existing.otpHash,
+            payload: existing.payload,
+            expiresAt: existing.expiresAt,
+            attempts: existing.attempts,
+            usedAt: existing.usedAt,
+            lastSentAt: existing.lastSentAt,
+            sendCount: existing.sendCount,
+            sendWindowStart: existing.sendWindowStart,
+          },
+        );
+      }
+    } catch (rollbackErr) {
+      console.error(
+        "[otp] rollback after failed delivery failed:",
+        rollbackErr.message,
+      );
+    }
+    throw deliveryErr;
+  }
 
   return { challengeId, email };
 };
