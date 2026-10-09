@@ -1294,6 +1294,7 @@ export const updateEmailPreferences = async (req, res) => {
     const { marketingEmails } = req.body;
     await User.findByIdAndUpdate(req.user._id, {
       marketingEmailOptOut: !marketingEmails,
+      marketingEmailsSetAt: new Date(),
     });
     res.status(200).json({ marketingEmails });
   } catch (error) {

@@ -16,6 +16,8 @@ import {
   unconsumeChallenge,
 } from "../services/otpService.js";
 import { generateChallengeId } from "../utils/otp.js";
+import { MIN_SIGNUP_AGE, parseDateOfBirth, isAtLeastAge } from "../utils/age.js";
+import { LEGAL_VERSION } from "../utils/legalVersions.js";
 import { passwordResetEmailTemplate, duplicateRegistrationAlertTemplate } from "../utils/emailTemplate.js";
 import { maybeSendNewDeviceAlert } from "../utils/newDeviceAlert.js";
 import redisClient, { isRedisReady } from "../utils/redis.js";
@@ -38,7 +40,10 @@ const SIGNUP_ALERT_TTL_SECONDS = 300; // 5 minutes
 // "sent" from "already registered" from the API response alone.
 export const sendOtp = async (req, res) => {
   try {
-    const { firstName, lastName, email, password } = req.body; // already trimmed+validated by registerSchema
+    // Already trimmed+validated by registerSchema, including the minimum
+    // age check on dateOfBirth and acceptTerms === true.
+    const { firstName, lastName, email, password, dateOfBirth, marketingOptIn } =
+      req.body;
 
     const userExists = await User.findOne({ email }).select("_id");
 
@@ -102,7 +107,13 @@ export const sendOtp = async (req, res) => {
 
     const { challengeId } = await startChallenge({
       email,
-      payload: { firstName, lastName, passwordHash },
+      payload: {
+        firstName,
+        lastName,
+        passwordHash,
+        dateOfBirth,
+        marketingOptIn: Boolean(marketingOptIn),
+      },
       subject: "Your Tronites OTP",
     });
 
@@ -130,15 +141,41 @@ export const verifyOtp = async (req, res) => {
     const { email, payload, _id: otpDocId } = verified;
 
     // Create user from payload
-    const { firstName, lastName, passwordHash } = payload || {};
+    const { firstName, lastName, passwordHash, dateOfBirth, marketingOptIn } =
+      payload || {};
 
-    if (!firstName || !lastName || !passwordHash) {
+    // Challenges created before DOB collection existed carry no
+    // dateOfBirth; they expire within 5 minutes, so rejecting them just
+    // asks the user to sign up again.
+    const dob = parseDateOfBirth(dateOfBirth);
+    if (!firstName || !lastName || !passwordHash || !dob) {
+      await unconsumeChallenge(otpDocId);
       return res.status(400).json({ message: "Invalid OTP payload" });
     }
+    // Re-check at account creation in case the clock rolled past a
+    // birthday boundary between the form and the code (and as defence in
+    // depth against a tampered payload).
+    if (!isAtLeastAge(dob, MIN_SIGNUP_AGE)) {
+      return res.status(400).json({
+        message: `You must be at least ${MIN_SIGNUP_AGE} years old to create a Tronites account.`,
+      });
+    }
 
+    const now = new Date();
     let user;
     try {
-      user = await User.create({ firstName, lastName, email, password: passwordHash });
+      user = await User.create({
+        firstName,
+        lastName,
+        email,
+        password: passwordHash,
+        dateOfBirth: dob,
+        termsAcceptedAt: now,
+        termsVersion: LEGAL_VERSION,
+        // Opt-in only: stays opted out unless the box was ticked.
+        marketingEmailOptOut: !marketingOptIn,
+        marketingEmailsSetAt: marketingOptIn ? now : null,
+      });
     } catch (createErr) {
       // The challenge is already marked used (verifyChallenge's job is
       // to guarantee a code can't be consumed twice). If account

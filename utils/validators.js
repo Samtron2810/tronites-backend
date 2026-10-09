@@ -1,7 +1,37 @@
 import { z } from "zod";
 import { BROADCAST_GROUPS, BROADCAST_TYPES } from "./broadcastGroups.js";
+import {
+  MIN_SIGNUP_AGE,
+  parseDateOfBirth,
+  isAtLeastAge,
+} from "./age.js";
 
 // ─── Auth ───────────────────────────────────────────────────────────────────
+
+// Strict YYYY-MM-DD, a real calendar date, not in the future, not before
+// 1900, and old enough to hold an account. The under-age message is
+// deliberately generic: it never reveals whether an email is registered.
+const signupDateOfBirth = z
+  .string()
+  .trim()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Date of birth must be in YYYY-MM-DD format")
+  .superRefine((value, ctx) => {
+    const dob = parseDateOfBirth(value);
+    if (!dob) {
+      ctx.addIssue({ code: "custom", message: "Enter a valid date of birth" });
+      return;
+    }
+    if (dob.getUTCFullYear() < 1900 || dob > new Date()) {
+      ctx.addIssue({ code: "custom", message: "Enter a valid date of birth" });
+      return;
+    }
+    if (!isAtLeastAge(dob, MIN_SIGNUP_AGE)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `You must be at least ${MIN_SIGNUP_AGE} years old to create a Tronites account.`,
+      });
+    }
+  });
 
 // Unicode letters/marks, may contain internal apostrophes, hyphens, or
 // spaces (O'Brien, Mary-Jane, Adéọlá, Chukwuemeka N.) but must start with
@@ -26,6 +56,14 @@ export const registerSchema = z.object({
     .string()
     .min(10, "Password must be at least 10 characters")
     .max(128, "Password too long"),
+  dateOfBirth: signupDateOfBirth,
+  // Must be explicitly true — the Terms/Privacy checkbox. Stored with a
+  // timestamp and version on the account (see authController.verifyOtp).
+  acceptTerms: z.literal(true, {
+    message: "You must accept the Terms of Use and Privacy Policy.",
+  }),
+  // Optional, unchecked by default on the form. Absent = not opted in.
+  marketingOptIn: z.boolean().optional().default(false),
 });
 
 export const loginSchema = z.object({

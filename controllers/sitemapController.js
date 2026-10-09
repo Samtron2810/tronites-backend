@@ -66,6 +66,9 @@ export const getStaticSitemap = async (req, res) => {
     urlEntry(`${SITE_URL}/tiers`, { changefreq: "monthly", priority: "0.5" }),
     urlEntry(`${SITE_URL}/privacy`, { changefreq: "monthly", priority: "0.3" }),
     urlEntry(`${SITE_URL}/terms`, { changefreq: "monthly", priority: "0.3" }),
+    urlEntry(`${SITE_URL}/guidelines`, { changefreq: "monthly", priority: "0.3" }),
+    urlEntry(`${SITE_URL}/refunds`, { changefreq: "monthly", priority: "0.3" }),
+    urlEntry(`${SITE_URL}/copyright`, { changefreq: "monthly", priority: "0.3" }),
   ];
   res.set("Content-Type", "application/xml");
   res.status(200).send(wrapUrlset(entries));

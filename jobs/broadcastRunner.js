@@ -74,7 +74,12 @@ export const runBroadcastTick = async () => {
           to: rcpt.email,
           subject,
           htmlContent: html,
-          headers: unsubscribeUrl ? { "List-Unsubscribe": `<${unsubscribeUrl}>` } : undefined,
+          headers: unsubscribeUrl
+            ? {
+                "List-Unsubscribe": `<${unsubscribeUrl}>`,
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+              }
+            : undefined,
         });
         await EmailCampaignRecipient.updateOne(
           { _id: rcpt._id },

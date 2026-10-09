@@ -47,7 +47,7 @@ const groupClause = (key, now) => {
  */
 export const buildAudienceFilter = ({ groups = [], userIds = [], type = "announcement" }) => {
   const now = new Date();
-  const optOutGuard = type === "critical" ? {} : { marketingEmailOptOut: { $ne: true } };
+  const optOutGuard = type === "critical" ? {} : { marketingEmailOptOut: false }; // opt-in only: field must be explicitly false
   const clauses = [];
 
   if (groups.includes("all")) {

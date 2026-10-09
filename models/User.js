@@ -158,12 +158,44 @@ const userSchema = new mongoose.Schema(
       default: true,
     },
 
-    // Set by the unsubscribe link in broadcast emails (controllers/
-    // broadcastController.js). Honoured by "announcement" campaigns only;
-    // "critical" notices (policy changes etc.) deliberately ignore it.
+    // Marketing email is OPT-IN: new accounts start opted out (true) and
+    // only flip to false via the signup checkbox or Settings. Set to true
+    // again by the unsubscribe link (controllers/broadcastController.js).
+    // Honoured by "announcement" campaigns only; "critical" notices
+    // (policy changes, security) deliberately ignore it.
     marketingEmailOptOut: {
       type: Boolean,
-      default: false,
+      default: true,
+    },
+
+    // When the user last made an explicit marketing-email choice
+    // (signup checkbox, Settings toggle, unsubscribe link). Null = never
+    // chose; see maintenance/resetMarketingConsent.js.
+    marketingEmailsSetAt: {
+      type: Date,
+      default: null,
+    },
+
+    // Date of birth given at signup. Used only to enforce the minimum
+    // age; never shown on profiles and never returned by default queries
+    // (select:false). Included in the user's own data export.
+    dateOfBirth: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+
+    // Consent record: which version of the Terms/Privacy Policy was
+    // accepted and when (utils/legalVersions.js).
+    termsAcceptedAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    termsVersion: {
+      type: String,
+      default: "",
+      select: false,
     },
 
     // Feature 3 — Topics/Interests. 5–10 tags picked at or after signup.

@@ -253,14 +253,20 @@ export const resumeBroadcast = async (req, res) => {
   res.json({ campaign });
 };
 
-// GET /api/unsubscribe?token= — public, linked from announcement emails.
+// GET|POST /api/unsubscribe?token= — public, linked from announcement
+// emails. POST is the RFC 8058 one-click form mail clients send when the
+// message carries List-Unsubscribe-Post; the token travels in the query
+// string either way.
 export const unsubscribe = async (req, res) => {
   const page = (title, msg) =>
     `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head><body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f5f5f5;font-family:Arial,Helvetica,sans-serif;"><div style="max-width:420px;margin:24px;background:#fff;border-radius:16px;padding:36px 28px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,.1);"><h1 style="margin:0 0 6px;font-size:26px;color:#0f6e56;">Tronites</h1><h2 style="margin:18px 0 8px;font-size:18px;color:#111827;">${title}</h2><p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280;">${msg}</p></div></body></html>`;
 
   try {
     const userId = verifyUnsubscribeToken(String(req.query.token || ""));
-    await User.updateOne({ _id: userId }, { $set: { marketingEmailOptOut: true } });
+    await User.updateOne(
+      { _id: userId },
+      { $set: { marketingEmailOptOut: true, marketingEmailsSetAt: new Date() } },
+    );
     res
       .status(200)
       .type("html")

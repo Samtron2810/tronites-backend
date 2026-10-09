@@ -103,6 +103,12 @@ app.use(
   }),
 );
 
+// One-click unsubscribe (RFC 8058): mail providers POST here with no
+// cookies and no Origin/Referer, so it must sit ahead of csrfProtection.
+// Safe to exempt — it carries no session; the HMAC-signed token in the
+// query string is its only authority, and it can only opt that one user out.
+app.use("/api/unsubscribe", apiLimiter, unsubscribeRoutes);
+
 // CSRF defense: cookie auth requires SameSite=None across our two origins
 // (Vercel frontend, Render backend), which by itself carries no CSRF
 // protection, and CORS doesn't cover the gap either — see
@@ -132,7 +138,6 @@ app.use("/api/verification-requests", verificationRoutes);
 // Mount before /api/admin so the literal /broadcasts segment is never
 // captured by an adminRoutes param route.
 app.use("/api/admin/broadcasts", broadcastRoutes);
-app.use("/api/unsubscribe", unsubscribeRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/push", pushRoutes);
