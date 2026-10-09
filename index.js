@@ -154,6 +154,11 @@ app.get("/", (req, res) => {
 // alive", so an orchestrator doesn't kill a process that's correctly
 // running in degraded fallback mode.
 app.get("/health/live", (req, res) => {
+  // helmet defaults Cross-Origin-Resource-Policy to same-origin, which makes
+  // browsers block the frontend's cross-origin no-cors warm-up ping
+  // (services/api.js warmUpBackend) with ERR_BLOCKED_BY_RESPONSE.NotSameOrigin.
+  // This endpoint exposes nothing sensitive, so allow cross-origin reads.
+  res.set("Cross-Origin-Resource-Policy", "cross-origin");
   res.status(200).json({ status: "ok" });
 });
 
