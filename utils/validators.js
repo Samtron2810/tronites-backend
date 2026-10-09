@@ -11,27 +11,40 @@ import {
 // Strict YYYY-MM-DD, a real calendar date, not in the future, not before
 // 1900, and old enough to hold an account. The under-age message is
 // deliberately generic: it never reveals whether an email is registered.
-const signupDateOfBirth = z
-  .string()
-  .trim()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Date of birth must be in YYYY-MM-DD format")
-  .superRefine((value, ctx) => {
-    const dob = parseDateOfBirth(value);
-    if (!dob) {
-      ctx.addIssue({ code: "custom", message: "Enter a valid date of birth" });
-      return;
-    }
-    if (dob.getUTCFullYear() < 1900 || dob > new Date()) {
-      ctx.addIssue({ code: "custom", message: "Enter a valid date of birth" });
-      return;
-    }
-    if (!isAtLeastAge(dob, MIN_SIGNUP_AGE)) {
-      ctx.addIssue({
-        code: "custom",
-        message: `You must be at least ${MIN_SIGNUP_AGE} years old to create a Tronites account.`,
-      });
-    }
-  });
+const makeDateOfBirthSchema = ({ enforceMinAge }) =>
+  z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Date of birth must be in YYYY-MM-DD format")
+    .superRefine((value, ctx) => {
+      const dob = parseDateOfBirth(value);
+      if (!dob) {
+        ctx.addIssue({ code: "custom", message: "Enter a valid date of birth" });
+        return;
+      }
+      if (dob.getUTCFullYear() < 1900 || dob > new Date()) {
+        ctx.addIssue({ code: "custom", message: "Enter a valid date of birth" });
+        return;
+      }
+      if (enforceMinAge && !isAtLeastAge(dob, MIN_SIGNUP_AGE)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `You must be at least ${MIN_SIGNUP_AGE} years old to create a Tronites account.`,
+        });
+      }
+    });
+
+const signupDateOfBirth = makeDateOfBirthSchema({ enforceMinAge: true });
+
+// Existing accounts that predate DOB collection (userController.
+// submitCompliance). The min-age check is NOT in the schema there: an
+// under-age answer must trigger account removal, not a form error.
+export const complianceSchema = z.object({
+  dateOfBirth: makeDateOfBirthSchema({ enforceMinAge: false }).optional(),
+  acceptTerms: z.literal(true, {
+    message: "You must accept the Terms of Use and Privacy Policy.",
+  }),
+});
 
 // Unicode letters/marks, may contain internal apostrophes, hyphens, or
 // spaces (O'Brien, Mary-Jane, Adéọlá, Chukwuemeka N.) but must start with

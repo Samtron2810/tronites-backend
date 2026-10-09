@@ -4,6 +4,8 @@ import Repost from "../models/Repost.js";
 import Notification from "../models/Notification.js";
 import Block from "../models/Block.js";
 import bcrypt from "bcryptjs";
+import { MIN_SIGNUP_AGE, parseDateOfBirth, isAtLeastAge } from "../utils/age.js";
+import { LEGAL_VERSION } from "../utils/legalVersions.js";
 import {
   emitToUser,
   joinFollowersRoom,
@@ -1156,6 +1158,70 @@ export const exportMyData = async (req, res) => {
   try {
     const data = await buildUserDataExport(req.user);
     res.status(200).json(data);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ── Legal compliance gate (existing accounts) ──────────────────────────────
+
+// GET /users/me/compliance
+// Tells the client whether this account must still give a date of birth
+// (accounts created before DOB collection) and/or accept the current
+// Terms/Privacy version. The date of birth itself is never returned.
+export const getComplianceStatus = async (req, res) => {
+  try {
+    const u = await User.findById(req.user._id)
+      .select("+dateOfBirth +termsVersion")
+      .lean();
+    const needsDateOfBirth = !u?.dateOfBirth;
+    const needsTerms = u?.termsVersion !== LEGAL_VERSION;
+    res.status(200).json({
+      required: needsDateOfBirth || needsTerms,
+      needsDateOfBirth,
+      needsTerms,
+      legalVersion: LEGAL_VERSION,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// POST /users/me/compliance  { dateOfBirth?, acceptTerms: true }
+// Records acceptance of the current Terms version and, if the account has
+// none yet, its date of birth. A stored date of birth is never overwritten
+// (otherwise the age check could be dodged by re-entering it). Someone
+// under the minimum age has their account deactivated, matching the
+// Privacy Policy, and is signed out.
+export const submitCompliance = async (req, res) => {
+  try {
+    const { dateOfBirth } = req.body;
+    const u = await User.findById(req.user._id).select("+dateOfBirth");
+    if (!u) return res.status(404).json({ message: "Account not found." });
+
+    let dob = u.dateOfBirth || null;
+    if (!dob) {
+      const parsed = parseDateOfBirth(dateOfBirth);
+      if (!parsed) {
+        return res.status(400).json({ message: "Enter your date of birth." });
+      }
+      if (!isAtLeastAge(parsed, MIN_SIGNUP_AGE)) {
+        await softDeleteAccount(u._id);
+        clearAuthCookies(res);
+        return res.status(403).json({
+          code: "UNDERAGE",
+          message: `You must be at least ${MIN_SIGNUP_AGE} years old to use Tronites, so this account has been deactivated.`,
+        });
+      }
+      dob = parsed;
+    }
+
+    u.dateOfBirth = dob;
+    u.termsAcceptedAt = new Date();
+    u.termsVersion = LEGAL_VERSION;
+    await u.save();
+
+    res.status(200).json({ required: false, legalVersion: LEGAL_VERSION });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

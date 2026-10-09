@@ -4,7 +4,7 @@ import protect from "../middleware/authMiddleware.js";
 import requireCreator from "../middleware/requireCreator.js";
 import { accountDeletionLimiter } from "../middleware/rateLimiter.js";
 import { validate } from "../utils/validators.js";
-import { deleteAccountSchema } from "../utils/validators.js";
+import { deleteAccountSchema, complianceSchema } from "../utils/validators.js";
 import { updateBioSchema, setUsernameSchema, updateNameSchema, presenceVisibilitySchema, updateProfilePictureSchema, pinnedPostSchema, collabStatusSchema, updateInterestsSchema, updateLocationSchema, updateReadReceiptsSchema, updateEmailPreferencesSchema } from "../utils/validators.js";
 
 import {
@@ -26,6 +26,8 @@ import {
   getBlockStatus,
   deleteMyAccount,
   exportMyData,
+  getComplianceStatus,
+  submitCompliance,
   togglePinnedPost,
   setCollabStatus,
   updateInterests,
@@ -82,6 +84,8 @@ router.put(
 router.get("/followers/:id", protect, getFollowers);
 router.get("/following/:id", protect, getFollowing);
 router.get("/me/export", protect, exportMyData);
+router.get("/me/compliance", protect, getComplianceStatus);
+router.post("/me/compliance", protect, validate(complianceSchema), submitCompliance);
 router.get("/me/sessions", protect, listSessions);
 router.delete("/me/sessions/:id", protect, revokeSessionById);
 router.delete("/me/sessions", protect, revokeOtherSessions);
