@@ -41,6 +41,13 @@ import {
   getUserCaseHistoryHandler,
 } from "../controllers/moderatorNoteController.js";
 
+import {
+  listPayouts,
+  approvePayout,
+  rejectPayout,
+  syncPayout,
+} from "../controllers/adminPayoutController.js";
+
 const router = express.Router();
 
 // Role management — admin only (see requireAdmin: granting/revoking
@@ -206,5 +213,12 @@ router.put(
   validate(shadowRankSchema),
   setShadowRank,
 );
+
+// Creator payouts — moves real money, so admin-only (not a delegable
+// moderator permission).
+router.get("/payouts", protect, requireAdmin, listPayouts);
+router.post("/payouts/:id/approve", protect, requireAdmin, approvePayout);
+router.post("/payouts/:id/reject", protect, requireAdmin, rejectPayout);
+router.post("/payouts/:id/sync", protect, requireAdmin, syncPayout);
 
 export default router;

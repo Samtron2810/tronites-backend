@@ -17,6 +17,7 @@ import Bookmark from "../models/Bookmark.js";
 import {
   initializeTransaction,
   verifyTransaction,
+  createTransferRecipient,
 } from "../services/paystackService.js";
 import { emitToUser } from "../socket/socket.js";
 import { invalidateCache, getOrSetCache } from "../utils/redis.js";
@@ -683,6 +684,22 @@ export const upsertBankAccount = async (req, res) => {
         .status(400)
         .json({ message: "Account number must be 10 digits." });
 
+    // Register the account with Paystack now, while we still have the full
+    // number. We keep only the recipient code + last 4 digits; admin payout
+    // approval transfers to the recipient code.
+    let recipient;
+    try {
+      recipient = await createTransferRecipient({
+        name: accountName.trim().slice(0, 120),
+        accountNumber,
+        bankCode: bankCode.trim(),
+      });
+    } catch (e) {
+      return res.status(400).json({
+        message: e.message || "Could not verify this bank account.",
+      });
+    }
+
     const bankAccount = await CreatorBankAccount.findOneAndUpdate(
       { creator: req.user._id },
       {
@@ -691,8 +708,7 @@ export const upsertBankAccount = async (req, res) => {
           accountName: accountName.trim().slice(0, 120),
           accountNumberLast4: accountNumber.slice(-4),
           bankCode: bankCode.trim().slice(0, 10),
-          // paystackRecipientCode would be set after calling Paystack API
-          paystackRecipientCode: null,
+          paystackRecipientCode: recipient.recipient_code,
         },
       },
       { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
@@ -732,6 +748,11 @@ export const requestPayout = async (req, res) => {
       return res
         .status(400)
         .json({ message: "Add your bank account before requesting a payout." });
+    if (!bankAccount.paystackRecipientCode)
+      return res.status(400).json({
+        message:
+          "Please re-save your bank account details once before requesting a payout.",
+      });
 
     const earnings = await computeEarnings(req.user._id);
     const requestedKobo = amountNgn * 100;

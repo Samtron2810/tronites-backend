@@ -64,6 +64,24 @@ const creatorPayoutSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Our own reference sent to Paystack (tronites_payout_<payoutId>) — what
+    // transfer webhooks and /transfer/verify are matched against.
+    paystackReference: {
+      type: String,
+      default: null,
+    },
+
+    // Admin who approved/rejected the request, and when.
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    reviewedAt: {
+      type: Date,
+      default: null,
+    },
+
     // Human-readable status from Paystack's transfer event.
     paystackStatus: {
       type: String,
@@ -88,6 +106,7 @@ const creatorPayoutSchema = new mongoose.Schema(
 );
 
 creatorPayoutSchema.index({ creator: 1, createdAt: -1 });
-creatorPayoutSchema.index({ status: 1 });
+creatorPayoutSchema.index({ status: 1, createdAt: -1 });
+creatorPayoutSchema.index({ paystackReference: 1 }, { sparse: true });
 
 export const CreatorPayout = mongoose.model("CreatorPayout", creatorPayoutSchema);

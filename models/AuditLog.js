@@ -48,6 +48,9 @@ export const AUDIT_ACTIONS = [
   // Email broadcast campaigns (controllers/broadcastController.js).
   "email_broadcast_created",
   "email_broadcast_cancelled",
+  // Creator payouts (controllers/adminPayoutController.js).
+  "creator_payout_approved",
+  "creator_payout_rejected",
 ];
 
 const AUDIT_TARGET_TYPES = ["user", "post", "comment", "message", "report", "campaign"];

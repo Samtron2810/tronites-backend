@@ -3,6 +3,7 @@ import Post from "../models/Post.js";
 import VerificationPayment from "../models/VerificationPayment.js";
 import AdCampaign from "../models/AdCampaign.js";
 import { invalidateFeedCache } from "../utils/redis.js";
+import { markPayoutPaid, markPayoutFailed } from "../services/payoutService.js";
 
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PROMO_REFERENCE_PREFIX = "tronites_promo_";
@@ -65,6 +66,18 @@ export const handlePaystackWebhook = async (req, res) => {
 
   // 4. Handle events asynchronously (fire-and-forget from Paystack's perspective).
   try {
+    // Creator payout transfers — match on our own reference.
+    if (event.event?.startsWith("transfer.")) {
+      const { reference, reason } = event.data || {};
+      if (!reference?.startsWith("tronites_payout_")) return;
+      if (event.event === "transfer.success") await markPayoutPaid(reference);
+      else if (event.event === "transfer.failed")
+        await markPayoutFailed(reference, "failed", reason);
+      else if (event.event === "transfer.reversed")
+        await markPayoutFailed(reference, "reversed", reason || "Transfer reversed.");
+      return;
+    }
+
     if (event.event !== "charge.success") return; // only care about successful charges
 
     const { reference, status } = event.data || {};
