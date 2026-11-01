@@ -117,6 +117,15 @@ export const createPost = async (req, res) => {
       });
     }
 
+    // Subscribers-only posts are a creator-tier feature (same rule as
+    // setPostPrivacy). The schema accepts the value; the tier is checked here.
+    if (privacy === POST_PRIVACY.SUBSCRIBERS && !canPostSubscribersOnly(req.user)) {
+      return res.status(403).json({
+        message: "Subscribers-only posts require a creator account.",
+        code: "SUBSCRIBERS_ONLY_UNAVAILABLE",
+      });
+    }
+
     // Scheduling is a verified-tier feature.
     if (scheduledFor && !canSchedule(req.user)) {
       return res.status(403).json({
@@ -259,7 +268,12 @@ export const createPost = async (req, res) => {
     // scheduled posts (they are not live yet).
     if (!scheduledForDate) {
       try {
-        if (post.privacy !== POST_PRIVACY.ONLY_ME) {
+        // Followers' feeds exclude only-me AND subscribers-only posts — the
+        // latter's content must never be pushed to non-subscribers.
+        if (
+          post.privacy !== POST_PRIVACY.ONLY_ME &&
+          post.privacy !== POST_PRIVACY.SUBSCRIBERS
+        ) {
           emitToFollowersOf(req.user._id, "newPost", populatedPost);
         }
       } catch (socketError) {
@@ -375,6 +389,15 @@ export const createVideoPost = async (req, res) => {
     if (text && text.length > charLimit) {
       return res.status(400).json({
         message: `Your account tier allows posts up to ${charLimit} characters.`,
+      });
+    }
+
+    // Subscribers-only posts are a creator-tier feature (same rule as
+    // setPostPrivacy). The schema accepts the value; the tier is checked here.
+    if (privacy === POST_PRIVACY.SUBSCRIBERS && !canPostSubscribersOnly(req.user)) {
+      return res.status(403).json({
+        message: "Subscribers-only posts require a creator account.",
+        code: "SUBSCRIBERS_ONLY_UNAVAILABLE",
       });
     }
 
@@ -505,7 +528,12 @@ export const createVideoPost = async (req, res) => {
     // Real-time post feed update for followers. Skip for scheduled posts.
     if (!scheduledForDate)
       try {
-        if (post.privacy !== POST_PRIVACY.ONLY_ME) {
+        // Followers' feeds exclude only-me AND subscribers-only posts — the
+        // latter's content must never be pushed to non-subscribers.
+        if (
+          post.privacy !== POST_PRIVACY.ONLY_ME &&
+          post.privacy !== POST_PRIVACY.SUBSCRIBERS
+        ) {
           emitToFollowersOf(req.user._id, "newPost", populatedPost);
         }
       } catch (socketError) {
@@ -2625,6 +2653,7 @@ export const setPostPrivacy = async (req, res) => {
 
     if (
       previous === POST_PRIVACY.ONLY_ME &&
+      privacy !== POST_PRIVACY.SUBSCRIBERS && // never push paywalled content to followers
       !post.scheduledFor
     ) {
       try {

@@ -140,7 +140,7 @@ export const resetPasswordSchema = z.object({
 // Post audience — kept in sync with the Post model enum and
 // services/postVisibilityService.js (stylistically mirrors the manually
 // synced POST_EDIT_COOLDOWN_MS constants used elsewhere).
-const POST_PRIVACY_VALUES = ["public", "followers", "only-me"];
+const POST_PRIVACY_VALUES = ["public", "followers", "subscribers", "only-me"];
 
 export const createPostSchema = z.object({
   text: z
@@ -871,7 +871,7 @@ export const createPostWithAltSchema = z.object({
     .max(4, "Max 4 images per post")
     .optional()
     .default([]),
-  privacy: z.enum(["public", "followers", "only-me"]).optional().default("public"),
+  privacy: z.enum(POST_PRIVACY_VALUES).optional().default("public"),
   scheduledFor: z
     .string()
     .datetime({ message: "scheduledFor must be a valid ISO 8601 datetime" })
