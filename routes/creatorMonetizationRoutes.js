@@ -21,6 +21,8 @@ import {
   getEarnings,
   upsertBankAccount,
   getBankAccount,
+  getBanks,
+  resolveBankAccount,
   requestPayout,
   getPayoutHistory,
   // Media Kit
@@ -64,6 +66,8 @@ router.get("/earnings", getEarnings);
 // Bank account
 router.get("/bank-account", getBankAccount);
 router.post("/bank-account", upsertBankAccount);
+router.get("/banks", getBanks);
+router.post("/bank-account/resolve", resolveBankAccount);
 // Payouts
 router.post("/payout/request", requestPayout);
 router.get("/payout/history", getPayoutHistory);

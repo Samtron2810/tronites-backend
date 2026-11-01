@@ -18,6 +18,8 @@ import {
   initializeTransaction,
   verifyTransaction,
   createTransferRecipient,
+  listBanks,
+  resolveAccount,
 } from "../services/paystackService.js";
 import { emitToUser } from "../socket/socket.js";
 import { invalidateCache, getOrSetCache } from "../utils/redis.js";
@@ -674,25 +676,71 @@ export const getEarnings = async (req, res) => {
 // NOTE: In production this would call Paystack's /transferrecipient API to
 // create a recipient code. Stub here stores the details; the transfer
 // initiation step below uses them.
+// Bank list for the payout form (cached — it rarely changes).
+const loadBanks = () =>
+  getOrSetCache("paystack:banks:ng", () => listBanks(), 24 * 60 * 60);
+
+// GET /creator-monetization/banks
+export const getBanks = async (req, res) => {
+  try {
+    res.status(200).json({ banks: await loadBanks() });
+  } catch (error) {
+    res.status(502).json({ message: error.message });
+  }
+};
+
+// POST /creator-monetization/bank-account/resolve { accountNumber, bankCode }
+// Returns the real account holder name so the creator can confirm it.
+export const resolveBankAccount = async (req, res) => {
+  try {
+    const { accountNumber, bankCode } = req.body;
+    if (!/^\d{10}$/.test(String(accountNumber || "")))
+      return res
+        .status(400)
+        .json({ message: "Account number must be 10 digits." });
+    const banks = await loadBanks();
+    if (!banks.some((b) => b.code === String(bankCode)))
+      return res.status(400).json({ message: "Choose a bank from the list." });
+
+    const resolved = await resolveAccount({
+      accountNumber: String(accountNumber),
+      bankCode: String(bankCode),
+    });
+    res.status(200).json({ accountName: resolved.account_name });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+};
+
+// POST /creator-monetization/bank-account { accountNumber, bankCode }
+// The bank name and account holder name are NOT taken from the client: the
+// name comes from the bank (via Paystack) and the bank name from the
+// official list. Only the recipient code + last 4 digits are stored.
 export const upsertBankAccount = async (req, res) => {
   try {
-    const { bankName, accountName, accountNumber, bankCode } = req.body;
-    if (!bankName || !accountName || !accountNumber || !bankCode)
-      return res.status(400).json({ message: "All bank fields are required." });
+    const accountNumber = String(req.body.accountNumber || "");
+    const bankCode = String(req.body.bankCode || "").trim();
+    if (!accountNumber || !bankCode)
+      return res
+        .status(400)
+        .json({ message: "Choose a bank and enter your account number." });
     if (!/^\d{10}$/.test(accountNumber))
       return res
         .status(400)
         .json({ message: "Account number must be 10 digits." });
 
-    // Register the account with Paystack now, while we still have the full
-    // number. We keep only the recipient code + last 4 digits; admin payout
-    // approval transfers to the recipient code.
+    const bank = (await loadBanks()).find((b) => b.code === bankCode);
+    if (!bank)
+      return res.status(400).json({ message: "Choose a bank from the list." });
+
+    let resolved;
     let recipient;
     try {
+      resolved = await resolveAccount({ accountNumber, bankCode });
       recipient = await createTransferRecipient({
-        name: accountName.trim().slice(0, 120),
+        name: resolved.account_name,
         accountNumber,
-        bankCode: bankCode.trim(),
+        bankCode,
       });
     } catch (e) {
       return res.status(400).json({
@@ -704,14 +752,14 @@ export const upsertBankAccount = async (req, res) => {
       { creator: req.user._id },
       {
         $set: {
-          bankName: bankName.trim().slice(0, 100),
-          accountName: accountName.trim().slice(0, 120),
+          bankName: bank.name.slice(0, 100),
+          accountName: String(resolved.account_name).trim().slice(0, 120),
           accountNumberLast4: accountNumber.slice(-4),
-          bankCode: bankCode.trim().slice(0, 10),
+          bankCode: bank.code.slice(0, 10),
           paystackRecipientCode: recipient.recipient_code,
         },
       },
-      { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
+      { returnDocument: "after", upsert: true, setDefaultsOnInsert: true },
     );
 
     res.status(200).json({ bankAccount });

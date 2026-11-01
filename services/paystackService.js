@@ -107,3 +107,31 @@ export const verifyTransfer = async (reference) => {
   if (!res.status) throw new Error(res.message || "Paystack transfer lookup failed.");
   return res.data;
 };
+
+// ── Bank lookup ─────────────────────────────────────────────────────────────
+
+// Nigerian banks that support NUBAN transfers: [{ name, code }], A–Z.
+export const listBanks = async () => {
+  if (!PAYSTACK_SECRET) throw new Error("PAYSTACK_SECRET_KEY not configured.");
+  const res = await paystackRequest(
+    "GET",
+    "/bank?country=nigeria&currency=NGN&perPage=200&use_cursor=false",
+  );
+  if (!res.status) throw new Error(res.message || "Could not load banks.");
+  return (res.data || [])
+    .filter((b) => b.active !== false && (!b.type || b.type === "nuban"))
+    .map((b) => ({ name: b.name, code: String(b.code) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+};
+
+// Ask the bank who owns this account. Returns { account_name, account_number }.
+export const resolveAccount = async ({ accountNumber, bankCode }) => {
+  if (!PAYSTACK_SECRET) throw new Error("PAYSTACK_SECRET_KEY not configured.");
+  const res = await paystackRequest(
+    "GET",
+    `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`,
+  );
+  if (!res.status)
+    throw new Error(res.message || "Could not verify this account number.");
+  return res.data;
+};
