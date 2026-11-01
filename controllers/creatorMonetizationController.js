@@ -276,18 +276,21 @@ export const getReceivedTips = async (req, res) => {
 // GET /creator-monetization/plan/:creatorId — public, returns a creator's plan
 export const getCreatorPlan = async (req, res) => {
   try {
-    const creatorId =
-      req.params.creatorId === "me" ? req.user?._id : req.params.creatorId;
+    const isMe = req.params.creatorId === "me";
+    if (isMe && !req.user)
+      return res.status(401).json({ message: "Not authenticated." });
+
+    const creatorId = isMe ? req.user._id : req.params.creatorId;
     if (!creatorId)
       return res.status(400).json({ message: "creatorId required." });
 
+    // Owner sees their plan even when paused; everyone else only sees active.
     const plan = await CreatorPlan.findOne({
       creator: creatorId,
-      active: true,
+      ...(isMe ? {} : { active: true }),
     }).lean();
 
-    // For "me" requests from unauthenticated — shouldn't reach here but safe guard
-    if (req.params.creatorId !== "me" && !plan)
+    if (!isMe && !plan)
       return res.status(404).json({ message: "No active plan." });
 
     const subCount = plan

@@ -1,6 +1,7 @@
 import express from "express";
 import protect from "../middleware/authMiddleware.js";
 import requireCreator from "../middleware/requireCreator.js";
+import optionalProtect from "../middleware/optionalProtect.js";
 import {
   // Tips
   initiateTip,
@@ -32,7 +33,8 @@ const router = express.Router();
 // Media kit — visible to brands, viewers, anyone
 router.get("/media-kit/:creatorId", getMediaKit);
 // Creator's subscription plan — visible on their profile
-router.get("/plan/:creatorId", getCreatorPlan);
+// optionalProtect so "/plan/me" resolves req.user (it was undefined before).
+router.get("/plan/:creatorId", optionalProtect, getCreatorPlan);
 
 // ── Authenticated ───────────────────────────────────────────────────────────
 router.use(protect);
