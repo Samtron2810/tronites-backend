@@ -824,10 +824,18 @@ export const requestPayout = async (req, res) => {
       creator: req.user._id,
       amountKobo: requestedKobo,
       status: "pending",
+      recipientCode: bankAccount.paystackRecipientCode,
+      bankSnapshot: {
+        bankName: bankAccount.bankName,
+        accountName: bankAccount.accountName,
+        accountNumberLast4: bankAccount.accountNumberLast4,
+      },
     });
 
     invalidateCache(`creator-earnings:${req.user._id}`);
-    res.status(201).json({ payout });
+    const safePayout = payout.toObject();
+    delete safePayout.recipientCode; // internal — never sent to the client
+    res.status(201).json({ payout: safePayout });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

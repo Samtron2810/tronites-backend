@@ -32,6 +32,7 @@ export const listPayouts = async (req, res) => {
 
     const [rows, total, summary] = await Promise.all([
       CreatorPayout.find(filter)
+        .select("+recipientCode")
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -50,14 +51,31 @@ export const listPayouts = async (req, res) => {
       ]),
     ]);
 
-    // Attach bank details (display-safe fields only) in one query.
-    const creatorIds = rows.map((r) => r.creator?._id).filter(Boolean);
-    const banks = await CreatorBankAccount.find({ creator: { $in: creatorIds } })
-      .select("creator bankName accountName accountNumberLast4 paystackRecipientCode")
-      .lean();
+    // Show the destination locked in at request time. Payouts created before
+    // snapshots existed fall back to the creator's current bank account.
+    const needsFallback = rows.filter((r) => !r.recipientCode);
+    const banks = needsFallback.length
+      ? await CreatorBankAccount.find({
+          creator: { $in: needsFallback.map((r) => r.creator?._id).filter(Boolean) },
+        })
+          .select("creator bankName accountName accountNumberLast4 paystackRecipientCode")
+          .lean()
+      : [];
     const bankByCreator = new Map(banks.map((b) => [String(b.creator), b]));
 
-    const payouts = rows.map((r) => {
+    const payouts = rows.map(({ recipientCode, bankSnapshot, ...r }) => {
+      if (recipientCode) {
+        return {
+          ...r,
+          bank: {
+            bankName: bankSnapshot?.bankName,
+            accountName: bankSnapshot?.accountName,
+            accountNumberLast4: bankSnapshot?.accountNumberLast4,
+            transferReady: true,
+            lockedAtRequest: true,
+          },
+        };
+      }
       const b = bankByCreator.get(String(r.creator?._id));
       return {
         ...r,
@@ -67,6 +85,7 @@ export const listPayouts = async (req, res) => {
               accountName: b.accountName,
               accountNumberLast4: b.accountNumberLast4,
               transferReady: !!b.paystackRecipientCode,
+              lockedAtRequest: false,
             }
           : null,
       };
@@ -107,7 +126,9 @@ export const approvePayout = async (req, res) => {
         },
       },
       { returnDocument: "after" },
-    ).populate("creator", "name username role");
+    )
+      .select("+recipientCode")
+      .populate("creator", "name username role");
 
     if (!payout) {
       const exists = await CreatorPayout.exists({ _id: id });
@@ -133,10 +154,16 @@ export const approvePayout = async (req, res) => {
         },
       );
 
-    const bank = await CreatorBankAccount.findOne({
-      creator: payout.creator._id,
-    }).lean();
-    if (!bank?.paystackRecipientCode) {
+    // Prefer the destination locked in at request time; only payouts created
+    // before that existed fall back to the creator's current bank account.
+    let recipientCode = payout.recipientCode;
+    if (!recipientCode) {
+      const bank = await CreatorBankAccount.findOne({
+        creator: payout.creator._id,
+      }).lean();
+      recipientCode = bank?.paystackRecipientCode || null;
+    }
+    if (!recipientCode) {
       await revert("Creator must re-save bank details.");
       return res.status(422).json({
         message:
@@ -148,7 +175,7 @@ export const approvePayout = async (req, res) => {
     try {
       transfer = await initiateTransfer({
         amountKobo: payout.amountKobo,
-        recipientCode: bank.paystackRecipientCode,
+        recipientCode,
         reference,
         reason: "Tronites creator payout",
       });

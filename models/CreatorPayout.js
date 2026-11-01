@@ -64,6 +64,20 @@ const creatorPayoutSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Destination locked in when the payout was requested. Approval sends to
+    // THIS recipient, so changing the saved bank account afterwards can't
+    // redirect a request that's already in the queue. Never exposed to creators.
+    recipientCode: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    bankSnapshot: {
+      bankName: { type: String, default: "" },
+      accountName: { type: String, default: "" },
+      accountNumberLast4: { type: String, default: "" },
+    },
+
     // Our own reference sent to Paystack (tronites_payout_<payoutId>) — what
     // transfer webhooks and /transfer/verify are matched against.
     paystackReference: {
