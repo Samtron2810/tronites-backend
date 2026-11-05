@@ -46,7 +46,8 @@ import {
 import {
   PUBLIC_ONLY_FILTER,
   PUBLISHED_FILTER,
-  FOLLOWERS_VISIBLE_FILTER,
+  POST_PRIVACY,
+  isActiveSubscriber,
 } from "../services/postVisibilityService.js";
 import { softDeleteAccount } from "../services/accountDeletionService.js";
 import { buildUserDataExport } from "../services/dataExportService.js";
@@ -456,11 +457,31 @@ export const getUserProfile = async (req, res) => {
       ? false
       : await isFollowing(req.user._id, req.params.id);
 
+    // Subscribers-only posts are listed for every viewer so non-subscribers
+    // see a locked card with a Subscribe CTA; their content is stripped below
+    // unless the viewer is the owner or an active subscriber.
+    const viewerIsSubscriber = isSelf
+      ? true
+      : await isActiveSubscriber(req.user._id, req.params.id);
+
     const postsVisibilityFilter = isSelf
       ? {}
-      : viewerIsFollowing
-        ? FOLLOWERS_VISIBLE_FILTER
-        : PUBLIC_ONLY_FILTER;
+      : {
+          $or: [
+            { privacy: POST_PRIVACY.PUBLIC },
+            { privacy: { $exists: false } },
+            ...(viewerIsFollowing ? [{ privacy: POST_PRIVACY.FOLLOWERS }] : []),
+            { privacy: POST_PRIVACY.SUBSCRIBERS },
+          ],
+        };
+
+    // Server-side paywall: a locked post never leaves the server with its
+    // text, media or alt text. (The cache below may hold the full document,
+    // so this runs on every response, after the cache read.)
+    const paywall = (raw) =>
+      raw.privacy === POST_PRIVACY.SUBSCRIBERS && !viewerIsSubscriber
+        ? { ...raw, text: "", images: [], video: null, hashtags: [], locked: true }
+        : raw;
 
     // Cache key must vary by the viewer's relationship tier — a
     // stranger, a follower, and the owner herself each see a different
@@ -675,7 +696,7 @@ export const getUserProfile = async (req, res) => {
     };
 
     const postsWithLikeState = postsResult.items.map((item) => {
-      const raw = item.post._doc || item.post;
+      const raw = paywall(item.post._doc || item.post);
       return {
         ...raw,
         images: normalizeImages(raw.images),
@@ -717,7 +738,7 @@ export const getUserProfile = async (req, res) => {
           pinnedOrder.indexOf(b._id.toString()),
       )
       .map((pinnedDoc) => {
-        const raw = pinnedDoc._doc || pinnedDoc;
+        const raw = paywall(pinnedDoc._doc || pinnedDoc);
         return {
           ...raw,
           images: normalizeImages(raw.images),

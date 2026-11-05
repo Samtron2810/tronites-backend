@@ -85,13 +85,40 @@ export const isActiveSubscriber = async (viewerId, creatorId) => {
   return !!sub;
 };
 
+// Creators the viewer currently pays — same "active and not expired"
+// predicate as isActiveSubscriber. Used to add their subscribers-only posts to
+// the viewer's following feed.
+export const listActiveSubscribedCreatorIds = async (viewerId) =>
+  (
+    await CreatorSubscription.distinct("creator", {
+      subscriber: viewerId,
+      status: "active",
+      currentPeriodEnd: { $gt: new Date() },
+    })
+  ).map(String);
+
+// The reverse: everyone currently subscribed to `creatorId` (for pushing a
+// new subscribers-only post to them in real time).
+export const listActiveSubscriberIds = async (creatorId) =>
+  (
+    await CreatorSubscription.distinct("subscriber", {
+      creator: creatorId,
+      status: "active",
+      currentPeriodEnd: { $gt: new Date() },
+    })
+  ).map(String);
+
 // Can `viewerId` see `post` directly? Used as defense-in-depth on
 // direct-ID actions (like / comment / bookmark) where a post could
 // theoretically be reachable even if no listing surface shows it. The
 // post's author always passes; everyone else is tiered by privacy.
 export const canViewPost = async (viewerId, post) => {
   if (!post) return false;
-  if (post.user.toString() === viewerId.toString()) return true;
+  // `post.user` is a populated document on some callers (getPostById, saved
+  // posts). String(doc) is NOT its id, so the owner check below would fail and
+  // authors would be locked out of their own non-public posts.
+  const authorId = post.user?._id ?? post.user;
+  if (authorId.toString() === viewerId.toString()) return true;
 
   const privacy = post.privacy || POST_PRIVACY.PUBLIC;
   if (privacy === POST_PRIVACY.PUBLIC) return true;
@@ -99,9 +126,9 @@ export const canViewPost = async (viewerId, post) => {
 
   // subscribers-only: must have an active paid subscription.
   if (privacy === POST_PRIVACY.SUBSCRIBERS) {
-    return isActiveSubscriber(viewerId, post.user);
+    return isActiveSubscriber(viewerId, authorId);
   }
 
   // followers-only: the viewer must be following the author.
-  return isFollowing(viewerId, post.user);
+  return isFollowing(viewerId, authorId);
 };

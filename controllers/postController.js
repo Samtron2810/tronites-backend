@@ -21,6 +21,8 @@ import {
   PUBLIC_ONLY_FILTER,
   PUBLISHED_FILTER,
   feedVisibilityFilter,
+  listActiveSubscribedCreatorIds,
+  listActiveSubscriberIds,
   POST_PRIVACY,
 } from "../services/postVisibilityService.js";
 import { getMutedIds, hasMuted } from "../services/muteService.js";
@@ -209,6 +211,12 @@ export const createPost = async (req, res) => {
               // person being mentioned muted the poster?
               if (await hasMuted(mentionedUser._id, req.user._id)) return;
 
+              // Don't notify someone who can't open the post (only-me,
+              // followers-only to a non-follower, subscribers-only to a
+              // non-subscriber) — the link would 404 and the notification
+              // itself would reveal a private post exists.
+              if (!(await canViewPost(mentionedUser._id, post))) return;
+
               const newNotif = await Notification.create({
                 recipient: mentionedUser._id,
                 sender: req.user._id,
@@ -268,14 +276,7 @@ export const createPost = async (req, res) => {
     // scheduled posts (they are not live yet).
     if (!scheduledForDate) {
       try {
-        // Followers' feeds exclude only-me AND subscribers-only posts — the
-        // latter's content must never be pushed to non-subscribers.
-        if (
-          post.privacy !== POST_PRIVACY.ONLY_ME &&
-          post.privacy !== POST_PRIVACY.SUBSCRIBERS
-        ) {
-          emitToFollowersOf(req.user._id, "newPost", populatedPost);
-        }
+        await emitNewPostToAudience(req.user._id, post.privacy, populatedPost);
       } catch (socketError) {
         console.error("Real-time feed emission error:", socketError);
       }
@@ -484,6 +485,12 @@ export const createVideoPost = async (req, res) => {
             .map(async (mentionedUser) => {
               if (await hasMuted(mentionedUser._id, req.user._id)) return;
 
+              // Don't notify someone who can't open the post (only-me,
+              // followers-only to a non-follower, subscribers-only to a
+              // non-subscriber) — the link would 404 and the notification
+              // itself would reveal a private post exists.
+              if (!(await canViewPost(mentionedUser._id, post))) return;
+
               const newNotif = await Notification.create({
                 recipient: mentionedUser._id,
                 sender: req.user._id,
@@ -528,14 +535,7 @@ export const createVideoPost = async (req, res) => {
     // Real-time post feed update for followers. Skip for scheduled posts.
     if (!scheduledForDate)
       try {
-        // Followers' feeds exclude only-me AND subscribers-only posts — the
-        // latter's content must never be pushed to non-subscribers.
-        if (
-          post.privacy !== POST_PRIVACY.ONLY_ME &&
-          post.privacy !== POST_PRIVACY.SUBSCRIBERS
-        ) {
-          emitToFollowersOf(req.user._id, "newPost", populatedPost);
-        }
+        await emitNewPostToAudience(req.user._id, post.privacy, populatedPost);
       } catch (socketError) {
         console.error("Real-time feed emission error:", socketError);
       }
@@ -676,6 +676,12 @@ export const editPost = async (req, res) => {
             .map(async (mentionedUser) => {
               if (await hasMuted(mentionedUser._id, req.user._id)) return;
 
+              // Don't notify someone who can't open the post (only-me,
+              // followers-only to a non-follower, subscribers-only to a
+              // non-subscriber) — the link would 404 and the notification
+              // itself would reveal a private post exists.
+              if (!(await canViewPost(mentionedUser._id, post))) return;
+
               const newNotif = await Notification.create({
                 recipient: mentionedUser._id,
                 sender: req.user._id,
@@ -770,6 +776,20 @@ const markStaleProcessingVideosAsFailed = async () => {
 // repost/quote is the repost/quote time, not the original post's
 // createdAt. This keeps a single-field keyset cursor intact while
 // letting a stale repost of an old post surface at its own recency.
+// Push a new post to exactly the people allowed to see it: followers for
+// public/followers posts, active subscribers for subscribers-only posts, and
+// nobody for only-me. A subscribers-only post's content is never sent to
+// the followers room.
+const emitNewPostToAudience = async (authorId, privacy, payload) => {
+  if (privacy === POST_PRIVACY.ONLY_ME) return;
+  if (privacy === POST_PRIVACY.SUBSCRIBERS) {
+    const subscriberIds = await listActiveSubscriberIds(authorId);
+    subscriberIds.forEach((id) => emitToUser(id, "newPost", payload));
+    return;
+  }
+  emitToFollowersOf(authorId, "newPost", payload);
+};
+
 export const getFeedPosts = async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
@@ -813,12 +833,36 @@ export const getFeedPosts = async (req, res) => {
         // without a second round trip. Over-fetch by `limit` on BOTH
         // sources so the in-memory merge below still has enough of
         // each to fill a full page even when one source dominates.
+        //
+        // Subscribers-only posts from creators the viewer actively pays also
+        // appear here, even if the viewer doesn't follow them. A block (either
+        // way) or a mute still hides the creator, exactly like a followed one.
+        const [subscribedIds, blockedIds] = await Promise.all([
+          listActiveSubscribedCreatorIds(req.user._id),
+          getBlockedEitherWayIds(req.user._id),
+        ]);
+        const paidCreatorIds = subscribedIds.filter(
+          (id) => !mutedIds.has(id) && !blockedIds.has(id),
+        );
+
         const postFilter = {
-          user: { $in: feedUsers },
           removedAt: null, // moderator soft-takedown — see reportService
           ...PUBLISHED_FILTER, // exclude scheduled-but-not-yet-published posts
-          ...feedVisibilityFilter(req.user._id),
           ...(cursorDate ? { createdAt: { $lt: cursorDate } } : {}),
+          $or: [
+            // followed accounts + own posts (never other people's
+            // subscribers-only / only-me posts)
+            { user: { $in: feedUsers }, ...feedVisibilityFilter(req.user._id) },
+            // paid-for posts
+            ...(paidCreatorIds.length
+              ? [
+                  {
+                    user: { $in: paidCreatorIds },
+                    privacy: POST_PRIVACY.SUBSCRIBERS,
+                  },
+                ]
+              : []),
+          ],
         };
         const postCandidates = await Post.find(postFilter)
           .populate("user", "name username profilePic verifications isVerified")
@@ -2156,10 +2200,17 @@ export const getBookmarkedPosts = async (req, res) => {
     const limit = parseInt(req.query.limit) || 12;
     const skip = (page - 1) * limit;
 
-    const { posts, totalBookmarks } = await listBookmarkedPosts(req.user._id, {
-      skip,
-      limit,
-    });
+    const { posts: savedPosts, totalBookmarks } = await listBookmarkedPosts(
+      req.user._id,
+      { skip, limit },
+    );
+
+    // A post can be narrowed to followers/subscribers/only-me after it was
+    // saved — hide those from the saved list instead of leaking them.
+    const visibility = await Promise.all(
+      savedPosts.map((p) => canViewPost(req.user._id, p)),
+    );
+    const posts = savedPosts.filter((_, i) => visibility[i]);
 
     const quoteOfIds = posts.filter((p) => p.quoteOf).map((p) => p.quoteOf._id);
     const allIds = [...posts.map((p) => p._id), ...quoteOfIds];
@@ -2651,17 +2702,13 @@ export const setPostPrivacy = async (req, res) => {
     invalidateCache(`public-post:${post._id}`);
     invalidateCache(`comments:${post._id}`);
 
-    if (
-      previous === POST_PRIVACY.ONLY_ME &&
-      privacy !== POST_PRIVACY.SUBSCRIBERS && // never push paywalled content to followers
-      !post.scheduledFor
-    ) {
+    if (previous === POST_PRIVACY.ONLY_ME && !post.scheduledFor) {
       try {
         const fresh = await Post.findById(post._id).populate(
           "user",
           "name username profilePic verifications isVerified",
         );
-        emitToFollowersOf(req.user._id, "newPost", fresh);
+        await emitNewPostToAudience(req.user._id, privacy, fresh);
       } catch (socketError) {
         console.error("Real-time feed emission error:", socketError);
       }

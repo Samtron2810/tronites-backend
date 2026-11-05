@@ -22,7 +22,7 @@ import {
   resolveAccount,
 } from "../services/paystackService.js";
 import { emitToUser } from "../socket/socket.js";
-import { invalidateCache, getOrSetCache } from "../utils/redis.js";
+import { invalidateCache, getOrSetCache, invalidateFeedCache } from "../utils/redis.js";
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
 // Platform fee taken from each tip/subscription (10% default).
@@ -487,6 +487,8 @@ export const verifySubscription = async (req, res) => {
     invalidateCache(`creator-earnings:${creatorId}`);
     invalidateCache(`sub-status:${req.user._id}:${creatorId}`);
     invalidateCache(`mediakit:${creatorId}`);
+    invalidateFeedCache(req.user._id); // their feed now includes this creator's paid posts
+    invalidateCache(`profile-posts:${creatorId}:*`);
 
     // Notify creator
     const notification = await Notification.create({
